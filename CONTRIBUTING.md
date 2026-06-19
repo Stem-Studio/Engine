@@ -44,8 +44,9 @@ stemstudio-multiplayer/ ← Colyseus server. Runs as a sidecar in dev
 
 server/
   cmd/ai-server/       ← Go AI proxy entry point. Forwards calls to
-                         Anthropic, OpenAI, Meshy, ElevenLabs, AnythingWorld
-                         using env keys or BYOK keys forwarded by the editor.
+                         Anthropic, OpenAI, Meshy, Tripo, Rodin, ElevenLabs,
+                         AnythingWorld using env keys or BYOK keys forwarded
+                         by the editor.
   server/controllers/tools/ai/        ← AI handler implementations.
   server/controllers/tools/ai/byok/   ← BYOK key resolution.
 

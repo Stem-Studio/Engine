@@ -33,6 +33,7 @@ vi.mock("./AiCopilot.styles", () => {
         PermissionButtons: div,
         PermissionContainer: div,
         PermissionMessage: div,
+        PlaygroundProcessingBanner: div,
         ProcessingMainText: div,
         ProcessingStatusContainer: div,
         ProcessingSubText: div,
@@ -292,6 +293,80 @@ describe("AiCopilot session mode startup", () => {
                 .join("\n");
             expect(processText).toContain("Inspect scene");
             expect(processText).toContain("list objects filter=Player");
+        });
+    });
+
+    it("does not render blank transcript rows for empty agent chunks", async () => {
+        mocks.isPlayground = true;
+
+        const {container} = renderCopilot();
+
+        await waitFor(() => expect(mocks.provider.createSession).toHaveBeenCalledOnce());
+
+        act(() => {
+            mocks.provider.emitTestEvent("agentMessage", {
+                message: "   ",
+            });
+            mocks.provider.emitTestEvent("agentThinking", {
+                message: "   ",
+            });
+        });
+
+        expect(container.querySelector(".message-agent")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("copilot-process-details")).not.toBeInTheDocument();
+    });
+
+    it("shows the playground browser-running banner only while chat prompt is processing", async () => {
+        mocks.isPlayground = true;
+
+        renderCopilot();
+
+        await waitFor(() => expect(mocks.provider.createSession).toHaveBeenCalledOnce());
+
+        expect(screen.queryByTestId("copilot-playground-processing-banner")).not.toBeInTheDocument();
+
+        act(() => {
+            mocks.provider.emitTestEvent("promptStarted", {
+                prompt: "make a game",
+            });
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId("copilot-playground-processing-banner").textContent).toContain(
+                "COPILOT IS RUNNING IN THE BROWSER",
+            );
+        });
+
+        act(() => {
+            mocks.provider.emitTestEvent("promptCompleted");
+        });
+
+        await waitFor(() => {
+            expect(screen.queryByTestId("copilot-playground-processing-banner")).not.toBeInTheDocument();
+        });
+    });
+
+    it("surfaces OpenAI stream progress in the playground processing status", async () => {
+        mocks.isPlayground = true;
+
+        renderCopilot();
+
+        await waitFor(() => expect(mocks.provider.createSession).toHaveBeenCalledOnce());
+
+        act(() => {
+            mocks.provider.emitTestEvent("promptStarted", {
+                prompt: "make a game",
+            });
+            mocks.provider.emitTestEvent("toolCall", {toolCall: {title: "Stream OpenAI response"}});
+            mocks.provider.emitTestEvent("toolCallUpdate", {
+                line: "OpenAI stream active (text=2.1K chars, reasoning=8.3K chars, events=4)",
+            });
+        });
+
+        await waitFor(() => {
+            expect(screen.getByText(
+                "OpenAI stream active (text=2.1K chars, reasoning=8.3K chars, events=4)",
+            )).toBeInTheDocument();
         });
     });
 

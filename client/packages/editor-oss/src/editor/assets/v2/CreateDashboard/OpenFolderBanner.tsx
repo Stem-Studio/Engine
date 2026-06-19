@@ -2,6 +2,7 @@ import {useEffect, useState} from "react";
 import styled from "styled-components";
 
 import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
+import {useHomepageContext} from "@stem/editor-oss/context";
 import {
     FileSystemProjectStore,
     getOSSPersistenceMode,
@@ -100,6 +101,16 @@ const Hint = styled.span`
     font-size: 11px;
 `;
 
+const ErrorText = styled.span`
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11.5px;
+    line-height: 1.4;
+    font-weight: 500;
+    color: #ff9b9b;
+`;
+
 /**
  * Dashboard banner that lets the user point StemStudio at a local folder for
  * project storage at any time. Always visible in OSS when File System Access
@@ -120,6 +131,8 @@ export const OpenFolderBanner = () => {
     const [folderName, setFolderName] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [hint, setHint] = useState<string | null>(null);
+    const [hintIsError, setHintIsError] = useState(false);
+    const {setShouldRefreshDashboard} = useHomepageContext();
 
     useEffect(() => {
         if (!IS_OSS || !supported) return;
@@ -150,31 +163,52 @@ export const OpenFolderBanner = () => {
     const handleClick = async () => {
         setBusy(true);
         setHint(null);
+        setHintIsError(false);
         try {
             const picker = (window as unknown as {
                 showDirectoryPicker?: (opts?: {mode?: "read" | "readwrite"}) => Promise<unknown>;
             }).showDirectoryPicker;
             if (!picker) {
-                setHint("File System Access is not supported in this browser.");
+                setHintIsError(true);
+                setHint(
+                    "Folder storage is not available in this browser. " +
+                        "Use a Chromium browser (Chrome or Edge) to save projects to a local folder.",
+                );
                 return;
             }
             const handle = (await picker({mode: "readwrite"})) as never;
             setOSSPersistenceMode("filesystem");
             setProjectStore(new FileSystemProjectStore(handle));
             await saveHandle(handle);
-            // Refetch the project list against the new store. Reload is the
-            // simplest path — React Query caches assume one stable store
-            // identity per session, and the bootstrap flag (which controls
-            // whether the OSS modal re-shows) is already set.
-            window.location.reload();
+            // Reflect the freshly-picked folder in this banner's own copy so
+            // the title/name update without remounting.
+            setActiveKind("filesystem");
+            const pickedName = (handle as {name?: string}).name;
+            if (typeof pickedName === "string") setFolderName(pickedName);
+            // Refresh the dashboard in-place — do NOT window.location.reload().
+            // The store is already swapped above, so an in-place refetch reads
+            // the project list from the new folder. A full reload is actively
+            // harmful here: (1) inside the public-site playground iframe a
+            // document reload re-runs the static-host rewrite, which
+            // re-resolves to the `/playground` wrapper and nests the editor in
+            // a second playground frame; (2) the File System Access API does
+            // not persist folder permission across loads, so boot's
+            // gesture-less verifyPermission() fails and silently falls back to
+            // IndexedDB. Mirrors ReconnectFolderBanner's deliberate no-reload.
+            setShouldRefreshDashboard(true);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             // The user clicking "Cancel" in the directory picker raises an
             // AbortError; treat that as a quiet dismissal.
             if (/AbortError|aborted|cancell?ed/i.test(message)) {
                 setHint(null);
+                setHintIsError(false);
             } else {
-                setHint(`Could not open folder: ${message}`);
+                // A real failure (folder unavailable, permission denied, drive
+                // unmounted). Surface it prominently instead of leaving the
+                // user with a silent banner that "did nothing".
+                setHintIsError(true);
+                setHint(`Could not open that folder: ${message}. Please try again or pick another folder.`);
             }
         } finally {
             setBusy(false);
@@ -207,7 +241,30 @@ export const OpenFolderBanner = () => {
                 >
                     {busy ? "Opening…" : inFsMode ? "Change folder" : "Open project folder"}
                 </Action>
-                {hint && <Hint>{hint}</Hint>}
+                {hint &&
+                    (hintIsError ? (
+                        <ErrorText role="alert" data-testid="open-folder-error">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={{flex: "0 0 14px", marginTop: 1}}
+                                aria-hidden="true"
+                            >
+                                <circle cx="12" cy="12" r="10" />
+                                <line x1="12" y1="8" x2="12" y2="12" />
+                                <line x1="12" y1="16" x2="12.01" y2="16" />
+                            </svg>
+                            <span>{hint}</span>
+                        </ErrorText>
+                    ) : (
+                        <Hint>{hint}</Hint>
+                    ))}
             </Body>
         </Panel>
     );

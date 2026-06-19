@@ -11,8 +11,10 @@ vi.mock("../ai", () => ({
 }));
 
 import {
+    clearCopilotChatKeyHandoff,
     getCopilotModelSelectionSync,
     hasCopilotKeysSync,
+    prepareCopilotChatKeyHandoff,
     refreshCopilotKeysMarker,
     resolveCopilotChatKeyChoice,
     resolveCopilotChatKeys,
@@ -22,7 +24,9 @@ import {
 describe("playgroundCopilotKeys", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        clearCopilotChatKeyHandoff();
         window.localStorage.clear();
+        window.sessionStorage.clear();
     });
 
     it("resolves a single chat key with the provider default model", async () => {
@@ -31,7 +35,7 @@ describe("playgroundCopilotKeys", () => {
         const keys = await resolveCopilotChatKeys();
         const choice = await resolveCopilotChatKeyChoice();
 
-        expect(keys).toEqual([{provider: "openai", apiKey: "sk-openai", model: "gpt-5.2-codex"}]);
+        expect(keys).toEqual([{provider: "openai", apiKey: "sk-openai", model: "gpt-5.5"}]);
         expect(choice).toEqual({kind: "ready", key: keys[0], keys});
     });
 
@@ -57,10 +61,10 @@ describe("playgroundCopilotKeys", () => {
 
         const choice = await resolveCopilotChatKeyChoice();
 
-        expect(getCopilotModelSelectionSync()).toEqual({provider: "openai", model: "gpt-5.1-codex"});
+        expect(getCopilotModelSelectionSync()).toEqual({provider: "openai", model: "gpt-5.5"});
         expect(choice.kind).toBe("ready");
         if (choice.kind === "ready") {
-            expect(choice.key).toEqual({provider: "openai", apiKey: "sk-openai", model: "gpt-5.1-codex"});
+            expect(choice.key).toEqual({provider: "openai", apiKey: "sk-openai", model: "gpt-5.5"});
         }
     });
 
@@ -86,5 +90,31 @@ describe("playgroundCopilotKeys", () => {
 
         expect(ready).toBe(false);
         expect(hasCopilotKeysSync()).toBe(false);
+    });
+
+    it("uses a prepared route handoff when the encrypted store is locked after navigation", async () => {
+        const handoffStorageKey = "stem.playground.copilot.routeKeyHandoff";
+        mocks.store.all.mockResolvedValueOnce({openai: "sk-openai"});
+
+        const prepared = await prepareCopilotChatKeyHandoff();
+
+        expect(prepared).toBe(true);
+        expect(window.sessionStorage.getItem(handoffStorageKey)).toContain("sk-openai");
+
+        mocks.store.all.mockResolvedValueOnce({});
+        const ready = await refreshCopilotKeysMarker();
+
+        expect(ready).toBe(true);
+        expect(hasCopilotKeysSync()).toBe(true);
+        expect(window.sessionStorage.getItem(handoffStorageKey)).toContain("sk-openai");
+
+        mocks.store.all.mockResolvedValueOnce({});
+        const choice = await resolveCopilotChatKeyChoice();
+
+        expect(choice.kind).toBe("ready");
+        if (choice.kind === "ready") {
+            expect(choice.key).toEqual({provider: "openai", apiKey: "sk-openai", model: "gpt-5.5"});
+        }
+        expect(window.sessionStorage.getItem(handoffStorageKey)).toBeNull();
     });
 });

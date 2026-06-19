@@ -9,7 +9,8 @@ export type AIProvider =
     | "elevenlabs"
     | "anythingworld"
     | "gemini"
-    | "tripo";
+    | "tripo"
+    | "rodin";
 
 export type ProviderStatus = "ready" | "missing-key";
 export type ProviderSource = "env" | "byok-session" | "";

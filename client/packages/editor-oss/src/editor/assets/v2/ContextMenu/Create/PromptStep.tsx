@@ -3,7 +3,7 @@ import {useRef} from "react";
 import {useAuthorizationContext} from "@stem/editor-oss/context";
 import {MODEL_VERSION, TEXTURE_QUALITY} from "../../../../../controls/AiWorldController/AiWorldController.types";
 import CheckBox from "../../../../../ui/form/v2/CheckBox";
-import {GENERATOR_TYPES} from "@stem/editor-oss/utils/ModelGeneratorProvider";
+import {GENERATOR_TYPES, getGeneratorCapability} from "@stem/editor-oss/utils/ModelGeneratorProvider";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {BasicCombobox} from "../../common/BasicCombobox/BasicCombobox";
 import {CreditsBar} from "../../CreditsBar/CreditsBar";
@@ -81,18 +81,14 @@ export const PromptStep = ({
 
     const qualityOptions = Object.values(TEXTURE_QUALITY).map(value => ({key: value, value}));
     const modelVersionOptions = Object.values(MODEL_VERSION).map(value => ({key: value, value}));
-    const generatorLabels: Record<GENERATOR_TYPES, string> = {
-        [GENERATOR_TYPES.MESHY]: "meshy",
-        [GENERATOR_TYPES.TRIPO]: "tripo",
-        [GENERATOR_TYPES.ERTH]: "Erth (experimental)",
-    };
-    // The playground has no Go server; only Meshy can run browser-direct, so
-    // Tripo and Erth are hidden there.
+    const capability = getGeneratorCapability(generator);
+    // The playground has no Go server, so only providers that can run fully
+    // browser-direct (Meshy, Rodin) are offered there; desktop shows all.
     const generatorOptions = Object.values(GENERATOR_TYPES)
-        .filter(value => !isPlaygroundMode() || value === GENERATOR_TYPES.MESHY)
+        .filter(value => !isPlaygroundMode() || getGeneratorCapability(value).supportsBrowserDirectPlayground)
         .map(value => ({
             key: value,
-            value: generatorLabels[value],
+            value: getGeneratorCapability(value).label,
         }));
 
     if (!isOpen) return null;
@@ -136,7 +132,7 @@ export const PromptStep = ({
                     </>
                 }
             </ImageUploadCard>
-            {(generator === GENERATOR_TYPES.MESHY || generator === GENERATOR_TYPES.TRIPO) && 
+            {capability.supportsAutoRig &&
                 <label
                     style={{
                         display: "flex",
@@ -154,7 +150,7 @@ export const PromptStep = ({
                     Auto-rig (humanoid models only)
                 </label>
             }
-            {generator === GENERATOR_TYPES.MESHY && 
+            {capability.supportsRefine &&
                 <label
                     style={{
                         display: "flex",
@@ -175,7 +171,7 @@ export const PromptStep = ({
             {isAdmin && 
                 <>
                     <AnotherPromptMessage>Admin only settings</AnotherPromptMessage>
-                    {generator !== GENERATOR_TYPES.MESHY && 
+                    {generator === GENERATOR_TYPES.TRIPO &&
                         <>
                             <BasicCombobox
                                 data={modelVersionOptions}

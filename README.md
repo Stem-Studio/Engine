@@ -24,7 +24,7 @@ If StemStudio is useful to you or your organization, please consider sponsoring 
 - **In-editor code editor** — Monaco for behavior and script authoring with full TypeScript-style assist.
 - **Physics** — Ammo.js / Rapier integration with rigid bodies, joints, raycasting.
 - **Local multiplayer** — Colyseus sidecar auto-spawned on `bun run dev`. Two browser tabs on the same machine join a real room.
-- **AI copilot (BYOK)** — bring your own keys for Anthropic, OpenAI, Meshy (3D model gen), ElevenLabs (TTS), and AnythingWorld. Configure once, use everywhere.
+- **AI copilot (BYOK)** — bring your own keys for Anthropic, OpenAI, Meshy / Tripo / Rodin (3D model gen), ElevenLabs (TTS), and AnythingWorld. Configure once, use everywhere.
 - **Local-first persistence** — IndexedDB for seamless auto-save, or open a real folder via File System Access API (Chromium) for git-friendly workflows.
 - **Export & share** — package any project as a standalone static site (Player-only build) you can host anywhere.
 

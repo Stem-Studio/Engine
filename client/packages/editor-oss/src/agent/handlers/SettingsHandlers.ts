@@ -603,6 +603,7 @@ export class SettingsHandlers {
         }
 
         editor.sceneName = title;
+        this.engine.call("sceneNameUpdated");
         this.engine.call("objectChanged", editor, editor.scene);
 
         return {

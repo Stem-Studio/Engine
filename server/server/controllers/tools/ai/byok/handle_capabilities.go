@@ -31,6 +31,7 @@ var providerEnvVars = map[string][]string{
 	"anythingworld": {"ANYTHING_WORLD_API_KEY", "ANYTHINGWORLD_API_KEY"},
 	"gemini":        {"GEMINI_API_KEY"},
 	"tripo":         {"TRIPO_API_KEY"},
+	"rodin":         {"RODIN_API_KEY", "HYPER3D_API_KEY"},
 }
 
 func init() {

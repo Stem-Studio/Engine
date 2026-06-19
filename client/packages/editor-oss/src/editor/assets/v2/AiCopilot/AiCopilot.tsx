@@ -25,6 +25,7 @@ import {
     PermissionButtons,
     PermissionContainer,
     PermissionMessage,
+    PlaygroundProcessingBanner,
     ProcessingMainText,
     ProcessingStatusContainer,
     ProcessingSubText,
@@ -80,6 +81,21 @@ const COPILOT_SUGGESTIONS_BLOCK_REGEX = /```(?:stemstudio-suggestions|stemstudio
 const stripCopilotSuggestionsBlocks = (content: string): string => {
     COPILOT_SUGGESTIONS_BLOCK_REGEX.lastIndex = 0;
     return content.replace(COPILOT_SUGGESTIONS_BLOCK_REGEX, "").trim();
+};
+
+const getRenderableMessageContent = (message: Message, stripSuggestions: boolean): string => {
+    if (message.type === "agent" && stripSuggestions) {
+        return stripCopilotSuggestionsBlocks(message.content);
+    }
+    return message.content.trim();
+};
+
+const shouldRenderChatMessage = (message: Message, stripSuggestions: boolean): boolean => {
+    if (message.type === "interactive") {
+        return Boolean(message.interactiveResult) || Boolean(message.content.trim());
+    }
+    if (message.attachedObjects?.length) return true;
+    return getRenderableMessageContent(message, stripSuggestions).length > 0;
 };
 
 const hasDashboardCopilotBootstrapIntent = (bootstrap: DashboardCopilotBootstrap | null): bootstrap is DashboardCopilotBootstrap =>
@@ -171,6 +187,9 @@ const compactWorkflowLine = (value: string): string => {
         ? `${normalized.slice(0, MAX_WORKFLOW_LINE_CHARS - 3)}...`
         : normalized;
 };
+
+const isOpenAIStreamWorkflowLine = (value: string): boolean =>
+    /^OpenAI stream (?:active|complete|ended)\b/.test(value);
 
 const parseModeCommand = (value: string): ParsedModeCommand | null => {
     const match = value.trim().match(/^\/mode(?:\s+(.+))?$/i);
@@ -314,7 +333,7 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
         if (!isWorkspaceMode || !sceneID || aiMessages.length === 0) return;
         if (messageSceneIDRef.current !== sceneID) return;
 
-        saveWorkspaceChatSnapshot({
+        void saveWorkspaceChatSnapshot({
             sceneID,
             sessionID: acpClientRef.current?.getSessionId() || sessionSeqCounterRef.current.sessionId,
             messages: aiMessages,
@@ -332,8 +351,8 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
     const restoreWorkspaceChatSnapshotForScene = useCallback((
         targetSceneID: string | null | undefined,
         sessionID?: string | null,
-    ): boolean => {
-        const snapshot = readWorkspaceChatSnapshot(targetSceneID, sessionID);
+    ): Promise<boolean> => (async () => {
+        const snapshot = await readWorkspaceChatSnapshot(targetSceneID, sessionID);
         if (!snapshot) return false;
 
         messageSceneIDRef.current = snapshot.sceneID;
@@ -342,7 +361,7 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
         setProcessingStatus({main: "", subTasks: []});
         processingEventRef.current = null;
         return true;
-    }, []);
+    })(), []);
 
     // In AI-focused layout (advancedMode === false), the copilot stays as a
     // right-anchored rail over the full scene and starts wider than the
@@ -595,6 +614,7 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
     };
 
     const handleAgentMessage = (event: any) => {
+        const content = typeof event?.data?.message === "string" ? event.data.message : "";
         markMessagesForCurrentScene();
         if (!acpClientRef.current?.isSuppressingSessionUpdates) {
             setCopilotState(AI_COPILOT_STATE.PROCESSING);
@@ -606,11 +626,13 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
                 lastMsg &&
                 lastMsg.type === "agent" &&
                 processingEventRef.current === "agentMessage" &&
-                !event.data.replayStartNewMessage
+                !event?.data?.replayStartNewMessage
             ) {
-                return [...prev.slice(0, -1), {...lastMsg, content: lastMsg.content + event.data.message}];
+                if (!content) return prev;
+                return [...prev.slice(0, -1), {...lastMsg, content: lastMsg.content + content}];
             }
 
+            if (!content.trim()) return prev;
             processingEventRef.current = "agentMessage";
 
             const sessionId = sessionSeqCounterRef.current.sessionId || acpClientRef.current?.getSessionId() || null;
@@ -621,7 +643,7 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
                 {
                     id: msgId,
                     type: "agent",
-                    content: event.data.message,
+                    content,
                     timestamp: Date.now(),
                 },
             ];
@@ -735,6 +757,9 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
         const index = typeof event?.data?.index === "number" ? event.data.index + 1 : undefined;
         const total = typeof event?.data?.total === "number" ? event.data.total : undefined;
         const prefix = index && total ? `${index}/${total}` : "step";
+        if (isPlayground && mode === "chat" && line && isOpenAIStreamWorkflowLine(line)) {
+            setProcessingStatus(prev => ({...prev, main: line}));
+        }
         appendProcessMessage(line ? `- ${prefix}: \`${line}\`` : "- Tool progress updated", "workflow");
     };
 
@@ -1044,7 +1069,7 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
                 await handleResetThread();
                 if (sceneLoadGeneration.current === generation) {
                     if (shouldStartIdleWorkspace && !pendingDashboardPromptRef.current?.autoSubmit) {
-                        restoreWorkspaceChatSnapshotForScene(sceneID);
+                        await restoreWorkspaceChatSnapshotForScene(sceneID);
                     }
                     postPendingEntryGreeting();
                 }
@@ -1494,6 +1519,11 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
     }, [prompt]);
 
     const selectedObjectsToDisplay = selectedObjects.filter(obj => !attachedObjects.find(o => o.uuid === obj.uuid));
+    const visibleAiMessages = aiMessages.filter(message => shouldRenderChatMessage(message, isWorkspaceMode));
+    const visibleProcessingMain = processingStatus.main.trim();
+    const visibleProcessingSubTasks = processingStatus.subTasks
+        .map(task => task.trim())
+        .filter(Boolean);
     const showContent = (connectionState === ConnectionState.CONNECTED && !isLoadingSession) || insufficientCredits;
     return (
         <ResizableWrapper
@@ -1675,14 +1705,14 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
 
                 {showContent && (
                     <AiMessages ref={messagesRef}>
-                        {aiMessages?.map(message => {
+                        {visibleAiMessages.map(message => {
                             // Check if this interactive result is currently pending
                             const isPending =
                                 message.type === "interactive" &&
                                 message.interactiveResult &&
                                 acpClientRef.current?.checkPendingInteractiveResult(message.interactiveResult.id);
 
-                            const isLatestMessage = aiMessages.length > 0 && aiMessages[aiMessages.length - 1]?.id === message.id;
+                            const isLatestMessage = visibleAiMessages.length > 0 && visibleAiMessages[visibleAiMessages.length - 1]?.id === message.id;
                             const openProcessDetails =
                                 message.type === "thought" &&
                                 copilotState === AI_COPILOT_STATE.PROCESSING &&
@@ -1781,8 +1811,13 @@ export const AiCopilot = ({isOpen, setIsOpen, pinnedCodeEditorWidth, onResize, o
                     !insufficientCredits &&
                     copilotState === AI_COPILOT_STATE.PROCESSING && (
                         <ProcessingStatusContainer>
-                            {processingStatus.main && <ProcessingMainText>{processingStatus.main}</ProcessingMainText>}
-                            {processingStatus.subTasks.map((task, index) => (
+                            {isPlayground && mode === "chat" && (
+                                <PlaygroundProcessingBanner data-testid="copilot-playground-processing-banner">
+                                    COPILOT IS RUNNING IN THE BROWSER. DON&apos;T SWITCH TABS IN THE COPILOT WINDOW.
+                                </PlaygroundProcessingBanner>
+                            )}
+                            {visibleProcessingMain && <ProcessingMainText>{visibleProcessingMain}</ProcessingMainText>}
+                            {visibleProcessingSubTasks.map((task, index) => (
                                 <ProcessingSubText key={index}>{task}</ProcessingSubText>
                             ))}
                         </ProcessingStatusContainer>

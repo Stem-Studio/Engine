@@ -160,8 +160,8 @@ proxy that fronts the BYOK keys.
 - The Go AI server (`server/cmd/ai-server`) is what the editor's
   `network/adapters/remote-go` calls. It accepts BYOK keys from env or
   the dashboard's BYOK panel and proxies to Anthropic / OpenAI / Meshy /
-  ElevenLabs / Anything World. **It is not a hosted service** — it runs
-  on the user's machine.
+  Tripo / Rodin / ElevenLabs / Anything World. **It is not a hosted
+  service** — it runs on the user's machine.
 - Inline `exec` and the script-tool import pipeline
   (`editor-oss/src/agent/script-tool/`) work without any AI provider.
 - The dashboard exposes "Import stemscript folder" which stages a folder

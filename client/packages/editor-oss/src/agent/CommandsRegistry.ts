@@ -812,6 +812,12 @@ export class CommandsRegistry {
                     description: "Parent object name or UUID to attach the model",
                     required: false,
                 },
+                {
+                    name: "provider",
+                    type: "string",
+                    description: "Generation provider: meshy, tripo, or rodin (defaults to meshy)",
+                    required: false,
+                },
             ],
             handler: async params => this.objectHandlers.handleGenerate3DModel(params),
         });

@@ -19,7 +19,7 @@ function createHarness() {
     };
     const app = {
         camera,
-        editor: {scene},
+        editor: {scene, sceneName: "Untitled"},
         environmentManager: {
             updateEnvironmentSettings: vi.fn(async () => {}),
         },
@@ -129,6 +129,20 @@ describe("SettingsHandlers normalization", () => {
         expect(scene.userData.game.isGame).toBe(true);
         expect(scene.userData.game.lives).toBe(5);
         expect(result.data.isGame).toBe(true);
+    });
+
+    it("updates project title, notifies scene-name listeners, and supports project readback", () => {
+        const {handlers, app} = createHarness();
+
+        const result = handlers.handleSetProjectTitle({title: "Crystal Dash"});
+        const readback = handlers.handleGetSceneSetting({category: "project"});
+
+        expect(result.status).toBe("success");
+        expect(app.editor.sceneName).toBe("Crystal Dash");
+        expect(app.call).toHaveBeenCalledWith("sceneNameUpdated");
+        expect(app.call).toHaveBeenCalledWith("objectChanged", app.editor, app.editor.scene);
+        expect(readback.status).toBe("success");
+        expect(readback.data).toEqual({title: "Crystal Dash"});
     });
 
     it("does not turn rendering-only settings into a game", async () => {

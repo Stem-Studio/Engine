@@ -29,6 +29,7 @@ import {isStripeCreditsPurchasingEnabled} from "@stem/editor-oss/utils/featureFl
 import {PRODUCT_ANALYTICS_EVENTS, trackProductEvent} from "@stem/editor-oss/utils/productAnalytics";
 import {openEditorRoute} from "../../../../../v2/pages/editorHandoff";
 import {generateProjectLink} from "../../../../../v2/pages/links";
+import {prepareCopilotChatKeyHandoff} from "../../../../../copilot";
 import {
     prepareBlankCopilotWorkspaceEntry,
     prepareCreateFromPromptCopilotEntry,
@@ -256,6 +257,7 @@ export const CreateDashboardView = ({projects, view = "create"}: Props) => {
             writePendingProjectAdvancedModePreference(wantsAdvanced);
 
             if (trimmedPrompt) {
+                await prepareCopilotChatKeyHandoff();
                 prepareCreateFromPromptCopilotEntry({prompt: trimmedPrompt, placeholderThumbnail});
             } else {
                 prepareBlankCopilotWorkspaceEntry();
@@ -373,6 +375,7 @@ export const CreateDashboardView = ({projects, view = "create"}: Props) => {
                 sourceScene,
                 prompt: pendingPrompt,
             });
+            await prepareCopilotChatKeyHandoff();
             clearPickerPrompt();
             setShowBaseGamePicker(false);
             setPendingPrompt(null);

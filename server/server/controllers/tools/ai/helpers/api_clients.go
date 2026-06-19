@@ -56,6 +56,12 @@ type MeshyClient struct {
 	baseURL string
 }
 
+// RodinClient defines the client for the Hyper3D Rodin API
+type RodinClient struct {
+	apiKey  string
+	baseURL string
+}
+
 // Scenario response type
 type ScenarioJobResponse struct {
 	Status   string   `json:"status"`
@@ -100,6 +106,40 @@ type MeshyTaskResponse struct {
 	} `json:"task_error"`
 }
 
+// Rodin response types. Rodin's task lifecycle uses three calls — create
+// (`POST /rodin`), poll (`POST /status`), and fetch (`POST /download`) — and
+// the poll/fetch steps key off different identifiers (subscription key vs task
+// uuid), so the wrapper threads both through a composite task id.
+
+// RodinSubmitResponse is the response from POST /rodin (task creation).
+type RodinSubmitResponse struct {
+	UUID string `json:"uuid"`
+	Jobs struct {
+		UUIDs           []string `json:"uuids"`
+		SubscriptionKey string   `json:"subscription_key"`
+	} `json:"jobs"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// RodinStatusResponse is the response from POST /status.
+type RodinStatusResponse struct {
+	Jobs []struct {
+		UUID   string `json:"uuid"`
+		Status string `json:"status"`
+	} `json:"jobs"`
+	Error string `json:"error,omitempty"`
+}
+
+// RodinDownloadResponse is the response from POST /download.
+type RodinDownloadResponse struct {
+	List []struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	} `json:"list"`
+	Error string `json:"error,omitempty"`
+}
+
 // API endpoints
 const (
 	// ScenarioAPIBaseURL is the base URL for Scenario API
@@ -108,6 +148,9 @@ const (
 	Tripo3dAPIBaseURL string = "https://api.tripo3d.ai/v2/openapi"
 	// MeshyAPIBaseURL is the base URL for Meshy API
 	MeshyAPIBaseURL string = "https://api.meshy.ai/openapi/v2"
+	// RodinAPIBaseURL is the base URL for the Hyper3D Rodin API. Overridable at
+	// runtime with the RODIN_API_BASE_URL env var (see NewRodinClientWithKey).
+	RodinAPIBaseURL string = "https://hyperhuman.deemos.com/api/v2"
 )
 
 // APIClient defines a common interface for all API clients
@@ -298,4 +341,50 @@ func (c *MeshyClient) FetchTask(taskId string) (*UnifiedTaskResponse, error) {
 // WaitForTask polls for task completion
 func (c *MeshyClient) WaitForTask(taskId string, interval time.Duration, timeout time.Duration) (*UnifiedTaskResponse, error) {
 	return MeshyWaitForTask(c, taskId, interval, timeout)
+}
+
+// NewRodinClient creates a new client for the Rodin API using the env var.
+func NewRodinClient() (*RodinClient, error) {
+	return NewRodinClientWithKey("")
+}
+
+// NewRodinClientWithKey creates a Rodin client honoring BYOK precedence:
+// env var wins, falls back to the per-request `byokKey` (e.g. forwarded from
+// `X-BYOK-Key`), then to the session store populated by ConfigureKeys. The base
+// URL can be overridden with RODIN_API_BASE_URL for self-hosted or staging
+// endpoints.
+func NewRodinClientWithKey(byokKey string) (*RodinClient, error) {
+	apiKey, _ := byok.LookupKey("rodin", []string{"RODIN_API_KEY", "HYPER3D_API_KEY"}, byokKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("Rodin API key not set")
+	}
+	baseURL := RodinAPIBaseURL
+	if override := os.Getenv("RODIN_API_BASE_URL"); override != "" {
+		baseURL = override
+	}
+	return &RodinClient{
+		apiKey:  apiKey,
+		baseURL: baseURL,
+	}, nil
+}
+
+// GetBaseURL returns the base URL for Rodin API
+func (c *RodinClient) GetBaseURL() string {
+	return c.baseURL
+}
+
+// GetAuthHeader returns the auth header for Rodin API
+func (c *RodinClient) GetAuthHeader() string {
+	return fmt.Sprintf("Bearer %s", c.apiKey)
+}
+
+// MakeRequest sends a JSON API request to Rodin
+func (c *RodinClient) MakeRequest(method, endpoint string, payload interface{}) (*http.Response, error) {
+	return RodinMakeRequest(c, method, endpoint, payload)
+}
+
+// FetchTask fetches the status of a task from Rodin, resolving the GLB output
+// URL once the task is complete.
+func (c *RodinClient) FetchTask(taskId string) (*UnifiedTaskResponse, error) {
+	return RodinFetchTask(c, taskId)
 }

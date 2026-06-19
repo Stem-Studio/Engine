@@ -17,11 +17,26 @@ import {
 } from "../../editor/assets/v2/materials/materialUtils";
 import {IMaterialSettingsTextures} from "../../editor/assets/v2/RightPanel/sections/MaterialRenderingSection/types";
 import EngineRuntime from "../../EngineRuntime";
+import {uploadModelFromUrl} from "../../model/uploadModelFromUrl";
 import {GENERATOR_TYPES} from "../../utils/ModelGeneratorProvider";
 import TagUtil from "../../utils/TagUtil";
 import {SupportedCommands} from "../CommandsRegistry";
 import {CommandResult} from "../types/ACPTypes";
 import {getObjectBaseMetaData, serializeObjectForAI} from "../utils/serialization";
+
+/** Map an agent-supplied provider string to a generator, defaulting to Meshy. */
+function resolveGenerator(provider?: string): GENERATOR_TYPES {
+    switch ((provider ?? "").trim().toLowerCase()) {
+        case "tripo":
+            return GENERATOR_TYPES.TRIPO;
+        case "rodin":
+            return GENERATOR_TYPES.RODIN;
+        case "meshy":
+            return GENERATOR_TYPES.MESHY;
+        default:
+            return GENERATOR_TYPES.MESHY;
+    }
+}
 
 type BaseObjectData = {
     uuid: string;
@@ -1194,28 +1209,58 @@ export class ObjectHandlers {
     async handleGenerate3DModel({
         prompt,
         name,
+        position,
+        provider,
     }: {
         prompt: string;
         name?: string;
         position?: {x: number; y: number; z: number};
         parent?: string;
+        provider?: string;
     }): Promise<CommandResult> {
         const sceneId = this.engine.editor?.sceneID;
         if (!sceneId) {
             return {status: "failed", message: "No scene is currently open.", data: null};
         }
-        const {jobId} = await this.aiWorldController.modelGeneratorProvider!.submitGenerationJob({
-            generator: GENERATOR_TYPES.MESHY,
-            sceneId,
-            name: name || prompt,
-            prompt,
-        });
 
-        return {
-            status: "success",
-            message: `Generation job started (jobId: ${jobId}). The model will be added to the scene automatically when ready — no further action needed.`,
-            data: {jobId},
-        };
+        // This OSS build has no server-side generation jobs, so generate
+        // synchronously: create the provider task, poll to completion, fetch
+        // the GLB URL, import it, and place it in the scene.
+        const generator = resolveGenerator(provider);
+        const modelName = name || prompt;
+
+        try {
+            const res = await this.aiWorldController.generate3dObject({
+                generationType: "text_to_model",
+                prompt,
+                generator,
+            });
+            if (!res?.model) {
+                return {status: "failed", message: "Model generation returned no model URL.", data: null};
+            }
+
+            const uploaded = await uploadModelFromUrl({url: res.model, name: modelName});
+            const point = position ? new THREE.Vector3(position.x, position.y, position.z) : undefined;
+            const placed = this.aiWorldController.addObjectToScene(
+                uploaded.object,
+                false,
+                undefined,
+                undefined,
+                point,
+            );
+
+            return {
+                status: "success",
+                message: `Generated and placed "${modelName}" with ${generator}.`,
+                data: {assetId: uploaded.assetId, uuid: placed.uuid},
+            };
+        } catch (error) {
+            return {
+                status: "failed",
+                message: `Failed to generate 3D model: ${error instanceof Error ? error.message : String(error)}`,
+                data: null,
+            };
+        }
     }
 
     handleGetPlayer(): CommandResult {

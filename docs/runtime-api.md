@@ -261,7 +261,7 @@ Parameters include:
   fileToken?: string;
   quality?: string;
   modelVersion?: string;
-  generator?: "meshy" | "tripo";
+  generator?: "meshy" | "tripo" | "rodin";
   targetPolygonCount?: number;
   autoRig?: boolean;
   refine?: boolean;
@@ -269,6 +269,10 @@ Parameters include:
   onTaskCreated?: (taskId: string) => void;
 }
 ```
+
+`generator` selects the provider. `meshy` and `tripo` support image input and
+rigging; `rodin` (Hyper3D) is text-to-3D only in this build (no refine/rig).
+Each requires the matching BYOK key — see `docs/byok.md`.
 
 The call returns `{taskId, modelUrl, thumbnailUrl}`. In the public playground, the user must configure the relevant provider key before generation can complete.
 
