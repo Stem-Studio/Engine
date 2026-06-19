@@ -59,7 +59,6 @@ export const Create = ({
     onMenuClose,
     setIsOpen,
     position,
-    sceneID,
     objectToReplace,
     replaceObject,
     onGenerationStart,
@@ -203,27 +202,10 @@ export const Create = ({
             imageToken = uploadRes.image_token;
         }
 
-        // For Meshy/Tripo: submit a background job and return immediately.
-        // The playground has no Go server to run jobs, so Meshy falls through
-        // to the polling flow below and is imported browser-direct.
-        if (!isPlaygroundMode() && (generator === GENERATOR_TYPES.MESHY || generator === GENERATOR_TYPES.TRIPO)) {
-            const {jobId} = await aiWorldController.modelGeneratorProvider!.submitGenerationJob({
-                generator,
-                sceneId: sceneID || app.editor?.sceneID || "",
-                name: name || prompt,
-                prompt,
-                negative_prompt: "",
-                doRefine: refine,
-                doRig: autoRig,
-                target_polycount: 3000,
-                type: imageFile ? "image_to_model" : "text_to_model",
-                file_token: imageToken,
-                quality,
-                model_version: modelVersion,
-            });
-            return {jobId};
-        }
-
+        // This OSS build has no server-side generation jobs (see
+        // handle_jobs_oss.go), so every provider — desktop and playground —
+        // runs the synchronous polling flow below and imports the resulting
+        // GLB URL directly. The provider task endpoints return a `task_id`.
         const res = await aiWorldController.generate3dObject(
             {
                 generationType: imageFile ? "image_to_model" : "text_to_model",
@@ -274,11 +256,10 @@ export const Create = ({
             };
         }
 
-        // Playground Meshy: the polling flow above produced a GLB URL. There
-        // is no Go server, so import it browser-direct (uploadModelFromUrl
-        // fetches the CDN URL itself in playground mode) and hand back a
-        // ready-to-place object.
-        if (isPlaygroundMode() && res.model) {
+        // The polling flow produced a GLB URL. Import it and hand back a
+        // ready-to-place object. uploadModelFromUrl fetches the provider CDN
+        // directly in this OSS build (no asset-download proxy ships here).
+        if (res.model) {
             const uploaded = await uploadModelFromUrl({
                 url: res.model,
                 name: name || prompt || "Generated Model",
@@ -375,13 +356,6 @@ export const Create = ({
             if (generateStep || generator === GENERATOR_TYPES.ERTH) {
                 setLoadingDescription(generateStep?.description || "Generating model...");
                 const objData = await generateAndUploadModel(currentPrompt, uuid, modelName, tags);
-
-                // For Meshy/Tripo: job was submitted; close dialog and let monitor handle completion
-                if ("jobId" in objData) {
-                    showToast({type: "success", title: "Generation started! The model will appear in your scene when ready."});
-                    handleClose();
-                    return;
-                }
 
                 // Add the generated object to the scene. Both the Erth
                 // composition and the playground browser-direct Meshy import

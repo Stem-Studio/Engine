@@ -97,7 +97,7 @@ export const AiKeysModal = ({onClose}: {onClose: () => void}) => {
     const [selection, setSelection] = useState(getCopilotModelSelectionSync);
 
     const refreshChatKeys = useCallback(async () => {
-        const keys = await resolveCopilotChatKeys();
+        const keys = await resolveCopilotChatKeys({consumeHandoff: false});
         setChatKeys(keys);
         setSelection(getCopilotModelSelectionSync());
     }, []);

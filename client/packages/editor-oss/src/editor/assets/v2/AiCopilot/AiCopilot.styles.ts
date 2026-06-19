@@ -195,6 +195,19 @@ export const LoadingWrapper = styled.div`
     }
 `;
 
+export const PlaygroundProcessingBanner = styled.div`
+    margin: 10px 0 0;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid #ff4d4f;
+    background: #b00020;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.25;
+    text-transform: uppercase;
+`;
+
 export const CloseBtn = styled.img`
     cursor: pointer;
     width: 26px;

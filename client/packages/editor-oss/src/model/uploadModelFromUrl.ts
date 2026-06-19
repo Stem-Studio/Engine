@@ -16,6 +16,7 @@ import Converter from "../utils/Converter";
 import {ModelUtils} from "../utils/ModelUtils";
 import {backendUrlFromPath} from "../utils/UrlUtils";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
+import {IS_OSS} from "../mode/buildMode";
 
 export type UploadModelFromUrlParams = {
     /** URL of the model to upload (e.g., from Meshy/Tripo CDN) */
@@ -59,12 +60,13 @@ export const uploadModelFromUrl = async (params: UploadModelFromUrlParams): Prom
 
     // 1. Fetch the model bytes.
     //
-    // Normally we go through the Go server's `/api/Proxy/Download` to dodge
-    // CORS on external CDNs. The playground has no Go server, so we fetch the
-    // provider CDN URL directly — this relies on that CDN sending permissive
-    // CORS headers (Meshy's asset CDN is the expected source there).
+    // The integrated build proxies external CDN downloads through the Go
+    // server's `/api/Proxy/Download` to dodge CORS. This OSS build ships no
+    // such proxy (the desktop ai-server only fronts provider APIs), so both
+    // playground and desktop fetch the provider CDN URL directly — relying on
+    // that CDN sending permissive CORS headers (Meshy/Tripo/Rodin CDNs).
     let blob: Blob;
-    if (isPlaygroundMode()) {
+    if (isPlaygroundMode() || IS_OSS) {
         const direct = await fetch(url, {signal: abortSignal});
         if (!direct.ok) {
             throw new Error(`Failed to fetch model: ${direct.statusText}`);

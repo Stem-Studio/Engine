@@ -50,7 +50,7 @@ import {GenerateImageRequest} from "@stem/editor-oss/types/imageGenerator";
 import {getAIBackend} from "@stem/editor-oss/ai";
 import Ajax from "@stem/editor-oss/utils/Ajax";
 import ImageGeneratorProvider from "@stem/editor-oss/utils/ImageGeneratorProvider";
-import ModelGeneratorProvider, {GENERATOR_TYPES} from "@stem/editor-oss/utils/ModelGeneratorProvider";
+import ModelGeneratorProvider, {GENERATOR_TYPES, getGeneratorCapability} from "@stem/editor-oss/utils/ModelGeneratorProvider";
 import {ModelUtils} from "@stem/editor-oss/utils/ModelUtils";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 
@@ -551,9 +551,12 @@ class AIWorldController {
                 const rendered_image = res.thumbnail;
                 const composition = res.composition;
                 const intermediateImage = res.intermediateImage;
-                // Include rigging metadata if auto-rig was requested
-                // Use riggingFailed flag to determine if rigging actually succeeded
-                const riggingMetadata: RiggingMetadata | undefined = autoRig
+                // Include rigging metadata only when auto-rig was requested AND
+                // the provider has a proven rigging path (Meshy/Tripo). Rodin
+                // exposes no rigging yet, so it never reports a rigged model.
+                // Use riggingFailed flag to determine if rigging actually succeeded.
+                const providerSupportsRig = generator ? getGeneratorCapability(generator).supportsAutoRig : false;
+                const riggingMetadata: RiggingMetadata | undefined = autoRig && providerSupportsRig
                     ? {
                           isRigged: !res.riggingFailed,
                           riggedWith: res.riggingFailed ? undefined : generator,

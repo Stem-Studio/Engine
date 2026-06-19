@@ -3,6 +3,7 @@ import {toast} from "toastywave";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {getAIBackend} from "../ai";
 import {MeshyDirectClient} from "../ai/MeshyDirectClient";
+import {RodinDirectClient} from "../ai/RodinDirectClient";
 import Ajax from "./Ajax";
 import {backendUrlFromPath} from "./UrlUtils";
 import global from "../global";
@@ -29,7 +30,75 @@ const quadAnimations = ["preset:quad_catrun", "preset:quad_catwalk"];
 export enum GENERATOR_TYPES {
     MESHY = "meshy",
     TRIPO = "tripo",
+    RODIN = "rodin",
     ERTH = "erth",
+}
+
+/**
+ * Per-provider capability metadata. Drives UI control visibility (auto-rig,
+ * refine, model version) and playground availability instead of scattering
+ * `generator === ...` checks across the Create flow.
+ */
+export type ModelGeneratorCapability = {
+    /** Human-readable label shown in the provider picker. */
+    label: string;
+    /** BYOK provider key, or null for providers with no external key (Erth). */
+    byokProvider: "meshy" | "tripo" | "rodin" | null;
+    supportsTextToModel: boolean;
+    supportsImageToModel: boolean;
+    supportsRefine: boolean;
+    supportsAutoRig: boolean;
+    /**
+     * Whether the provider can run entirely browser-direct in the public
+     * playground (no Go server). Meshy and Rodin expose permissive-enough
+     * APIs; Tripo and Erth require the server.
+     */
+    supportsBrowserDirectPlayground: boolean;
+};
+
+export const MODEL_GENERATOR_CAPABILITIES: Record<GENERATOR_TYPES, ModelGeneratorCapability> = {
+    [GENERATOR_TYPES.MESHY]: {
+        label: "meshy",
+        byokProvider: "meshy",
+        supportsTextToModel: true,
+        supportsImageToModel: true,
+        supportsRefine: true,
+        supportsAutoRig: true,
+        supportsBrowserDirectPlayground: true,
+    },
+    [GENERATOR_TYPES.TRIPO]: {
+        label: "tripo",
+        byokProvider: "tripo",
+        supportsTextToModel: true,
+        supportsImageToModel: true,
+        supportsRefine: false,
+        supportsAutoRig: true,
+        supportsBrowserDirectPlayground: false,
+    },
+    [GENERATOR_TYPES.RODIN]: {
+        label: "Rodin (Hyper3D)",
+        byokProvider: "rodin",
+        supportsTextToModel: true,
+        // Image-to-3D deferred until the Rodin upload contract is confirmed.
+        supportsImageToModel: false,
+        supportsRefine: false,
+        supportsAutoRig: false,
+        supportsBrowserDirectPlayground: true,
+    },
+    [GENERATOR_TYPES.ERTH]: {
+        label: "Erth (experimental)",
+        byokProvider: null,
+        supportsTextToModel: true,
+        supportsImageToModel: false,
+        supportsRefine: false,
+        supportsAutoRig: false,
+        supportsBrowserDirectPlayground: false,
+    },
+};
+
+/** Capability lookup with a safe Meshy fallback for unknown values. */
+export function getGeneratorCapability(generator: GENERATOR_TYPES): ModelGeneratorCapability {
+    return MODEL_GENERATOR_CAPABILITIES[generator] ?? MODEL_GENERATOR_CAPABILITIES[GENERATOR_TYPES.MESHY];
 }
 
 type GenerateModelRequest = {
@@ -142,6 +211,14 @@ class ModelGeneratorProvider {
                 };
                 endpoint = "/api/AI/ObjectGeneration/Meshy/Generate";
                 break;
+            case GENERATOR_TYPES.RODIN:
+                // Rodin only takes a text prompt in this first pass; quality
+                // defaults are applied server-side (the Rodin quality vocabulary
+                // differs from Meshy/Tripo, so we don't forward the editor's
+                // texture-quality value here).
+                payload = {prompt};
+                endpoint = "/api/AI/ObjectGeneration/Rodin/Generate";
+                break;
             case GENERATOR_TYPES.ERTH:
                 payload = {prompt: prompt, style: "low-poly"};
                 endpoint = "/api/AI/ObjectGeneration/Erth/Generate";
@@ -161,10 +238,13 @@ class ModelGeneratorProvider {
                 endpoint = "/api/AI/ObjectGeneration/Tripo/Generate";
         }
 
-        // Playground has no Go server: Meshy generation goes browser-direct.
+        // Playground has no Go server: Meshy and Rodin generation go
+        // browser-direct against the provider API with the user's BYOK key.
         let resData: {job_id?: string; task_id?: string} | undefined;
         if (isPlaygroundMode() && currentGenerator === GENERATOR_TYPES.MESHY) {
             resData = await MeshyDirectClient.generate(payload as Record<string, unknown>);
+        } else if (isPlaygroundMode() && currentGenerator === GENERATOR_TYPES.RODIN) {
+            resData = await RodinDirectClient.generate(payload as Record<string, unknown>);
         } else {
             const res = await Ajax.post({
                 url: backendUrlFromPath(endpoint),
@@ -291,9 +371,10 @@ class ModelGeneratorProvider {
     ): Promise<TaskResponse> {
         // Rigging operations take longer - use 30 second polling and 10 minute timeout
         const isRiggingTask = generator === "meshy_rig" || generator === "tripo_rig";
-        const isMeshyTask = generator === GENERATOR_TYPES.MESHY;
-        const pollInterval = isRiggingTask ? 30000 : isMeshyTask ? 5000 : 3000;
-        const maxTimeout = isRiggingTask || isMeshyTask ? 10 * 60 * 1000 : 5 * 60 * 1000;
+        // Meshy and Rodin generations run long; poll slower and allow more time.
+        const isSlowGenTask = generator === GENERATOR_TYPES.MESHY || generator === GENERATOR_TYPES.RODIN;
+        const pollInterval = isRiggingTask ? 30000 : isSlowGenTask ? 5000 : 3000;
+        const maxTimeout = isRiggingTask || isSlowGenTask ? 10 * 60 * 1000 : 5 * 60 * 1000;
         const startTime = Date.now();
 
         while (true) {
@@ -321,13 +402,16 @@ class ModelGeneratorProvider {
     }
 
     async getTaskStatus(taskId: string, generator: string) {
-        // Playground: poll Meshy directly (the only generator available there).
+        // Playground: poll the provider directly (no Go server to proxy).
         if (isPlaygroundMode()) {
             if (generator === GENERATOR_TYPES.MESHY) {
                 return await MeshyDirectClient.fetchTask(taskId);
             }
             if (generator === "meshy_rig") {
                 return await MeshyDirectClient.fetchRigTask(taskId);
+            }
+            if (generator === GENERATOR_TYPES.RODIN) {
+                return await RodinDirectClient.fetchTask(taskId);
             }
         }
         const res = await getAIBackend().request<any>(

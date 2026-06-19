@@ -12,7 +12,7 @@ vi.mock("../../../../copilot", () => ({
     COPILOT_KEYS_CHANGED_EVENT: "stem:playground-copilot-keys-changed",
     COPILOT_MODEL_OPTIONS: {
         anthropic: [{label: "Claude Sonnet 4.5", model: "claude-sonnet-4-5-20250929"}],
-        openai: [{label: "GPT-5.2 Codex", model: "gpt-5.2-codex"}],
+        openai: [{label: "GPT-5.5 High", model: "gpt-5.5"}],
         gemini: [{label: "Gemini 2.5 Flash", model: "gemini-2.5-flash"}],
     },
     getCopilotModelSelectionSync: mocks.getCopilotModelSelectionSync,
@@ -48,15 +48,15 @@ describe("AiKeysModal", () => {
     it("lets the user choose a copilot model when multiple chat keys are configured", async () => {
         mocks.getCopilotModelSelectionSync.mockReturnValue(null);
         mocks.resolveCopilotChatKeys.mockResolvedValue([
-            {provider: "openai", apiKey: "sk-openai", model: "gpt-5.2-codex"},
+            {provider: "openai", apiKey: "sk-openai", model: "gpt-5.5"},
             {provider: "gemini", apiKey: "sk-gemini", model: "gemini-2.5-flash"},
         ]);
 
         render(<AiKeysModal onClose={vi.fn()} />);
 
         const select = await screen.findByLabelText("Copilot model");
-        fireEvent.change(select, {target: {value: "openai:gpt-5.2-codex"}});
+        fireEvent.change(select, {target: {value: "openai:gpt-5.5"}});
 
-        expect(mocks.setCopilotModelSelection).toHaveBeenCalledWith("openai", "gpt-5.2-codex");
+        expect(mocks.setCopilotModelSelection).toHaveBeenCalledWith("openai", "gpt-5.5");
     });
 });

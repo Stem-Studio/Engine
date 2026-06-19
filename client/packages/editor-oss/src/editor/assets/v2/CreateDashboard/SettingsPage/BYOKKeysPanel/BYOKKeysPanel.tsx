@@ -2,7 +2,11 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 
 import type {AICapabilities, AIProvider} from "../../../../../../ai";
 import {getAIBackend, getBYOKKeyStore} from "../../../../../../ai";
-import {refreshCopilotKeysMarker} from "../../../../../../copilot";
+import {
+    clearCopilotChatKeyHandoff,
+    prepareCopilotChatKeyHandoff,
+    refreshCopilotKeysMarker,
+} from "../../../../../../copilot";
 
 import {
     ActionsRow,
@@ -28,6 +32,7 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
     anythingworld: "Anything World",
     gemini: "Gemini",
     tripo: "Tripo (3D models)",
+    rodin: "Rodin / Hyper3D (3D models)",
 };
 
 const ORDERED_PROVIDERS: AIProvider[] = [
@@ -38,6 +43,7 @@ const ORDERED_PROVIDERS: AIProvider[] = [
     "anythingworld",
     "gemini",
     "tripo",
+    "rodin",
 ];
 
 type BYOKKeysPanelProps = {
@@ -133,11 +139,18 @@ export const BYOKKeysPanel = ({statusMode = "backend"}: BYOKKeysPanelProps) => {
         }
     }, [byokStore, passphraseAction, passphraseInput, refresh]);
 
-    const handlePassphraseLock = useCallback(() => {
+    const handlePassphraseLock = useCallback(async () => {
         if (!byokStore) return;
-        byokStore.lock();
-        setUnlocked(false);
-        setPassphraseAction("unlock");
+        setPassphraseBusy(true);
+        try {
+            await prepareCopilotChatKeyHandoff();
+            byokStore.lock();
+            setUnlocked(false);
+            setPassphraseAction("unlock");
+            void refreshCopilotKeysMarker();
+        } finally {
+            setPassphraseBusy(false);
+        }
     }, [byokStore]);
 
     const handlePassphraseReset = useCallback(async () => {
@@ -150,6 +163,7 @@ export const BYOKKeysPanel = ({statusMode = "backend"}: BYOKKeysPanelProps) => {
         try {
             await Promise.all(ORDERED_PROVIDERS.map(provider => backend.clearProviderKey(provider)));
             await byokStore.resetPassphrase();
+            clearCopilotChatKeyHandoff();
             setHasPassphrase(false);
             setUnlocked(true);
             setPassphraseAction("none");
@@ -171,6 +185,7 @@ export const BYOKKeysPanel = ({statusMode = "backend"}: BYOKKeysPanelProps) => {
             try {
                 const ok = await backend.setProviderKey(provider, key);
                 if (!ok) throw new Error("Server rejected the key");
+                clearCopilotChatKeyHandoff();
                 setDrafts(prev => ({...prev, [provider]: ""}));
                 await refresh();
                 // Keep the playground copilot's sync key-presence marker fresh.
@@ -190,6 +205,7 @@ export const BYOKKeysPanel = ({statusMode = "backend"}: BYOKKeysPanelProps) => {
             setError(undefined);
             try {
                 await backend.clearProviderKey(provider);
+                clearCopilotChatKeyHandoff();
                 await refresh();
                 void refreshCopilotKeysMarker();
             } catch (err) {
@@ -278,7 +294,12 @@ export const BYOKKeysPanel = ({statusMode = "backend"}: BYOKKeysPanelProps) => {
                                         Change passphrase
                                     </SmallButton>
                                     {unlocked ? (
-                                        <SmallButton type="button" $variant="ghost" onClick={handlePassphraseLock}>
+                                        <SmallButton
+                                            type="button"
+                                            $variant="ghost"
+                                            disabled={passphraseBusy}
+                                            onClick={() => void handlePassphraseLock()}
+                                        >
                                             Lock
                                         </SmallButton>
                                     ) : null}

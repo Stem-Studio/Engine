@@ -11,6 +11,7 @@ StemStudio OSS does not ship with managed API keys. AI features work only when y
 | Gemini | Alternate copilot | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/) |
 | Meshy | Text-to-3D model generation | `MESHY_API_KEY` | [meshy.ai](https://meshy.ai/) |
 | Tripo | Alternate text-to-3D + character rigging | `TRIPO_API_KEY` | [tripo3d.ai](https://www.tripo3d.ai/) |
+| Rodin (Hyper3D) | Alternate text-to-3D model generation | `RODIN_API_KEY` (or `HYPER3D_API_KEY`) | [hyper3d.ai](https://hyper3d.ai/) |
 | ElevenLabs | Text-to-speech, NPC voices | `ELEVEN_LABS_API_KEY` | [elevenlabs.io](https://elevenlabs.io/) |
 | AnythingWorld | Rigged character + animation library | `ANYTHING_WORLD_API_KEY` | [anything.world](https://anything.world/) |
 
@@ -88,6 +89,13 @@ categories, and links to existing Stem Script game folders.
 **Client side:** BYOK keys live in IndexedDB under the database `stemstudio-byok`. By default they are stored as plaintext (the threat model is "a developer's own laptop"; if a process on your machine can read your IndexedDB, it can also read your `.env` and your shell history).
 
 **Optional passphrase encryption.** From Settings → AI Provider Keys → "Set passphrase…" you can wrap the key store in `EncryptedBYOKKeyStore` (AES-GCM 256 + PBKDF2-SHA-256, 210k iterations). Once a passphrase is set, the editor prompts for it after every reload before it can read or write keys. The passphrase itself is never persisted. See `client/packages/editor-oss/src/ai/EncryptedBYOKKeyStore.ts`.
+
+In playground mode, prompt-created projects perform a hard dashboard-to-editor
+navigation. If a chat key is selected while the store is unlocked, the selected
+key is staged in `sessionStorage` for that navigation and consumed into memory
+on the editor page so the initial generation can start without a second
+passphrase prompt. The staged value expires quickly and is cleared when keys are
+cleared or reset.
 
 If you want even stronger storage, the `BYOKKeyStore` interface (`client/packages/editor-oss/src/ai/BYOKKeyStore.ts`) accepts any alternative implementation — you can plug in OS-keychain access via a desktop wrapper (Tauri, Electron) without changing the rest of the editor.
 

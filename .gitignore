@@ -1,10 +1,12 @@
 bin/
 **/.memsearch/
 lib/
+docs/marketing
 node-compile-cache/
 **/node-compile-cache/
 pyvenv.cfg
 server/build/
+server/ai-server
 web/build
 firebase-json-dev.json
 server/.env.b*

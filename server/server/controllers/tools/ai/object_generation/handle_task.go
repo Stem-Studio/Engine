@@ -63,6 +63,13 @@ func TaskStatusHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		responseBody, err = client.FetchTask(taskId)
+	case "rodin":
+		client, clientErr := helpers.NewRodinClient()
+		if clientErr != nil {
+			http.Error(w, fmt.Sprintf("Failed to initialize client: %s", clientErr.Error()), http.StatusInternalServerError)
+			return
+		}
+		responseBody, err = client.FetchTask(taskId)
 	case "erth":
 		task, exists := getErthTask(taskId)
 		if !exists {

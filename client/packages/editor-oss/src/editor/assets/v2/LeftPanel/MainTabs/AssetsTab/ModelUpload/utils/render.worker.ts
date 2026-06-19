@@ -73,7 +73,8 @@ function dispatchEventPolyfill(target: any, event: any) {
 }
 
 // Polyfills for Worker Environment
-self.window = self;
+const workerGlobal = self as unknown as any;
+workerGlobal.window = self;
 
 function createFakeElement(ownerDocument?: any) {
     const el = {
@@ -101,23 +102,25 @@ self.removeEventListener = (type: string, listener: any, options?: any) => {
     removeListener(self, type, listener);
 };
 
-self.document = {} as unknown as any;
-self.document.createElement = (_name: string) => {
+const fakeDocument = {} as any;
+workerGlobal.document = fakeDocument;
+
+fakeDocument.createElement = (_name: string) => {
     void _name;
-    return createFakeElement(self.document);
+    return createFakeElement(fakeDocument);
 };
-self.document.createElementNS = (_ns: string, _name: string) => {
+fakeDocument.createElementNS = (_ns: string, _name: string) => {
     void _ns;
     void _name;
-    return createFakeElement(self.document);
+    return createFakeElement(fakeDocument);
 };
-self.document.querySelector = () => null;
-self.document.querySelectorAll = () => [];
-self.document.body = createFakeElement(self.document);
-self.document.head = createFakeElement(self.document);
-self.document.documentElement = createFakeElement(self.document);
-self.document.addEventListener = (type: string, listener: any) => addListener(self.document, type, listener);
-self.document.removeEventListener = (type: string, listener: any) => removeListener(self.document, type, listener);
+fakeDocument.querySelector = () => null;
+fakeDocument.querySelectorAll = () => [];
+fakeDocument.body = createFakeElement(fakeDocument);
+fakeDocument.head = createFakeElement(fakeDocument);
+fakeDocument.documentElement = createFakeElement(fakeDocument);
+fakeDocument.addEventListener = (type: string, listener: any) => addListener(fakeDocument, type, listener);
+fakeDocument.removeEventListener = (type: string, listener: any) => removeListener(fakeDocument, type, listener);
 
 let renderer: any;
 let rendererReady = false;

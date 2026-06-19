@@ -15,7 +15,7 @@ export interface Generate3dModelParams {
     /** Model version to use for generation. */
     modelVersion?: string;
     /** Which generation provider to use. */
-    generator?: "meshy" | "tripo";
+    generator?: "meshy" | "tripo" | "rodin";
     /** Target polygon count for the generated model. */
     targetPolygonCount?: number;
     /** Whether to automatically rig the model for animation. */

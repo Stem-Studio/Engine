@@ -58,6 +58,10 @@ const CSPMetaTag = ({customPolicies = {}}) => {
             // Asset uploads / downloads
             "https://s3.us-east-1.amazonaws.com",
             "https://*.s3.us-east-1.amazonaws.com",
+            // Hyper3D Rodin API + output CDN (browser-direct generation in playground)
+            "https://hyperhuman.deemos.com",
+            "https://hyperhuman.deemos.com/*",
+            "https://*.deemos.com",
             // Local asset uploads
             "http://minio:9000",
             proxyApi,
@@ -178,6 +182,10 @@ export const customCSPPolicies = {
         "https://tripo-data.cdn.bcebos.com",
         "https://assets.meshy.ai",
         "https://assets.meshy.ai/*",
+        // Hyper3D Rodin API + output CDN (browser-direct generation in playground)
+        "https://hyperhuman.deemos.com",
+        "https://hyperhuman.deemos.com/*",
+        "https://*.deemos.com",
         "https://www.gstatic.com",
         // Firebase Auth's bundled reCAPTCHA verifier challenge requests
         "https://www.google.com",

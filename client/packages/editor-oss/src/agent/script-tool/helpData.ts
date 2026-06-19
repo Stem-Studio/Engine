@@ -939,6 +939,7 @@ const COMMAND_PARAMS: Record<string, CommandHelp> = {
             {name: "name", type: "string", required: false, description: "Name for the generated model"},
             {name: "position", type: "x,y,z", required: false, description: "Position to place the model"},
             {name: "parent", type: "string", required: false, description: "Parent object name or UUID"},
+            {name: "provider", type: "string", required: false, description: "'meshy', 'tripo', or 'rodin' (default meshy)"},
         ],
         examples: ['generate model prompt="a medieval wooden barrel" name="Barrel" position=3,0,0'],
     },

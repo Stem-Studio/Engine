@@ -8,6 +8,8 @@ const mapGenerator = (generator: string | undefined): GENERATOR_TYPES | undefine
             return GENERATOR_TYPES.MESHY;
         case "tripo":
             return GENERATOR_TYPES.TRIPO;
+        case "rodin":
+            return GENERATOR_TYPES.RODIN;
         default:
             return undefined;
     }

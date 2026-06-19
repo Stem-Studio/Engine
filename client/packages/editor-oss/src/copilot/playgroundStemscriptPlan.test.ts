@@ -53,6 +53,94 @@ describe("playgroundStemscriptPlan", () => {
         expect(plan.stemscript).toContain('position={"x":0,"y":0,"z":0}');
     });
 
+    it("parses phased plans with reusable artifacts", () => {
+        const plan = parseProviderStemscriptPlan(JSON.stringify({
+            reply: "Built a phased racing loop.",
+            designBrief: {
+                coreLoop: "Drive through checkpoints and finish laps.",
+                controlsCamera: "Third-person kart camera.",
+                goalsFailState: "Win at three laps, reset on missed checkpoint.",
+                challengeCurve: "Add tighter turns each lap.",
+                feedbackProgression: "HUD lap counter and boost VFX.",
+                reusePlan: "Use trigger built-ins and one custom controller.",
+                implementationStrategy: "Create track, then controller, then polish.",
+            },
+            assetRequests: [
+                {
+                    type: "model",
+                    name: "Kart",
+                    prompt: "small stylized kart",
+                    essential: false,
+                    reason: "would improve visuals",
+                },
+            ],
+            artifacts: [
+                {
+                    type: "behavior",
+                    name: "RaceHudController",
+                    description: "Tracks HUD state.",
+                    code: "this.update = function(dt) {}",
+                },
+            ],
+            phases: [
+                {
+                    name: "Inspect",
+                    inspectionCommands: [
+                        {command: "list_lambdas", params: {filter: "race"}},
+                    ],
+                },
+                {
+                    title: "Mechanics",
+                    goal: "Create checkpoints and attach controller.",
+                    artifacts: [
+                        {
+                            kind: "import",
+                            name: "race-math",
+                            content: "export const clamp = (v, min, max) => Math.max(min, Math.min(max, v));",
+                            format: "js",
+                            contentType: "text/javascript",
+                        },
+                    ],
+                    commands: [
+                        {command: "create_group", params: {name: "Checkpoints"}},
+                    ],
+                },
+            ],
+        }));
+
+        expect(plan.artifacts).toEqual([
+            expect.objectContaining({
+                type: "behavior",
+                name: "RaceHudController",
+                code: "this.update = function(dt) {}",
+            }),
+        ]);
+        expect(plan.designBrief?.coreLoop).toContain("checkpoints");
+        expect(plan.assetRequests[0]).toEqual(expect.objectContaining({
+            type: "model",
+            name: "Kart",
+            essential: false,
+        }));
+        expect(plan.phases).toHaveLength(2);
+        expect(plan.phases[0]).toEqual(expect.objectContaining({
+            name: "Inspect",
+            inspectionStemscript: "list_lambdas filter=race",
+            stemscript: "",
+        }));
+        expect(plan.phases[1]).toEqual(expect.objectContaining({
+            name: "Mechanics",
+            goal: "Create checkpoints and attach controller.",
+            stemscript: "create_group name=Checkpoints",
+        }));
+        expect(plan.phases[1]?.artifacts[0]).toEqual(expect.objectContaining({
+            type: "scriptImport",
+            name: "race-math",
+            content: "export const clamp = (v, min, max) => Math.max(min, Math.min(max, v));",
+            format: "js",
+            contentType: "text/javascript",
+        }));
+    });
+
     it("validates primitive-only live scripts", () => {
         const result = validateGeneratedStemscript([
             "# Generated in browser",
