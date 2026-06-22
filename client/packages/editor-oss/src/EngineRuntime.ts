@@ -1785,6 +1785,31 @@ export class EngineRuntime extends AppRuntime implements RuntimeContext {
             );
             SceneLoadProfiler.end("gameCreate");
 
+            // Pre-compile all material render pipelines now that the scene is
+            // fully built (behaviors have created their geometry/materials in
+            // init), but before the animation loop starts. Without this, each
+            // unique material compiles its WGSL/GLSL pipeline lazily the first
+            // frame it is rendered — so a game with many distinct materials
+            // (e.g. tinyskies' globe villages / landmarks / monuments) streams
+            // shader compiles in as the camera reveals new objects mid-play,
+            // producing periodic main-thread stalls ("jank every few frames").
+            // compileAsync folds that one-time cost into the play-start load
+            // (covered by the loading overlay) instead. Best-effort; a compile
+            // failure must never block entering play.
+            try {
+                const r = this.renderer as unknown as {
+                    hasInitialized?: () => boolean;
+                    compileAsync?: (scene: unknown, camera: unknown) => Promise<unknown>;
+                };
+                if (this.scene && this.camera && r?.compileAsync && (r.hasInitialized?.() ?? true)) {
+                    SceneLoadProfiler.begin("precompileShaders");
+                    await r.compileAsync(this.scene, this.camera);
+                    SceneLoadProfiler.end("precompileShaders");
+                }
+            } catch (e) {
+                console.warn("[Application] shader pre-compile failed (non-fatal):", e);
+            }
+
             this.playerEvent?.init();
             this.clock.start();
             this.playerEvent?.start();
@@ -1811,6 +1836,28 @@ export class EngineRuntime extends AppRuntime implements RuntimeContext {
             if (this.editor?.showHUD) {
                 this.playerMask.hide();
             }
+
+            // Hold the loading overlay until the first frame has actually
+            // rendered. That first render is where any not-yet-warmed material
+            // pipelines compile (a multi-second block on material-heavy scenes).
+            // Completing loading before it dismisses the overlay onto a frozen
+            // game canvas; waiting two animation frames keeps the loading screen
+            // up across the compile so the hand-off reads as "loading" rather
+            // than a hang. Bounded so a stalled rAF can never wedge startup.
+            await new Promise<void>(resolve => {
+                if (typeof requestAnimationFrame !== "function") {
+                    resolve();
+                    return;
+                }
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    resolve();
+                };
+                requestAnimationFrame(() => requestAnimationFrame(finish));
+                setTimeout(finish, 8000);
+            });
 
             this.loadingManager.completeLoading();
             console.debug("🎮 [Application] ✅ startPlayer completed successfully");

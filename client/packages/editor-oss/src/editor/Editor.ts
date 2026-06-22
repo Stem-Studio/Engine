@@ -380,10 +380,24 @@ class Editor {
         this.sceneConfig.useInstancing = v;
     }
     get useShadows() {
+        // Authoritative source is the scene's serialized game settings — that's
+        // what `render settings useShadows=…` writes (SettingsHandlers) and what
+        // persists across save/reload. `sceneConfig.useShadows` is only an
+        // in-memory mirror that defaults to true and was never synced from the
+        // scene, so reading it directly made the renderer ignore a scene that
+        // explicitly disabled shadows (forcing shadow-variant shader compiles +
+        // a shadow pass over the whole scene). Prefer the scene value; fall back
+        // to the mirror/default when a scene never set it.
+        const game = this.scene?.userData?.game;
+        if (game && typeof game.useShadows === "boolean") return game.useShadows;
         return this.sceneConfig.useShadows;
     }
     set useShadows(v) {
         this.sceneConfig.useShadows = v;
+        if (this.scene) {
+            if (!this.scene.userData.game) this.scene.userData.game = {};
+            this.scene.userData.game.useShadows = v;
+        }
     }
     get rendering() {
         return this.sceneConfig.rendering;
@@ -2088,11 +2102,35 @@ class Editor {
      * import dispatches another scripted import inside its own callback.
      */
     async runInScriptImportContext<T>(fn: () => Promise<T>): Promise<T> {
+        // Suspend the editor render loop for the duration of a bulk script
+        // import. Otherwise the loop re-renders the whole scene after every
+        // command; as a heavy game adds hundreds of meshes + unique TSL
+        // materials, each interleaved frame gets slower (and TSL reshades
+        // churn), degrading the import to ~O(n^2) — a multi-minute hang that
+        // can OOM the renderer. The loop keeps ticking but `animate()`
+        // early-returns while paused, so per-command cost stays flat. We
+        // resume (one render of the final scene) on the outermost exit.
+        // Uses the existing `pauseRender`/`resumeRender` events (RenderEvent).
+        const outermost = this._scriptImportDepth === 0;
         this._scriptImportDepth += 1;
+        if (outermost) {
+            try {
+                global.app?.call("pauseRender");
+            } catch {
+                /* render pause is best-effort */
+            }
+        }
         try {
             return await fn();
         } finally {
             this._scriptImportDepth -= 1;
+            if (this._scriptImportDepth === 0) {
+                try {
+                    global.app?.call("resumeRender");
+                } catch {
+                    /* render resume is best-effort */
+                }
+            }
         }
     }
 

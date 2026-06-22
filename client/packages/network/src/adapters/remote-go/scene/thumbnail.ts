@@ -65,6 +65,14 @@ export async function migrateSceneThumbnailIfNeeded(
  * @param thumbnailUrl
  */
 export async function updateSceneThumbnail(sceneId: string, sceneName: string, thumbnailUrl: string): Promise<void> {
+    // OSS has no `/api/Scene/Edit` endpoint (scene metadata lives in the local
+    // ProjectStore, not a hosted Mongo). Posting here 404s and spams the
+    // console on every `scene thumbnail` command during a stemscript import.
+    // Callers reflect the thumbnail into `editor.sceneConfig.sceneThumbnail`
+    // locally, which persists through the OSS save path. Mirrors the
+    // `setSceneAiPromptMode` OSS guard below.
+    if (IS_OSS) return;
+
     const editResponse = await Ajax.post({
         url: backendUrlFromPath(`/api/Scene/Edit`),
         data: {
