@@ -203,9 +203,21 @@ class RenderEvent extends BaseEvent {
             this.renderer.dispose();
         }
 
-        // Force shadow settings to be re-applied on the new renderer instance.
-        this.prevUseShadows = null;
-        this.prevShadowMapType = -1;
+        // Initialise shadow tracking from the CURRENT scene/editor state and
+        // configure the renderer's shadow map up-front. Previously these were
+        // reset to sentinels (null / -1), so the first animate() frame after
+        // every (re)create saw a spurious "shadow changed" and marked EVERY
+        // material needsUpdate — a full pipeline recompile on the first play
+        // frame for no reason. Seeding the real values lets materials compile
+        // once (already shadow-correct); only a genuine later shadow toggle
+        // takes the recompile path.
+        this.prevUseShadows = this.app.editor?.useShadows ?? false;
+        this.prevShadowMapType = this.app.editor?.rendering?.shadowMapType ?? -1;
+        if (renderer?.shadowMap) {
+            renderer.shadowMap.enabled = this.prevUseShadows;
+            if (this.prevShadowMapType >= 0) renderer.shadowMap.type = this.prevShadowMapType;
+            renderer.shadowMap.needsUpdate = true;
+        }
 
         this.renderer = new EffectRenderer();
         this.app.effectRenderer = this.renderer;

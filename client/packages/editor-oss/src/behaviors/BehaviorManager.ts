@@ -98,7 +98,6 @@ class BehaviorManager {
     game: GameManager;
 
     // Track which behaviors have already shown a given warning (to avoid spamming console)
-    private static _fixedUpdateWarnings = new Set<string>();
     private static _deprecationWarnings = new Set<string>();
 
     // Dependency injection instead of singleton - industry standard approach
@@ -571,17 +570,18 @@ class BehaviorManager {
                 const behavior = behaviors[i]!;
                 if (behavior.isPaused) continue;
 
+                // Fast-path: most behaviors only implement update() — not the
+                // optional fixedUpdate() hook. Skip them silently. (Previously
+                // this warned once per behavior, but with the fixed-rate
+                // scheduler on a behavior-heavy scene that is dozens of
+                // console.warn-with-stack-trace calls at play start, which —
+                // especially with DevTools open — measurably stalls startup for
+                // no benefit. Not implementing an optional hook is normal.)
+                if (typeof behavior.fixedUpdate !== "function") continue;
+
                 try {
                     behaviorProfiler.beginMeasure(behavior.uuid);
-                    if (typeof behavior.fixedUpdate === "function") {
-                        behavior.fixedUpdate(fixedDeltaTime);
-                    } else if (!BehaviorManager._fixedUpdateWarnings.has(behavior.id)) {
-                        console.warn(
-                            `[Behavior] ${this.formatBehaviorId(behavior.id)} does not implement fixedUpdate(). ` +
-                                `Skipping in FIXED_UPDATE stage. For fixed-rate logic, implement fixedUpdate().`,
-                        );
-                        BehaviorManager._fixedUpdateWarnings.add(behavior.id);
-                    }
+                    behavior.fixedUpdate(fixedDeltaTime);
                     behaviorProfiler.endMeasure(behavior.uuid, behavior.id);
                 } catch (error) {
                     console.error(

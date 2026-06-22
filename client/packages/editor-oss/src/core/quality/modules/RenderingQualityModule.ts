@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import global from '../../../global';
 // EffectRenderer already lives in editor-oss after the render/ migration.
 import EffectRenderer from '../../../render/EffectRenderer';
 import type { IQualityModule, IQualitySettings, IPerformanceMetrics } from '../interfaces/IQualityManager';
@@ -198,10 +199,17 @@ export class RenderingQualityModule implements IQualityModule {
     private applyShadowSettings(settings: IQualitySettings['rendering']): void {
         if (!this.runtimeRenderer?.shadowMap) return;
 
+        // Respect the scene's explicit shadow choice. Adaptive quality may
+        // DOWNGRADE (turn shadows off on weak devices) but must never ENABLE
+        // shadows on a scene that disabled them — otherwise a no-shadow game
+        // (e.g. tinyskies, useShadows=false) pays shadow-variant shader
+        // compiles + a full shadow pass over the whole scene every frame.
+        const sceneAllowsShadows = global.app?.editor?.useShadows !== false;
+
         // Enable/disable shadows
-        this.runtimeRenderer.shadowMap.enabled = settings.shadowQuality !== 'none';
-        
-        if (settings.shadowQuality === 'none') return;
+        this.runtimeRenderer.shadowMap.enabled = sceneAllowsShadows && settings.shadowQuality !== 'none';
+
+        if (!this.runtimeRenderer.shadowMap.enabled) return;
         
         // Set shadow map type based on quality
         switch (settings.shadowQuality) {

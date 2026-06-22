@@ -8,5 +8,11 @@ import {IS_OSS} from "../mode/buildMode";
 export const isStripeCreditsPurchasingEnabled = (): boolean =>
     !IS_OSS && import.meta.env.REACT_APP_STRIPE_CREDITS_ENABLED === "true";
 
+// Shared `@import` scripts (reusable JS/YAML helpers consumed by behaviors and
+// lambdas) are a first-class OSS authoring feature — the stemscript-folder
+// import pipeline, docs/import-packs.md, and several shipped example games
+// (2048, drop7, island-defense, machine-arena, sky-bomber, tinyskies) all rely
+// on `import script` + `@import "name" as X;`. They are always on in OSS; the
+// integrated build keeps the env-flag opt-in.
 export const isScriptsEnabled = (): boolean =>
-    import.meta.env.REACT_APP_SCRIPTS_ENABLED === "true";
+    IS_OSS || import.meta.env.REACT_APP_SCRIPTS_ENABLED === "true";

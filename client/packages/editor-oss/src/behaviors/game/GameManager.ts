@@ -856,48 +856,67 @@ class GameManager {
 
         //sort priorities (low to high - lower values execute first)
         const sortedPriorities = Array.from(behaviorsByPriority.keys()).sort((a, b) => a - b);
+
+        // Progressive init: a behavior's init()/onAdded builds its geometry
+        // synchronously. Running every behavior in a priority group back-to-back
+        // (a single `Promise.all` over the whole group) blocks the main thread
+        // for the entire world build — the loading overlay can't paint and the
+        // UI appears frozen for seconds before play starts. Instead we process
+        // behaviors in small batches and yield to the event loop between them,
+        // so the browser paints the loading overlay and progress advances
+        // smoothly. Priority ordering (low→high) and intra-group ordering are
+        // preserved; same-priority behaviors are order-independent by design.
+        const INIT_BATCH = 2;
+        const totalBehaviors = allBehaviors.length || 1;
+        let processedBehaviors = 0;
+        const yieldToPaint = () =>
+            new Promise<void>(resolve => {
+                if (typeof requestAnimationFrame === "function") {
+                    requestAnimationFrame(() => resolve());
+                } else {
+                    setTimeout(() => resolve(), 0);
+                }
+            });
+
         //TODO: in onAdded behaviors may add other behaviors, so we need to set BM.isProcessing = true here
         for (let i = 0; i < sortedPriorities.length; i++) {
             const priority = sortedPriorities[i];
             const behaviors = behaviorsByPriority.get(priority!)!;
             console.log(`[GameManager] Processing ${behaviors.length} behaviors with priority ${priority}`);
 
-            const promises: Promise<void>[] = [];
-            for (const behavior of behaviors) {
-                const target = behaviorToTargetMap.get(behavior.uuid)!;
-                console.debug(
-                    `[GameManager] About to add behavior "${behavior.id}" (uuid: ${behavior.uuid}) to object "${target.name}" (uuid: ${target.uuid})`,
-                );
-
-                const options = {
-                    uuid: behavior.uuid,
-                    attributes: behavior.attributesData,
-                    throttleConfig: behavior.throttleConfig,
-                };
-                const promise = this.addBehaviorToObject(target, behavior.id, options)
-                    .then(() => {
-                        console.debug(
-                            `[GameManager] ✓ Successfully added behavior "${behavior.id}" to object "${target.name}"`,
-                        );
-                    })
-                    .catch(error => {
-                        console.error(
-                            `[GameManager] ✗ Failed to add behavior ${behavior.id} to object ${target.name}:`,
-                            error,
-                        );
-                    });
-                promises.push(promise);
+            for (let b = 0; b < behaviors.length; b += INIT_BATCH) {
+                const batch = behaviors.slice(b, b + INIT_BATCH);
+                const promises = batch.map(behavior => {
+                    const target = behaviorToTargetMap.get(behavior.uuid)!;
+                    const options = {
+                        uuid: behavior.uuid,
+                        attributes: behavior.attributesData,
+                        throttleConfig: behavior.throttleConfig,
+                    };
+                    return this.addBehaviorToObject(target, behavior.id, options)
+                        .then(() => {
+                            console.debug(
+                                `[GameManager] ✓ Successfully added behavior "${behavior.id}" to object "${target.name}"`,
+                            );
+                        })
+                        .catch(error => {
+                            console.error(
+                                `[GameManager] ✗ Failed to add behavior ${behavior.id} to object ${target.name}:`,
+                                error,
+                            );
+                        });
+                });
+                try {
+                    await Promise.all(promises);
+                } catch (error) {
+                    console.error(`[GameManager] Failed to initialize a behavior batch (ignoring):`, error);
+                }
+                processedBehaviors += batch.length;
+                this.engine.loadingManager?.updateStageProgress(Math.min(1, processedBehaviors / totalBehaviors));
+                // Let the browser paint the loading overlay between batches.
+                await yieldToPaint();
             }
-            try {
-                await Promise.all(promises);
-                console.log(`[GameManager] All behaviors with priority ${priority} initialized successfully`);
-            } catch (error) {
-                console.error(
-                    `[GameManager] Failed to initialize some behaviors with priority ${priority} (ignoring):`,
-                    error,
-                );
-            }
-            this.engine.loadingManager?.updateStageProgress((i + 1) / sortedPriorities.length);
+            console.log(`[GameManager] All behaviors with priority ${priority} initialized`);
         }
 
         console.log("[GameManager] Finished createBehaviorsFromScene");
