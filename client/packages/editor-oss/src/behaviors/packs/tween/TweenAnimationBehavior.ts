@@ -12,10 +12,10 @@ enum ANIMATION_TYPES {
 
 interface TweenAnimationConfig {
     startPosition: THREE.Vector3;
-    startRotation: THREE.Euler;
+    startQuaternion: THREE.Quaternion;
     startScale: THREE.Vector3;
     endPosition: THREE.Vector3;
-    endRotation: THREE.Euler;
+    endQuaternion: THREE.Quaternion;
     endScale: THREE.Vector3;
     hasPositionAnimation: boolean;
     hasRotationAnimation: boolean;
@@ -85,6 +85,7 @@ class TweenAnimationBehavior extends BehaviorBase {
         // Store initial values
         const startPosition = target.position.clone();
         const startRotation = target.rotation.clone();
+        const startQuaternion = target.quaternion.clone();
         const startScale = target.scale.clone();
 
         const moveX = this.attributes.move?.x ?? 0;
@@ -106,7 +107,7 @@ class TweenAnimationBehavior extends BehaviorBase {
 
         // Calculate target values
         let endPosition = startPosition.clone();
-        let endRotation = startRotation.clone();
+        let endQuaternion = startQuaternion.clone();
         let endScale = startScale.clone();
 
         if (hasPositionAnimation) {
@@ -119,11 +120,13 @@ class TweenAnimationBehavior extends BehaviorBase {
         }
 
         if (hasRotationAnimation) {
+            const endRotation = startRotation.clone();
             endRotation.set(
                 startRotation.x + THREE.MathUtils.degToRad(rotateX),
                 startRotation.y + THREE.MathUtils.degToRad(rotateY),
                 startRotation.z + THREE.MathUtils.degToRad(rotateZ),
             );
+            endQuaternion = new THREE.Quaternion().setFromEuler(endRotation);
         }
 
         if (hasScaleAnimation) {
@@ -136,10 +139,10 @@ class TweenAnimationBehavior extends BehaviorBase {
 
         return {
             startPosition,
-            startRotation,
+            startQuaternion,
             startScale,
             endPosition,
-            endRotation,
+            endQuaternion,
             endScale,
             hasPositionAnimation,
             hasRotationAnimation,
@@ -156,10 +159,7 @@ class TweenAnimationBehavior extends BehaviorBase {
             }
 
             if (config.hasRotationAnimation) {
-                // TODO: avoid gimbal roll issues
-                target.rotation.x = THREE.MathUtils.lerp(config.startRotation.x, config.endRotation.x, progress);
-                target.rotation.y = THREE.MathUtils.lerp(config.startRotation.y, config.endRotation.y, progress);
-                target.rotation.z = THREE.MathUtils.lerp(config.startRotation.z, config.endRotation.z, progress);
+                target.quaternion.copy(config.startQuaternion).slerp(config.endQuaternion, progress);
             }
 
             if (config.hasScaleAnimation) {

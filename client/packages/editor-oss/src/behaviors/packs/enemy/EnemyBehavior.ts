@@ -16,6 +16,11 @@ enum EnemyState {
     ATTACKING = "attacking",
 }
 
+const DEFAULT_ENGAGE_DISTANCE = 10;
+const DEFAULT_STRIKE_DISTANCE = 3;
+const DEFAULT_IDLE_RETREAT_DELAY = 5;
+const DEFAULT_RETREAT_DURATION = 2;
+
 class EnemyBehavior extends BehaviorBase {
     // attributes
     startOnTrigger: boolean = false;
@@ -88,6 +93,27 @@ class EnemyBehavior extends BehaviorBase {
                 position: this.target.position.clone(),
             });
         }
+    }
+
+    private getNumberAttribute(key: string, fallback: number): number {
+        const value = Number(this.attributes[key]);
+        return Number.isFinite(value) && value >= 0 ? value : fallback;
+    }
+
+    private getEngageDistance(): number {
+        return this.getNumberAttribute("engageDistance", DEFAULT_ENGAGE_DISTANCE);
+    }
+
+    private getStrikeDistance(): number {
+        return this.getNumberAttribute("strikeDistance", DEFAULT_STRIKE_DISTANCE);
+    }
+
+    private getIdleRetreatDelay(): number {
+        return this.getNumberAttribute("idleRetreatDelay", DEFAULT_IDLE_RETREAT_DELAY);
+    }
+
+    private getRetreatDuration(): number {
+        return this.getNumberAttribute("retreatDuration", DEFAULT_RETREAT_DURATION);
     }
 
     private initEnemies() {
@@ -268,41 +294,45 @@ class EnemyBehavior extends BehaviorBase {
 
             this.stateTimer += this.deltaTime;
 
-            //FIXME: make distances and timers a part of behavior params
+            const engageDistance = this.getEngageDistance();
+            const strikeDistance = this.getStrikeDistance();
+            const idleRetreatDelay = this.getIdleRetreatDelay();
+            const retreatDuration = this.getRetreatDuration();
+
             switch (this.state) {
                 case EnemyState.STANDING:
                     this.enemyStand();
-                    if (distanceToPlayer < 10) {
+                    if (distanceToPlayer < engageDistance) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
-                    } else if (this.stateTimer > 5) {
+                    } else if (this.stateTimer > idleRetreatDelay) {
                         this.changeState(EnemyState.RETREATING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.APPROACHING:
                     this.enemyApproach();
-                    if (distanceToPlayer < 3) {
+                    if (distanceToPlayer < strikeDistance) {
                         this.changeState(EnemyState.ATTACKING);
                         this.stateTimer = 0;
-                    } else if (distanceToPlayer > 10) {
+                    } else if (distanceToPlayer > engageDistance) {
                         this.changeState(EnemyState.RETREATING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.RETREATING:
                     this.enemyRetreat();
-                    if (distanceToPlayer < 10) {
+                    if (distanceToPlayer < engageDistance) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
-                    } else if (this.stateTimer > 2) {
+                    } else if (this.stateTimer > retreatDuration) {
                         this.changeState(EnemyState.STANDING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.ATTACKING:
                     this.enemyAttack();
-                    if (distanceToPlayer > 3) {
+                    if (distanceToPlayer > strikeDistance) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
                     }

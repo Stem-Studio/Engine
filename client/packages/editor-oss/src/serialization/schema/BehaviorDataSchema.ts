@@ -1,6 +1,7 @@
 import z from 'zod';
 
 import { BehaviorThrottlePriority } from '@stem/editor-oss/behaviors/performance/interfaces/IThrottleStrategy';
+import {BEHAVIOR_DATA_SCHEMA_VERSION} from '@stem/editor-oss/behaviors/BehaviorData';
 
 export const BehaviorThrottleConfigSchema = z.object({
     throttlePriority: z.enum(BehaviorThrottlePriority),
@@ -10,6 +11,7 @@ export const BehaviorThrottleConfigSchema = z.object({
 });
 
 export const BehaviorDataSchema = z.object({
+    schemaVersion: z.number().int().positive().default(BEHAVIOR_DATA_SCHEMA_VERSION),
     id: z.string(),
     uuid: z.string(),
     prefabBehaviorUuid: z.string().optional(),

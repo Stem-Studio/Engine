@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
 class Point2PointJointBehavior extends BehaviorBase {
 
     game: GameManager | null = null;
+    private jointObjectBUuid?: string;
 
     init(game: GameManager) {
         this.game = game;
@@ -30,11 +31,16 @@ class Point2PointJointBehavior extends BehaviorBase {
             objectB.uuid,
             pivotB,
         );
+        this.jointObjectBUuid = objectB.uuid;
     }
 
     onStop(): void {
-        //TODO: we don't support removing individual constraints
-        //  and physics engine will destroy all constraints when stopped
+        if (!this.jointObjectBUuid) {
+            return;
+        }
+
+        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
+        this.jointObjectBUuid = undefined;
     }
 }
 

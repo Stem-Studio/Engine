@@ -42,7 +42,6 @@
                         "looseTime": 0
                     },
                     "objectOptions": {
-                        "TODO": "implement this",
                         "physics": {
                             "enabled": true,
                             "type": "kinematic",

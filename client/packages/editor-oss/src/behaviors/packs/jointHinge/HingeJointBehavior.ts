@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
 class HingeJointBehavior extends BehaviorBase {
 
     game: GameManager | null = null;
+    private jointObjectBUuid?: string;
 
     init(game: GameManager) {
         this.game = game;
@@ -41,11 +42,16 @@ class HingeJointBehavior extends BehaviorBase {
             this.attributes.motorSpeed as number,
             this.attributes.motorTorque as number,
         );
+        this.jointObjectBUuid = objectB.uuid;
     }
 
     onStop(): void {
-        //TODO: we don't support removing individual constraints
-        //  and physics engine will destroy all constraints when stopped
+        if (!this.jointObjectBUuid) {
+            return;
+        }
+
+        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
+        this.jointObjectBUuid = undefined;
     }
 
     getRelativeRotation(meshA: Object3D, meshB: Object3D): Quaternion {

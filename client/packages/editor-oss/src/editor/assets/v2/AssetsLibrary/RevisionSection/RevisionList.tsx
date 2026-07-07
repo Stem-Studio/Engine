@@ -1,11 +1,10 @@
-import {useEffect, useRef, useState} from "react";
+import {useState} from "react";
 
 import {RevisionAction, RevisionItem} from "./RevisionItem";
 import {AssetRevision, getAssetRevisionData} from "@stem/network/api/asset";
 import {resolveAssetRevisionId} from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import {useAuthorizationContext} from "@stem/editor-oss/context";
 import {useAssetResolutionContext} from "@stem/editor-oss/context/AssetResolutionContext";
-import global from "@stem/editor-oss/global";
 import {ElementsUtils} from "@stem/editor-oss/utils/ElementsUtils";
 import {useAsset, useAssetRevisions} from "../../../../asset-management/hooks/assets";
 import {PublishPopup} from "../PublishSection/PublishPopup";
@@ -98,7 +97,6 @@ export const RevisionList = ({
     getLoadActions,
     showDiffOption,
 }: RevisionListProps) => {
-    const app = global.app;
     const [isTextDiffOpen, setIsTextDiffOpen] = useState(false);
     const [oldText, setOldText] = useState("");
     const [newText, setNewText] = useState("");
@@ -117,37 +115,7 @@ export const RevisionList = ({
     });
 
     const {context: assetResolutionContext} = useAssetResolutionContext();
-    const [actualCurrentRevisionId, setActualCurrentRevisionId] = useState(
-        currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext),
-    );
-    const assetResolutionContextRef = useRef(assetResolutionContext);
-    const currentRevisionIdRef = useRef(currentRevisionId);
-
-    useEffect(() => {
-        assetResolutionContextRef.current = assetResolutionContext;
-    }, [assetResolutionContext]);
-
-    useEffect(() => {
-        currentRevisionIdRef.current = currentRevisionId;
-    }, [currentRevisionId]);
-
-    useEffect(() => {
-        setActualCurrentRevisionId(currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext));
-    }, [assetId, assetResolutionContext, currentRevisionId]);
-
-    useEffect(() => {
-        const update = () => {
-            const newRevisionId = resolveAssetRevisionId(assetId, assetResolutionContextRef.current);
-            setActualCurrentRevisionId(newRevisionId);
-        };
-
-        // TODO: We should move away from relying on engine events for our React
-        // UI wherever possible
-        app?.on("currentRevisionUpdated.RevisionsSection", update);
-        return () => {
-            app?.on("currentRevisionUpdated.RevisionsSection", null);
-        };
-    }, []);
+    const actualCurrentRevisionId = currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext);
 
     const handleDiffClick = (event: React.MouseEvent, otherRevisionId: string) => {
         event.stopPropagation();

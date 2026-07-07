@@ -13,9 +13,10 @@ import dragIcon from "../icons/drag.svg";
 import trashIcon from "../icons/trash.svg";
 import {IAttribute} from "../types";
 
-// This is essentially an Enum with autoFill value
-// TODO: probably should be replaced with proper ResourceAttributeType
-const RESOURCE_ATTRIBUTE_TYPE = "resource";
+type ResourceAttributeType = "resource";
+type AttributeTypeOptionKey = BehaviorAttributeType | ResourceAttributeType;
+
+const RESOURCE_ATTRIBUTE_TYPE: ResourceAttributeType = "resource";
 
 const allTypeOptions: Item[] = [
     {key: BehaviorAttributeType.Boolean, value: "Boolean"},
@@ -87,11 +88,11 @@ export const SingleAttribute = ({
         setTitle(attribute.key);
     }, [attribute]);
 
-    const getDisplayType = (attribute: IAttribute) => {
+    const getDisplayType = (attribute: IAttribute): AttributeTypeOptionKey => {
         if (attribute.type === BehaviorAttributeType.Enum && attribute.autoFill) {
             return RESOURCE_ATTRIBUTE_TYPE;
         }
-        return attribute.type;
+        return attribute.type as BehaviorAttributeType;
     };
 
     const deleteAttribute = () => {
