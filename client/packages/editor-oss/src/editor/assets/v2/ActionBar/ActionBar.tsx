@@ -72,11 +72,9 @@ const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set([
   "builder",
   "bim",
 ]);
-const BUILDER_MODE_STORAGE_PREFIX = "stem:builderMode:";
-
 type BuilderMode = "none" | "quick";
 type BuilderModeRequest = BuilderMode | ((current: BuilderMode) => BuilderMode);
-type BuilderModeReason = "url" | "restore" | "primary" | "close";
+type BuilderModeReason = "url" | "primary" | "close" | "scene-loaded";
 type CameraControlsLike = {
   target?: THREE.Vector3;
   center?: THREE.Vector3;
@@ -116,38 +114,6 @@ function getBuilderStudioMode(): "quick" | null {
     return null;
   }
   return "quick";
-}
-
-function getBuilderModeStorageKey(scene?: THREE.Object3D | null) {
-  return `${BUILDER_MODE_STORAGE_PREFIX}${scene?.uuid ?? "default"}`;
-}
-
-function isActiveBuilderMode(value: string | null): value is "quick" {
-  return value === "quick";
-}
-
-function readStoredBuilderMode(
-  scene?: THREE.Object3D | null,
-): "quick" | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = window.localStorage.getItem(getBuilderModeStorageKey(scene));
-    return isActiveBuilderMode(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function persistBuilderMode(
-  scene: THREE.Object3D | null | undefined,
-  mode: BuilderMode,
-) {
-  if (typeof window === "undefined" || mode === "none") return;
-  try {
-    window.localStorage.setItem(getBuilderModeStorageKey(scene), mode);
-  } catch {
-    // Storage can be unavailable in private contexts; builder mode still works without persistence.
-  }
 }
 
 function logBuilderMode(stage: string, details?: Record<string, unknown>) {
@@ -326,7 +292,6 @@ export const ActionBar = ({
 
       builderModeRef.current = next;
       setBuilderMode(next);
-      persistBuilderMode(scene, next);
       logBuilderMode("Builder mode changed", {
         from: current,
         to: next,
@@ -380,27 +345,23 @@ export const ActionBar = ({
 
 
   useEffect(() => {
-    const applyBuilderMode = () => {
-      const scene = app.editor?.scene;
-      if (!scene) return;
-
+    const applyInitialUrlBuilderMode = () => {
       const urlMode = didApplyBuilderModeRef.current
         ? null
         : getBuilderStudioMode();
       if (urlMode) {
         didApplyBuilderModeRef.current = true;
         transitionBuilderMode(urlMode, "url");
-        return;
-      }
-
-      const storedMode = readStoredBuilderMode(scene);
-      if (storedMode) {
-        transitionBuilderMode(storedMode, "restore");
       }
     };
 
-    applyBuilderMode();
-    app.on("sceneLoaded.ActionBarBuilderMode", applyBuilderMode);
+    const closeBuilderModeOnSceneLoad = () => {
+      didApplyBuilderModeRef.current = true;
+      transitionBuilderMode("none", "scene-loaded");
+    };
+
+    applyInitialUrlBuilderMode();
+    app.on("sceneLoaded.ActionBarBuilderMode", closeBuilderModeOnSceneLoad);
     return () => {
       app.on("sceneLoaded.ActionBarBuilderMode", null);
     };

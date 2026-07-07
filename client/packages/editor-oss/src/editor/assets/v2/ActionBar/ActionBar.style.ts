@@ -63,7 +63,7 @@ export const BuildSplitControl = styled.div<{$isSelected?: boolean}>`
     align-items: center;
     height: 32px;
     border-radius: 8px;
-    overflow: auto;
+    overflow: hidden;
     background: ${({$isSelected}) => $isSelected ? "var(--theme-grey-bg-secondary-button)" : "transparent"};
     border: 1px solid ${({$isSelected}) => $isSelected ? "#ffffff20" : "transparent"};
 `;
@@ -79,7 +79,7 @@ export const BuildMenuButton = styled(ActionButton)<{$isOpen?: boolean}>`
     border-radius: 0;
     border: 0;
     border-left: 1px solid #ffffff1a;
-    background: ${({$isOpen}) => $isOpen ? "#0284c7" : "transparent"};
+    background: ${({$isOpen}) => $isOpen ? "#ffffff12" : "transparent"};
 `;
 
 export const InputWrapper = styled.div`
