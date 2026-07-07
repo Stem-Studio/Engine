@@ -107,11 +107,11 @@ When you add a new feature that needs to write data, route it through
   `onEditorAttributesUpdated`, and `onEditorUpdate` fire in the editor
   (e.g. at import/attach time) where `init(game)` is never called. A
   common bug class: a behavior caches `const erth = this.erth` (or
-  `game`) *only* inside `init()`, then dereferences that module-local in
+  `game`) _only_ inside `init()`, then dereferences that module-local in
   an editor hook — yielding `Cannot read properties of undefined (reading
-  'asset')` and silently failing to load textures/assets. Always read
+'asset')` and silently failing to load textures/assets. Always read
   engine handles from `this.erth` / `this.gameObject` directly, or
-  re-derive the locals at the top of *every* lifecycle entry point —
+  re-derive the locals at the top of _every_ lifecycle entry point —
   never assume `init()` already ran. Note `this.gameObject` exposes
   `uuid`/`position`/`rotation`/`scale`/`visible`/`physics`/`_internal.three`
   only — there is **no** `gameObject.game`; in the editor `game` is
@@ -205,17 +205,22 @@ node scripts/playwright/oss-smoke.mjs
 node scripts/playwright/oss-filesystem-roundtrip.mjs
 node scripts/playwright/oss-open-folder-banner.mjs
 node scripts/playwright/oss-import-3dchess.mjs
+node scripts/playwright/oss-builder-mode-smoke.mjs
+node scripts/playwright/oss-builder-tools-ux-smoke.mjs
+node scripts/playwright/oss-plan-cad-smoke.mjs
 ```
 
 The smokes cover the engine round-trip:
+
 - IndexedDB persistence: dashboard → save → reload → play.
 - File System Access mode: pick folder → save → reload → list.
 - Open-folder banner: bootstrap with IDB, swap to filesystem mid-session.
 - Stemscript folder import: 3D chess folder → exec → saved project.
+- Builder Studio: Quick Build, Mesh CAD, and BIM Plan actionbar/tool flows.
 
 If you change anything that those smokes touch (the persistence layer,
 the dashboard shell, the AiCopilot panel mount, the script-tool import
-pipeline) re-run all four. They are fast.
+pipeline, or Builder Studio), re-run the relevant listed smokes. They are fast.
 
 ## Planning convention
 
@@ -243,26 +248,29 @@ Pause and ask before:
 
 ## Doc index
 
-| You're touching... | Read first |
-|---|---|
-| Behaviors / game logic | `behaviors/Behavior.ts`, then `docs/built-in-behaviors.md` |
-| Lambdas / ECS | `lambdas/`, then `docs/lambdas.md` |
-| Import packs / reusable scripts | `editor/scripts/builtinPacks/`, then `docs/import-packs.md` |
-| Runtime / engine API (`this.stem.*`) | `EngineRuntime.ts`, then `docs/runtime-api.md` |
-| GameObject / GameManager API | `object/`, `behaviors/game/GameManager.ts`, then `docs/gameobject-and-game-manager-api.md` |
-| Scheduler / frame loop / quality | `scheduler/`, `core/quality/`, then `docs/scheduler-and-editor-settings.md` |
-| Physics | `physics/`, `behaviors/stem/physics/`, then `docs/gameobject-and-game-manager-api.md` (PhysicsSettings / RigidBodyHandle) |
-| Editor UI / import / camera | `editor/`, `controls/`, `serialization/` (no dedicated doc) |
-| Runtime UI / HUD / UIKit | `behaviors/uikit/`, `behaviors/hud/`, then `docs/uikit-api.md` |
-| Multiplayer | `multiplayer/`, `multiplayer/worker/`, then `docs/multiplayer.md` |
-| AI integration (client) | `copilot/`, `agent/`, `server/server/controllers/tools/ai/` |
-| AI server (Go) | `server/cmd/ai-server/`, `server/server/server.go`, then `docs/architecture.md` |
-| BYOK / provider keys | `docs/byok.md` |
-| Persistence | `persistence/`, then `docs/server-side-storage.md` |
-| Scene serialization | `object/`, `serialization/`, then `docs/architecture.md` |
-| Three.js conventions | `EngineRuntime.ts`, `render/` (no dedicated doc) |
-| Exporting a game | `scripts/`, then `docs/exporting-a-game.md` |
-| Art budgets | `blog/docs/assets/10-art-specs.md` |
+| You're touching...                   | Read first                                                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Behaviors / game logic               | `behaviors/Behavior.ts`, then `docs/built-in-behaviors.md`                                                                |
+| Lambdas / ECS                        | `lambdas/`, then `docs/lambdas.md`                                                                                        |
+| Import packs / reusable scripts      | `editor/scripts/builtinPacks/`, then `docs/import-packs.md`                                                               |
+| Runtime / engine API (`this.stem.*`) | `EngineRuntime.ts`, then `docs/runtime-api.md`                                                                            |
+| GameObject / GameManager API         | `object/`, `behaviors/game/GameManager.ts`, then `docs/gameobject-and-game-manager-api.md`                                |
+| Scheduler / frame loop / quality     | `scheduler/`, `core/quality/`, then `docs/scheduler-and-editor-settings.md`                                               |
+| Physics                              | `physics/`, `behaviors/stem/physics/`, then `docs/gameobject-and-game-manager-api.md` (PhysicsSettings / RigidBodyHandle) |
+| Quick Build / builder stamps         | `editor/assets/v2/QuickBuild/`, then `docs/quick-build.md`                                                                |
+| BIM Plan / Plan CAD                  | `editor/assets/v2/PlanMode/`, then `docs/plan-cad.md`                                                                     |
+| Builder Studio release gate          | `editor/assets/v2/ActionBar/`, `QuickBuild/`, `PlanMode/`, then `docs/builder-studio-release-gate.md`                     |
+| Editor UI / import / camera          | `editor/`, `controls/`, `serialization/` (no dedicated doc)                                                               |
+| Runtime UI / HUD / UIKit             | `behaviors/uikit/`, `behaviors/hud/`, then `docs/uikit-api.md`                                                            |
+| Multiplayer                          | `multiplayer/`, `multiplayer/worker/`, then `docs/multiplayer.md`                                                         |
+| AI integration (client)              | `copilot/`, `agent/`, `server/server/controllers/tools/ai/`                                                               |
+| AI server (Go)                       | `server/cmd/ai-server/`, `server/server/server.go`, then `docs/architecture.md`                                           |
+| BYOK / provider keys                 | `docs/byok.md`                                                                                                            |
+| Persistence                          | `persistence/`, then `docs/server-side-storage.md`                                                                        |
+| Scene serialization                  | `object/`, `serialization/`, then `docs/architecture.md`                                                                  |
+| Three.js conventions                 | `EngineRuntime.ts`, `render/` (no dedicated doc)                                                                          |
+| Exporting a game                     | `scripts/`, then `docs/exporting-a-game.md`                                                                               |
+| Art budgets                          | `blog/docs/assets/10-art-specs.md`                                                                                        |
 
 ## Axis conventions
 
@@ -275,6 +283,7 @@ Pause and ask before:
   and Z flipped, X stays). See `assets/js/animations/poseFit.ts`.
 
 <!-- dgc-policy-v11 -->
+
 # Dual-Graph Context Policy
 
 This project uses a local dual-graph MCP server for efficient context retrieval.
@@ -335,6 +344,7 @@ Live dashboard URL is printed at startup next to "Token usage".
 Whenever you make a decision, identify a task, note a next step, fact, or blocker during a conversation, call `graph_add_memory`.
 
 **To add an entry:**
+
 ```
 graph_add_memory(type="decision|task|next|fact|blocker", content="one sentence max 15 words", tags=["topic"], files=["relevant/file.ts"])
 ```
@@ -342,6 +352,7 @@ graph_add_memory(type="decision|task|next|fact|blocker", content="one sentence m
 **Do NOT write context-store.json directly** — always use `graph_add_memory`. It applies pruning and keeps the store healthy.
 
 **Rules:**
+
 - Only log things worth remembering across sessions (not every minor detail)
 - `content` must be under 15 words
 - `files` lists the files this decision/task relates to (can be empty)
@@ -350,6 +361,7 @@ graph_add_memory(type="decision|task|next|fact|blocker", content="one sentence m
 ## Session End
 
 When the user signals they are done (e.g. "bye", "done", "wrap up", "end session"), proactively update `CONTEXT.md` in the project root with:
+
 - **Current Task**: one sentence on what was being worked on
 - **Key Decisions**: bullet list, max 3 items
 - **Next Steps**: bullet list, max 3 items

@@ -64,13 +64,13 @@ If you don't need multiplayer, this process can be killed without affecting anyt
 
 ## Communication
 
-| From | To | Protocol | Notes |
-|---|---|---|---|
-| Editor | AI server | HTTPS (HTTP in dev) | Bearer-style `X-BYOK-Key` header when no env key is configured |
-| Editor | MP sidecar | WebSocket (Colyseus protocol) | Same protocol as a production deployment |
-| AI server | Anthropic / OpenAI / Meshy / ElevenLabs / AnythingWorld | HTTPS | Direct egress from your machine |
-| Editor | IndexedDB | Browser API | Auto-save and BYOK key storage |
-| Editor | Local folder | File System Access API (Chromium) | Optional, chosen at first-time bootstrap |
+| From      | To                                                      | Protocol                          | Notes                                                          |
+| --------- | ------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------- |
+| Editor    | AI server                                               | HTTPS (HTTP in dev)               | Bearer-style `X-BYOK-Key` header when no env key is configured |
+| Editor    | MP sidecar                                              | WebSocket (Colyseus protocol)     | Same protocol as a production deployment                       |
+| AI server | Anthropic / OpenAI / Meshy / ElevenLabs / AnythingWorld | HTTPS                             | Direct egress from your machine                                |
+| Editor    | IndexedDB                                               | Browser API                       | Auto-save and BYOK key storage                                 |
+| Editor    | Local folder                                            | File System Access API (Chromium) | Optional, chosen at first-time bootstrap                       |
 
 ## Persistence model
 
@@ -80,6 +80,8 @@ On first run, the editor asks how you want to store projects:
 2. **Local folder** (Chromium only) — pick a directory. Projects are saved as `.stemscript` files inside it. Survives browser data clears, git-friendly, no quota.
 
 Your choice is saved in `localStorage` and can be changed from Settings. Switching modes does not migrate existing projects — export them first.
+
+Builder Studio surfaces follow the same persistence boundary. Quick Build stamps are ordinary scene objects. BIM Plan stores its source data in `scene.userData.planCad`; generated BIM geometry is runtime-only and rebuilt from that node dictionary on load, undo, and redo. See `docs/quick-build.md` and `docs/plan-cad.md`.
 
 ## AI capability protocol
 

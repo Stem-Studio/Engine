@@ -107,6 +107,7 @@ typings/
 
 # custom files
 build/*
+client/public/vendor/texture-packs/
 server/stemstudio
 server/stemstudio.exe
 debug.test
