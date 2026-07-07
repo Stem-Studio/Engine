@@ -23,6 +23,9 @@ interface Props {
     // Optional inline tooltip next to the label
     tooltipText?: string;
     tooltipWidth?: string;
+    dataTestId?: string;
+    inputAriaLabel?: string;
+    switchDataTestId?: string;
 }
 
 export const PanelCheckbox = ({
@@ -40,6 +43,9 @@ export const PanelCheckbox = ({
     lockedReason,
     tooltipText,
     tooltipWidth,
+    dataTestId,
+    inputAriaLabel,
+    switchDataTestId,
 }: Props) => {
     if (v2) {
         return (
@@ -48,6 +54,7 @@ export const PanelCheckbox = ({
                 style={{margin: 0}}
                 $height={height}
                 title={(disabled || isLocked) && lockedReason ? lockedReason : undefined}
+                data-testid={dataTestId}
             >
                 {text &&
                     <div className="checkboxLabelWrapper"
@@ -73,6 +80,8 @@ export const PanelCheckbox = ({
                     <StyledSwitch checked={checked}
                         onChange={onChange}
                         disabled={disabled || isLocked}
+                        ariaLabel={inputAriaLabel || text}
+                        dataTestId={switchDataTestId || (dataTestId ? `${dataTestId}-switch` : undefined)}
                     />
                 </div>
             </Wrapper>
@@ -81,6 +90,7 @@ export const PanelCheckbox = ({
         return (
             <Wrapper title={(isLocked || disabled) && lockedReason ? lockedReason : undefined}
                 $height={height}
+                data-testid={dataTestId}
             >
                 <span className="text"
                     style={white ? {color: "white"} : undefined}

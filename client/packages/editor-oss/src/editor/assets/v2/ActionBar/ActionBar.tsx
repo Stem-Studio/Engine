@@ -36,6 +36,7 @@ import {
   BrushIcon,
   ChevronUpIcon,
   CloseIcon,
+  HomeIcon,
   ToolsIcon,
   type ActionBarIconComponent,
 } from "./icons/ActionBarIcons";
@@ -59,11 +60,14 @@ import {
   KeybindingsPanel,
 } from "../BehaviorEditor/KeybindingsPanel";
 import { GameDebugPanel, GameLog } from "../GameDebugPanel/GameDebugPanel";
+import { installPlanCadSceneSync } from "../PlanMode/planCadEditorBridge";
+import { PlanCadToolbar } from "../PlanMode/PlanCadToolbar";
 import { QuickBuildToolbar } from "../QuickBuild/QuickBuildToolbar";
 import { isCADToolsEnabled } from "../../../cad/settings";
 import {
-  DEFAULT_SNAPPING_SETTINGS,
   DEFAULT_UNITS_SETTINGS,
+  getSnappingSettings,
+  getUnitsSettings,
   mergeSnappingSettings,
 } from "../RightPanel/panels/ProjectSettings/constants";
 import { SnappingSettings } from "../RightPanel/panels/ProjectSettings/SnappingSection";
@@ -74,10 +78,20 @@ const MENU_VIEWPORT_MARGIN = 8;
 const MENU_ANCHOR_GAP = 6;
 const COPILOT_MENU_WIDTH = 160;
 const BUILD_MENU_WIDTH = 240;
-const DOCUMENTED_BUILDER_MODE_PARAM_VALUES = new Set(["1", "quick", "cad"]);
-const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set(["true", "build", "builder"]);
+const DOCUMENTED_BUILDER_MODE_PARAM_VALUES = new Set([
+  "1",
+  "quick",
+  "plan",
+  "cad",
+]);
+const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set([
+  "true",
+  "build",
+  "builder",
+  "bim",
+]);
 
-type BuilderMode = "none" | "quick" | "mesh-cad";
+type BuilderMode = "none" | "quick" | "mesh-cad" | "bim-plan";
 type ActiveBuilderMode = Exclude<BuilderMode, "none">;
 type BuilderModeRequest =
   | ActiveBuilderMode
@@ -128,6 +142,7 @@ function getBuilderStudioMode(): ActiveBuilderMode | null {
       !LEGACY_BUILDER_MODE_PARAM_VALUES.has(value))
   )
     return null;
+  if (value === "plan" || value === "bim") return "bim-plan";
   if (value === "cad") return "mesh-cad";
   return "quick";
 }
@@ -200,9 +215,20 @@ const BUILDER_MODE_COPY: Record<
     beta: true,
     Icon: ToolsIcon,
   },
+  "bim-plan": {
+    label: "Plan",
+    description: "Draw walls, rooms, openings, and BIM parts",
+    shortcut: "BIM Plan",
+    beta: true,
+    Icon: HomeIcon,
+  },
 };
 
-const BUILDER_MENU_MODES: ActiveBuilderMode[] = ["quick", "mesh-cad"];
+const BUILDER_MENU_MODES: ActiveBuilderMode[] = [
+  "quick",
+  "mesh-cad",
+  "bim-plan",
+];
 
 interface ActionBarProps {
   errorCount?: number;
@@ -264,16 +290,15 @@ export const ActionBar = ({
   const [showSnapPanel, setShowSnapPanel] = useState(false);
   const [snappingSettings, setSnappingSettings] =
     useState<SnappingSettings | null>(() =>
-      mergeSnappingSettings(
-        app.editor?.scene?.userData?.snapping || DEFAULT_SNAPPING_SETTINGS,
-      ),
+      getSnappingSettings(app.editor?.scene),
     );
   const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(() =>
-    app.editor?.scene?.userData?.units || DEFAULT_UNITS_SETTINGS,
+    getUnitsSettings(app.editor?.scene),
   );
   const snapBtnRef = useRef<HTMLButtonElement>(null);
   const showQuickBuild = builderMode === "quick";
   const showMeshCad = builderMode === "mesh-cad";
+  const showPlanCad = builderMode === "bim-plan";
 
   // Calculate error count from logs
   const errorCount = gameDebugLogsRef.current.filter(
@@ -340,7 +365,8 @@ export const ActionBar = ({
 
       setShowCadModeMenu(false);
       if (
-        next === "mesh-cad" && !isCADToolsEnabled(scene)
+        (next === "mesh-cad" || next === "bim-plan") &&
+        !isCADToolsEnabled(scene)
       ) {
         logBuilderMode("CAD mode blocked", { mode: next, reason });
         return;
@@ -404,6 +430,8 @@ export const ActionBar = ({
     };
   }, [app]);
 
+  useEffect(() => installPlanCadSceneSync(app), [app]);
+
   useEffect(() => {
     const syncCadToolsEnabled = () => {
       const enabled = isCADToolsEnabled(app.editor?.scene);
@@ -411,7 +439,7 @@ export const ActionBar = ({
       if (!enabled) {
         transitionBuilderMode(
           (current) =>
-            current === "mesh-cad" ? "none" : current,
+            current === "mesh-cad" || current === "bim-plan" ? "none" : current,
           "cad-disabled",
         );
       }
@@ -524,9 +552,7 @@ export const ActionBar = ({
     const editor = app.editor;
     if (!editor?.scene) return;
     editor.scene.userData = editor.scene.userData || {};
-    const currentSettings = mergeSnappingSettings(
-      editor.scene.userData.snapping || DEFAULT_SNAPPING_SETTINGS,
-    );
+    const currentSettings = getSnappingSettings(editor.scene);
     const updated: SnappingSettings = {
       ...currentSettings,
       grid: { ...currentSettings.grid, enabled: true, increment: value },
@@ -624,7 +650,8 @@ export const ActionBar = ({
   const selectBuilderMenuMode = useCallback(
     (target: ActiveBuilderMode) => {
       if (
-        target === "mesh-cad" && !cadToolsEnabled
+        (target === "mesh-cad" || target === "bim-plan") &&
+        !cadToolsEnabled
       ) {
         handleOpenCadSettings();
         closeBuildMenu(true);
@@ -747,7 +774,7 @@ export const ActionBar = ({
             text={
               cadToolsEnabled
                 ? "Build tools"
-                : "Build tools - enable CAD tools in Project Settings"
+                : "Build tools - enable CAD & BIM tools in Project Settings"
             }
             height="auto"
           >
@@ -755,7 +782,7 @@ export const ActionBar = ({
               ref={cadModeBtnRef}
               data-testid="actionbar-cad-tools"
               $isOpen={showCadModeMenu}
-              $isSelected={showMeshCad}
+              $isSelected={showMeshCad || showPlanCad}
               aria-label="Open build tools menu"
               aria-haspopup="menu"
               aria-expanded={showCadModeMenu}
@@ -922,11 +949,14 @@ export const ActionBar = ({
                   const item = BUILDER_MODE_COPY[mode];
                   const Icon = item.Icon;
                   const disabled =
-                    mode === "mesh-cad" && !cadToolsEnabled;
+                    (mode === "mesh-cad" || mode === "bim-plan") &&
+                    !cadToolsEnabled;
                   const testId =
                     mode === "quick"
                       ? "actionbar-build-quick"
-                      : "actionbar-mesh-cad";
+                      : mode === "mesh-cad"
+                        ? "actionbar-mesh-cad"
+                        : "actionbar-plan-cad";
                   return (
                     <MenuItem
                       key={mode}
@@ -943,7 +973,7 @@ export const ActionBar = ({
                         <MenuItemLabel>{item.label}</MenuItemLabel>
                         <MenuItemDescription>
                           {disabled
-                            ? "Enable CAD tools in Project Settings"
+                            ? "Enable CAD & BIM tools in Project Settings"
                             : item.description}
                         </MenuItemDescription>
                       </MenuItemText>
@@ -977,7 +1007,7 @@ export const ActionBar = ({
                   >
                     <ToolsIcon size={14} />
                     <MenuItemText>
-                      <MenuItemLabel>Enable CAD tools</MenuItemLabel>
+                      <MenuItemLabel>Enable CAD & BIM tools</MenuItemLabel>
                       <MenuItemDescription>
                         Opens Project Settings.
                       </MenuItemDescription>
@@ -992,6 +1022,12 @@ export const ActionBar = ({
 
       {showQuickBuild && (
         <QuickBuildToolbar
+          pinnedCodeEditorWidth={pinnedCodeEditorWidth}
+          onClose={() => transitionBuilderMode("none", "close")}
+        />
+      )}
+      {showPlanCad && cadToolsEnabled && (
+        <PlanCadToolbar
           pinnedCodeEditorWidth={pinnedCodeEditorWidth}
           onClose={() => transitionBuilderMode("none", "close")}
         />

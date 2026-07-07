@@ -54,6 +54,16 @@ vi.mock("../QuickBuild/QuickBuildToolbar", () => ({
   ),
 }));
 
+vi.mock("../PlanMode/PlanCadToolbar", () => ({
+  PlanCadToolbar: ({ onClose }: { onClose?: () => void }) => (
+    <div data-testid="plan-cad-toolbar">
+      <button type="button" data-testid="plan-cad-close" onClick={onClose}>
+        Close
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("./CameraOrientationPanel", () => ({
   CameraOrientationPanel: () => null,
 }));
@@ -102,7 +112,7 @@ function installFakeApp(options: { cadToolsEnabled?: boolean } = {}) {
   return app;
 }
 
-describe("ActionBar Mesh CAD builder modes", () => {
+describe("ActionBar builder modes", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
@@ -113,7 +123,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
     window.localStorage.clear();
   });
 
-  it("keeps Mesh CAD as an explicit CAD menu choice", async () => {
+  it("keeps Mesh CAD and BIM Plan as explicit CAD menu choices", async () => {
     installFakeApp();
 
     render(<ActionBar />);
@@ -122,6 +132,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
     fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
 
     expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("mesh-cad-close"));
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
@@ -133,20 +144,35 @@ describe("ActionBar Mesh CAD builder modes", () => {
     fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
     fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
+    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
+
+    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("plan-cad-close"));
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
   });
 
-  it("exits active mesh edit mode when switching to Quick Build", () => {
+  it("exits active mesh edit mode when switching to BIM Plan or Quick Build", async () => {
     const app = installFakeApp();
     app.editor.cadMode = true;
 
     render(<ActionBar />);
 
-    fireEvent.click(screen.getByTestId("actionbar-quick-build"));
+    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
+    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
 
     expect(app.editor.exitCADMode).toHaveBeenCalledTimes(1);
+
+    app.editor.cadMode = true;
+    fireEvent.click(screen.getByTestId("actionbar-quick-build"));
+
+    expect(app.editor.exitCADMode).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps builder modes mutually exclusive across quick and mesh transitions", async () => {
+  it("keeps builder modes mutually exclusive across quick, plan, and mesh transitions", async () => {
     installFakeApp();
 
     render(<ActionBar />);
@@ -155,15 +181,22 @@ describe("ActionBar Mesh CAD builder modes", () => {
     expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
-    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
+    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
 
     expect(screen.queryByTestId("quick-build-toolbar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
+    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
+
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
     expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("actionbar-quick-build"));
 
     expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
   });
 
   it("keeps CAD tools discoverable when disabled and routes users to project settings", async () => {
@@ -173,6 +206,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
 
     fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
     expect(await screen.findByTestId("actionbar-mesh-cad")).toBeDisabled();
+    expect(screen.getByTestId("actionbar-plan-cad")).toBeDisabled();
     fireEvent.click(screen.getByTestId("actionbar-enable-cad-tools"));
 
     expect(app.editor.component.props.setActiveRightPanel).toHaveBeenCalled();
@@ -216,6 +250,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
     expect(screen.queryByRole("menu", { name: "Build tools" })).toBeNull();
     expect(screen.queryByTestId("quick-build-toolbar")).not.toBeInTheDocument();
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
   });
 
   it("focuses the Copilot admin menu and returns focus to its trigger on Escape", async () => {
@@ -242,7 +277,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
     expect(screen.queryByRole("menu", { name: "AI Copilot tools" })).toBeNull();
   });
 
-  it("routes builder=cad to Mesh CAD", async () => {
+  it("routes builder=cad to Mesh CAD instead of BIM Plan", async () => {
     window.history.pushState({}, "", "/?builder=cad");
     installFakeApp();
 
@@ -251,6 +286,19 @@ describe("ActionBar Mesh CAD builder modes", () => {
     await waitFor(() => {
       expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
     });
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
+  });
+
+  it("routes builder=bim to BIM Plan", async () => {
+    window.history.pushState({}, "", "/?builder=bim");
+    installFakeApp();
+
+    render(<ActionBar />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
   });
 
   it("does not restore a stale active builder mode for the current scene", async () => {
@@ -264,6 +312,7 @@ describe("ActionBar Mesh CAD builder modes", () => {
 
     expect(screen.queryByTestId("quick-build-toolbar")).not.toBeInTheDocument();
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
   });
 
   it("opens the local docs route from Help by default", () => {
