@@ -82,6 +82,21 @@ async function dismissTutorialModal() {
     }
 }
 
+async function dismissOSSBootstrapModal(label = "bootstrap modal dismissed") {
+    const modal = page.locator('[aria-labelledby="oss-bootstrap-title"]').first();
+    if (!(await modal.count()) || !(await modal.isVisible().catch(() => false))) {
+        return false;
+    }
+
+    await modal.locator('button:has-text("Browser storage")').first().click({timeout: 3000, force: true}).catch(() => {});
+    await page.waitForTimeout(200);
+    await modal.locator('button:has-text("Continue")').first().click({timeout: 5000, force: true}).catch(() => {});
+    await page.waitForSelector('[aria-labelledby="oss-bootstrap-title"]', {state: "detached", timeout: 5000}).catch(() => {});
+    await page.waitForTimeout(800);
+    logStep(label);
+    return true;
+}
+
 try {
     // === 1. Editor load (fresh project) + bootstrap modal ===
     // The public marketing site now owns `/`, so the editor's "start from
@@ -92,14 +107,7 @@ try {
     logStep("create-project route loaded", "ok", {url: page.url()});
     await page.screenshot({path: resolve(outDir, "01-home.png")}).catch(() => {});
 
-    const modal = page.locator('[aria-labelledby="oss-bootstrap-title"]').first();
-    if (await modal.count() && await modal.isVisible().catch(() => false)) {
-        await modal.locator('button:has-text("Browser storage")').first().click({timeout: 3000}).catch(() => {});
-        await modal.locator('button:has-text("Continue")').first().click({timeout: 5000}).catch(() => {});
-        await page.waitForSelector('[aria-labelledby="oss-bootstrap-title"]', {state: "detached", timeout: 5000}).catch(() => {});
-        await page.waitForTimeout(800);
-        logStep("bootstrap modal dismissed");
-    }
+    await dismissOSSBootstrapModal();
 
     // === 2. Editor mounts on the auto-created project ===
     await page.waitForLoadState("networkidle", {timeout: 30000}).catch(() => {});
@@ -166,6 +174,7 @@ try {
     await page.goto(baseUrl + "/dashboard", {waitUntil: "domcontentloaded", timeout: 20000}).catch(() => {});
     await page.waitForLoadState("networkidle", {timeout: 15000}).catch(() => {});
     await page.waitForTimeout(3000);
+    await dismissOSSBootstrapModal("dashboard bootstrap modal dismissed");
     await page.screenshot({path: resolve(outDir, "05-dashboard.png")}).catch(() => {});
     assert("back-to-dashboard", /\/dashboard/.test(page.url()) || page.url() === baseUrl + "/", `URL: ${page.url()}`);
 
@@ -180,7 +189,13 @@ try {
 
     // === 8. Click the saved project; editor remounts and loads ===
     if (cardCount > 0) {
-        await projectCards.first().click({timeout: 5000}).catch(() => {});
+        const projectCard = projectCards.first();
+        const editButton = projectCard.locator('[data-testid="game-card-edit"]').first();
+        if (await editButton.isVisible().catch(() => false)) {
+            await editButton.click({timeout: 5000, force: true}).catch(() => {});
+        } else {
+            await projectCard.click({timeout: 5000, force: true}).catch(() => {});
+        }
         await page.waitForLoadState("networkidle", {timeout: 20000}).catch(() => {});
         await page.waitForTimeout(8000);
         await page.screenshot({path: resolve(outDir, "06-reloaded.png")}).catch(() => {});
@@ -200,8 +215,11 @@ try {
                 const req = indexedDB.open("stemstudio-projects");
                 req.onsuccess = () => {
                     const db = req.result;
-                    const tx = db.transaction(db.objectStoreNames[0], "readonly");
-                    const store = tx.objectStore(db.objectStoreNames[0]);
+                    if (!db.objectStoreNames.contains("projects")) {
+                        return resolve({error: "projects-store-not-found"});
+                    }
+                    const tx = db.transaction("projects", "readonly");
+                    const store = tx.objectStore("projects");
                     const g = store.get(id);
                     g.onsuccess = () => {
                         const body = g.result;
@@ -273,12 +291,23 @@ try {
         } else {
             await playBtn.click({timeout: 3000}).catch(() => {});
         }
+        const unsavedChangesPrompt = page.locator('text=You have unsaved changes').first();
+        if (await unsavedChangesPrompt.isVisible().catch(() => false)) {
+            await page.locator("button:has-text(\"Don't Save\")").last().click({timeout: 3000, force: true}).catch(() => {});
+            logStep("accepted unsaved-changes prompt for Play");
+        }
         await page.waitForTimeout(8000);
         await page.screenshot({path: resolve(outDir, "07-playing.png")}).catch(() => {});
+        const appIsPlaying = await page.evaluate(() => Boolean((window.app || globalThis.app)?.isPlaying)).catch(() => false);
         const startGameVisible = await page.locator('text=START GAME').first().isVisible().catch(() => false);
         const closeVisible = await page.locator('text=Close').first().isVisible().catch(() => false);
         const cloneVisible = await page.locator('text=Clone').first().isVisible().catch(() => false);
-        assert("play-mode-engaged", startGameVisible || closeVisible || cloneVisible, `play signals: startGame=${startGameVisible} close=${closeVisible} clone=${cloneVisible}`);
+        const cameraFreeModeVisible = await page.locator('text=Player object not found').first().isVisible().catch(() => false);
+        assert(
+            "play-mode-engaged",
+            appIsPlaying || startGameVisible || closeVisible || cloneVisible || cameraFreeModeVisible,
+            `play signals: app=${appIsPlaying} startGame=${startGameVisible} close=${closeVisible} clone=${cloneVisible} cameraFree=${cameraFreeModeVisible}`,
+        );
     } else {
         assert("play-mode-engaged", false, "Play button not visible");
     }

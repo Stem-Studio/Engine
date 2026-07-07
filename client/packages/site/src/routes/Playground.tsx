@@ -10,13 +10,12 @@ export function Playground() {
                 <span style={{color: "var(--text-dim)"}}>
                     Dashboard · Editor · AI Copilot · Player
                 </span>
-                <div style={{marginLeft: "auto", display: "flex", gap: 12}}>
-                    <Link to="/docs" className="btn btn-ghost" style={{padding: "6px 12px"}}>
+                <div className="playground-actions">
+                    <Link to="/docs" className="btn btn-ghost playground-action">
                         Docs
                     </Link>
                     <a
-                        className="btn btn-ghost"
-                        style={{padding: "6px 12px"}}
+                        className="btn btn-ghost playground-action"
                         href={GITHUB_URL}
                         target="_blank"
                         rel="noreferrer noopener"

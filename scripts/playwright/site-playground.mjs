@@ -4,6 +4,7 @@
  *
  * Verifies:
  *   - /playground renders the site chrome (top bar with "Playground mode" pill)
+ *   - the top bar does not expose internal builder query-param entry points
  *   - the iframe src points at /dashboard?mode=playground
  *   - inside the iframe, the editor app shell mounts (PublicAppContainerLite)
  *   - <html data-playground-mode="true"> is set inside the iframe document
@@ -42,6 +43,13 @@ try {
     const pillVisible = await page.locator(".playground-bar .pill").first().isVisible();
     assert("playground mode pill visible", pillVisible);
 
+    const builderCount = await page.locator('a:has-text("Builder Studio")').count();
+    assert(
+        "playground hides Builder Studio query entry",
+        builderCount === 0,
+        `count=${builderCount}`,
+    );
+
     const iframeEl = page.locator(".playground-frame");
     const src = await iframeEl.getAttribute("src");
     assert(
@@ -54,15 +62,21 @@ try {
     const frame = page.frameLocator(".playground-frame");
     // The app shell renders inside #container — wait up to 25s; first-load
     // of the editor bundle is heavy in dev.
-    await frame.locator("#container, [data-app-router-root]").first().waitFor({timeout: 25000});
+    await frame.locator("#container, [data-app-router-root]").first().waitFor({state: "attached", timeout: 25000});
 
-    const playgroundAttr = await page
-        .locator(".playground-frame")
-        .evaluate((el) =>
-            el instanceof HTMLIFrameElement
-                ? el.contentDocument?.documentElement?.dataset?.playgroundMode ?? null
-                : null,
-        );
+    let playgroundAttr = null;
+    const attrDeadline = Date.now() + 10000;
+    while (Date.now() < attrDeadline) {
+        playgroundAttr = await page
+            .locator(".playground-frame")
+            .evaluate((el) =>
+                el instanceof HTMLIFrameElement
+                    ? el.contentDocument?.documentElement?.dataset?.playgroundMode ?? null
+                    : null,
+            );
+        if (playgroundAttr === "true") break;
+        await page.waitForTimeout(150);
+    }
     assert(
         'iframe document has data-playground-mode="true"',
         playgroundAttr === "true",

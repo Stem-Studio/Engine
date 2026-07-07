@@ -102,7 +102,7 @@ Open a new shell (or `source ~/.bashrc`) so the freshly installed tools land on 
 wsl --install            # installs Ubuntu; reboot if prompted
 ```
 
-Then open the **Ubuntu** terminal and follow the **Linux** instructions above. Clone the repo *inside* the WSL filesystem (e.g. `~/code/…`, not `/mnt/c/…`) for usable file-watch and build performance.
+Then open the **Ubuntu** terminal and follow the **Linux** instructions above. Clone the repo _inside_ the WSL filesystem (e.g. `~/code/…`, not `/mnt/c/…`) for usable file-watch and build performance.
 
 <details>
 <summary>Native Windows (advanced, unsupported)</summary>
@@ -144,6 +144,9 @@ If all three print a version, you're ready for [Quick start](#quick-start).
 - [Built-in behaviors](./docs/built-in-behaviors.md) — the behavior model, the full catalog, and how to attach or author one.
 - [Lambdas (ECS layer)](./docs/lambdas.md) — batched, dependency-scheduled systems over many objects, with examples.
 - [Import packs](./docs/import-packs.md) — curated reusable script modules (`noise`, `prng`, `uikit-dual-mode`) and the `@import` workflow.
+- [Quick Build](./docs/quick-build.md) — builder stamps, brushes, texture packs, shortcuts, and smoke-test selectors.
+- [BIM Plan](./docs/plan-cad.md) — Plan/CAD node model, persistence contract, interchange subset, and limitations.
+- [Builder Studio release gate](./docs/builder-studio-release-gate.md) — launch configuration, beta exit criteria, and required checks.
 - [BYOK setup](./docs/byok.md) — connect your AI provider keys.
 - [Multiplayer guide](./docs/multiplayer.md) — local sidecar and self-hosted deployment.
 - [Exporting a game](./docs/exporting-a-game.md) — package a Player-only static site.
@@ -153,6 +156,24 @@ Existing games in Stem Script format live in
 [Stem-Studio/Games-StemScript](https://github.com/Stem-Studio/Games-StemScript).
 Deeper engine docs (behaviors lifecycle, lambdas/ECS, physics, scheduler,
 rendering) live under `docs/` in this repo.
+
+## Builder Studio
+
+Open the builder-first editor at `/create/project?builder=1`. The Build control
+opens Quick Build by default, while Model (Mesh CAD) and Plan (BIM Plan) stay
+behind the per-project **Enable CAD & BIM tools (beta)** setting.
+
+The Builder Studio smoke tests capture the primary surfaces:
+
+![Quick Build smoke capture](./docs/assets/builder-studio/01-quick-build.png)
+
+![BIM Plan smoke capture](./docs/assets/builder-studio/02-plan-cad.png)
+
+Regenerate these captures with `bun run test:e2e:builder-tools` while
+`bun run dev` is serving on `http://localhost:5173`. See
+[Quick Build](./docs/quick-build.md), [BIM Plan](./docs/plan-cad.md), and the
+[Builder Studio release gate](./docs/builder-studio-release-gate.md) for the
+full production checklist.
 
 ## Development workflow
 
@@ -182,13 +203,13 @@ WebGPU support is required. We do not support WebGL
 
 ## Team
 
-|  [<img src="https://github.com/papiguy.png" width="100"><br><sub><b>papiguy</b></sub>](https://github.com/papiguy)   | [<img src="https://github.com/mvromanov.png" width="100"><br><sub><b>mvromanov</b></sub>](https://github.com/mvromanov) | [<img src="https://github.com/fayd404.png" width="100"><br><sub><b>fayd404</b></sub>](https://github.com/fayd404) | [<img src="https://github.com/ikerr.png" width="100"><br><sub><b>ikerr</b></sub>](https://github.com/ikerr) |
-|:--------------------------------------------------------------------------------------------------------------------:| :---: | :---: | :---: |
-|                                                  CTO & Venture Lead                                                  | Head of Engineering | Head of Product | Platform & Physics |
+|  [<img src="https://github.com/papiguy.png" width="100"><br><sub><b>papiguy</b></sub>](https://github.com/papiguy)   |       [<img src="https://github.com/mvromanov.png" width="100"><br><sub><b>mvromanov</b></sub>](https://github.com/mvromanov)       |       [<img src="https://github.com/fayd404.png" width="100"><br><sub><b>fayd404</b></sub>](https://github.com/fayd404)       |        [<img src="https://github.com/ikerr.png" width="100"><br><sub><b>ikerr</b></sub>](https://github.com/ikerr)         |
+| :------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------: |
+|                                                  CTO & Venture Lead                                                  |                                                         Head of Engineering                                                         |                                                        Head of Product                                                        |                                                     Platform & Physics                                                     |
 | [<img src="https://github.com/querielo.png" width="100"><br><sub><b>querielo</b></sub>](https://github.com/querielo) | [<img src="https://github.com/AndreiRudenko.png" width="100"><br><sub><b>AndreiRudenko</b></sub>](https://github.com/AndreiRudenko) | [<img src="https://github.com/gajendra906.png" width="100"><br><sub><b>gajendra906</b></sub>](https://github.com/gajendra906) | [<img src="https://github.com/nafeezable.png" width="100"><br><sub><b>nafeezable</b></sub>](https://github.com/nafeezable) |
-|                                                   Three.js Wizard                                                    | Games | QA | Community |
-| [<img src="https://github.com/JNicoSD.png" width="100"><br><sub><b>JNicoSD</b></sub>](https://github.com/JNicoSD) | [<img src="https://github.com/janvher.png" width="100"><br><sub><b>Jan</b></sub>](https://github.com/janvher) | [<img src="https://github.com/kumaranand48.png" width="100"><br><sub><b>Anand</b></sub>](https://github.com/kumaranand48) | |
-| Games|Games | Head of SRE | |
+|                                                   Three.js Wizard                                                    |                                                                Games                                                                |                                                              QA                                                               |                                                         Community                                                          |
+|  [<img src="https://github.com/JNicoSD.png" width="100"><br><sub><b>JNicoSD</b></sub>](https://github.com/JNicoSD)   |            [<img src="https://github.com/janvher.png" width="100"><br><sub><b>Jan</b></sub>](https://github.com/janvher)            |   [<img src="https://github.com/kumaranand48.png" width="100"><br><sub><b>Anand</b></sub>](https://github.com/kumaranand48)   |                                                                                                                            |
+|                                                        Games                                                         |                                                                Games                                                                |                                                          Head of SRE                                                          |                                                                                                                            |
 
 ## Contributing
 
