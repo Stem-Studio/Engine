@@ -541,6 +541,8 @@ describe("QuickBuildToolbar behavior", () => {
         await act(async () => {
             await Promise.resolve();
         });
+        expect(app.editor.gpuPickNum).toBe(0);
+        expect(app.on).not.toHaveBeenCalledWith("gpuPick.QuickBuildToolbar", expect.any(Function));
 
         const animationFrames = installAnimationFrameQueue();
         app.editor.computeIntersectPoint.mockClear();
@@ -593,23 +595,36 @@ describe("QuickBuildToolbar behavior", () => {
         await act(async () => {
             await Promise.resolve();
         });
+        const placementStatus = screen.getByTestId("quick-build-placement-status");
+        expect(placementStatus).toHaveAttribute("aria-hidden", "true");
+        expect(placementStatus).toHaveTextContent("");
 
         await act(async () => {
-            app.emit("gpuPick.QuickBuildToolbar", {point: new THREE.Vector3(2, 0, 0)});
+            app.emit(
+                "raycast.QuickBuildToolbar",
+                {point: new THREE.Vector3(2, 0, 0), object: null},
+                {preventDefault: vi.fn()},
+            );
             await Promise.resolve();
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("Ready 1 cell");
+            expect(placementStatus).toHaveAttribute("aria-hidden", "false");
+            expect(placementStatus).toHaveTextContent("Ready 1 cell");
         });
 
         await act(async () => {
-            app.emit("gpuPick.QuickBuildToolbar", {point: new THREE.Vector3(0, 0, 0)});
+            app.emit(
+                "raycast.QuickBuildToolbar",
+                {point: new THREE.Vector3(0, 0, 0), object: null},
+                {preventDefault: vi.fn()},
+            );
             await Promise.resolve();
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("Blocked occupied");
+            expect(placementStatus).toHaveAttribute("aria-hidden", "false");
+            expect(placementStatus).toHaveTextContent("Blocked occupied");
         });
     });
 
@@ -691,7 +706,11 @@ describe("QuickBuildToolbar behavior", () => {
 
         const hitPoint = new THREE.Vector3(0.2, 1.4, 0.2);
         await act(async () => {
-            app.emit("gpuPick.QuickBuildToolbar", {point: hitPoint});
+            app.emit(
+                "raycast.QuickBuildToolbar",
+                {point: hitPoint, object: null},
+                {preventDefault: vi.fn()},
+            );
             await Promise.resolve();
         });
 
@@ -1152,7 +1171,7 @@ describe("QuickBuildToolbar behavior", () => {
         await waitFor(() => {
             expect(showToast).toHaveBeenCalledWith({
                 type: "error",
-                body: "Could not bake Quick Build stamps.",
+                body: "Could not optimize Quick Build stamps for play.",
             });
         });
     });

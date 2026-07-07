@@ -145,6 +145,8 @@ type QuickBuildPlacementStatus = {
 };
 
 const QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS = 250;
+const QUICK_BUILD_LIVE_REFRESH_GRACE_MS =
+  QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS + 50;
 
 const QUICK_BUILD_TOOLS: QuickBuildTool[] = [
   {
@@ -1286,7 +1288,7 @@ async function placeQuickBuildObjects(
       },
       missingParents.length > 0 ? "warn" : "info",
     );
-    refreshQuickBuildSceneAdjacency(app);
+    refreshQuickBuildSceneAdjacency(app, false);
   } catch (error) {
     logQuickBuild(
       "Placement command failed",
@@ -1312,7 +1314,8 @@ async function eraseQuickBuildObject(
     await app.editor?.execute(
       new RemoveObjectCommand(object, app.editor?.selected),
     );
-    refreshQuickBuildSceneAdjacency(app);
+    refreshQuickBuildSceneAdjacency(app, false);
+    return true;
   } catch (error) {
     logQuickBuild(
       "Erase command failed",
@@ -1323,6 +1326,7 @@ async function eraseQuickBuildObject(
       type: "error",
       body: "Could not erase the Quick Build stamp.",
     });
+    return false;
   }
 }
 
@@ -1649,6 +1653,7 @@ export const QuickBuildToolbar = ({
   const selectedTexturePresetRef = useRef<QuickBuildTexturePreset | null>(null);
   const previewGroupRef = useRef<THREE.Group | null>(null);
   const previewKeyRef = useRef("");
+  const lastLiveBatchRefreshAtRef = useRef(0);
   const eraseHighlightRef = useRef<{
     target: THREE.Object3D;
     records: QuickBuildEraseHighlightRecord[];
@@ -1880,6 +1885,8 @@ export const QuickBuildToolbar = ({
       const scene = app ? getQuickBuildScene(app) : null;
       if (!scene) return;
 
+      lastLiveBatchRefreshAtRef.current =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
       liveBatchEnabledRef.current = enabled;
       if (enabled) {
         rebuildQuickBuildLiveBatch(scene);
@@ -2224,7 +2231,14 @@ export const QuickBuildToolbar = ({
       refreshTimeout = window.setTimeout(() => {
         refreshTimeout = null;
         refreshSceneSummary();
-        refreshLiveBatch();
+        const now =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (
+          now - lastLiveBatchRefreshAtRef.current >
+          QUICK_BUILD_LIVE_REFRESH_GRACE_MS
+        ) {
+          refreshLiveBatch();
+        }
       }, QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS);
     };
 
@@ -2270,39 +2284,6 @@ export const QuickBuildToolbar = ({
       previousDisableClickEvents.current = null;
     }
   }, [activeTool]);
-
-  useEffect(() => {
-    const app = global.app as EngineRuntime | undefined;
-    const editor = app?.editor;
-    if (!app || !editor || !isStampTool(activeTool)) {
-      clearPreview();
-      return;
-    }
-
-    editor.gpuPickNum += 1;
-    app.on(
-      "gpuPick.QuickBuildToolbar",
-      (intersect: { point?: THREE.Vector3 | null }) => {
-        updatePreview(intersect?.point ?? null);
-      },
-    );
-
-    return () => {
-      app.on("gpuPick.QuickBuildToolbar", null);
-      editor.gpuPickNum = Math.max(
-        0,
-        (editor.gpuPickNum ?? 1) - 1,
-      );
-      clearPreview();
-    };
-  }, [
-    activeTool,
-    brushMode,
-    brushRadius,
-    brushAnchor,
-    clearPreview,
-    updatePreview,
-  ]);
 
   const handleQuickBuildHit = useCallback(
     (
@@ -2372,7 +2353,9 @@ export const QuickBuildToolbar = ({
             },
           );
           clearEraseHighlight();
-          void eraseQuickBuildObject(app, eraseTarget);
+          void eraseQuickBuildObject(app, eraseTarget).then((didErase) => {
+            if (didErase) refreshLiveBatch();
+          });
         } else {
           logQuickBuild(
             "Erase skipped: no target at cell",
@@ -3139,16 +3122,16 @@ export const QuickBuildToolbar = ({
         $color={activeToolDefinition?.color}
         aria-hidden="true"
       />
-      {placementStatus && (
-        <PlacementStatusPill
-          data-testid="quick-build-placement-status"
-          aria-live="polite"
-          $tone={placementStatus.tone}
-          title={placementStatus.message}
-        >
-          {placementStatus.message}
-        </PlacementStatusPill>
-      )}
+      <PlacementStatusPill
+        data-testid="quick-build-placement-status"
+        aria-hidden={!placementStatus}
+        aria-live={placementStatus ? "polite" : "off"}
+        $tone={placementStatus?.tone ?? "ready"}
+        $visible={!!placementStatus}
+        title={placementStatus?.message ?? ""}
+      >
+        {placementStatus?.message ?? ""}
+      </PlacementStatusPill>
       <PanelDivider />
       <Tooltip
         text={textureTooltip}
@@ -3422,8 +3405,12 @@ const ActiveDot = styled.span<{ $active: boolean; $color?: string }>`
   opacity: ${({ $active }) => ($active ? 1 : 0)};
 `;
 
-const PlacementStatusPill = styled.div<{ $tone: "ready" | "blocked" }>`
-  min-width: 104px;
+const PlacementStatusPill = styled.div<{
+  $tone: "ready" | "blocked";
+  $visible: boolean;
+}>`
+  width: 112px;
+  flex: 0 0 112px;
   height: 34px;
   display: inline-flex;
   align-items: center;
@@ -3447,6 +3434,8 @@ const PlacementStatusPill = styled.div<{ $tone: "ready" | "blocked" }>`
   line-height: 1;
   white-space: nowrap;
   padding: 0 10px;
+  opacity: ${({ $visible }) => ($visible ? 1 : 0)};
+  visibility: ${({ $visible }) => ($visible ? "visible" : "hidden")};
 `;
 
 const TextureSelectShell = styled.div<{
