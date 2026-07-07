@@ -143,10 +143,6 @@ export const useUpdateSceneLambdaRevision = () => {
             configStr: JSON.stringify(newConfig),
         });
 
-        // RevisionList subscribes to this on top of the objectChanged path
-        // updateSceneLambdaRevision already fires; harmless redundancy is
-        // worth it for parity with the behavior flow.
-        app.call("currentRevisionUpdated");
         return true;
     };
 };

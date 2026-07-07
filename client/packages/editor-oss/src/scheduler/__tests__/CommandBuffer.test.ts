@@ -107,20 +107,60 @@ describe("CommandBuffer", () => {
             consoleSpy.mockRestore();
         });
 
-        it("should not execute add/remove commands directly", () => {
+        it("should execute add/remove commands through registered handlers", () => {
+            const handler = {
+                add: vi.fn(),
+                remove: vi.fn(),
+            };
+            buffer.registerHandler("behavior", handler);
+
+            buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
+            buffer.push({ type: "remove", target: "obj2", system: "behavior" });
+
+            buffer.flush();
+
+            expect(buffer.pending).toBe(0);
+            expect(handler.add).toHaveBeenCalledWith("obj1", {});
+            expect(handler.remove).toHaveBeenCalledWith("obj2");
+        });
+
+        it("should warn for add/remove commands without registered handlers", () => {
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-            // Add and remove commands are stored but not directly executed
-            // They are meant for listener patterns in adapters
+
             buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
             buffer.push({ type: "remove", target: "obj2", system: "lambda" });
 
-            // Should not throw - commands are processed but not executed
             buffer.flush();
-            expect(buffer.pending).toBe(0);
+
             expect(warnSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Dropped 2 add/remove command(s)"),
             );
             warnSpy.mockRestore();
+        });
+
+        it("should handle errors in registered handlers gracefully", () => {
+            const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const successHandler = vi.fn();
+            buffer.registerHandler("behavior", {
+                add: () => {
+                    throw new Error("add failed");
+                },
+            });
+            buffer.registerHandler("lambda", {
+                remove: successHandler,
+            });
+
+            buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
+            buffer.push({ type: "remove", target: "obj2", system: "lambda" });
+
+            buffer.flush();
+
+            expect(consoleSpy).toHaveBeenCalledWith(
+                '[CommandBuffer] Error executing add command for system "behavior":',
+                expect.any(Error),
+            );
+            expect(successHandler).toHaveBeenCalledWith("obj2");
+            consoleSpy.mockRestore();
         });
 
         it("should warn only once for unwired add/remove commands", () => {
@@ -190,6 +230,22 @@ describe("CommandBuffer", () => {
             buffer.flush();
 
             expect(callback).not.toHaveBeenCalled();
+        });
+
+        it("should clear registered handlers", () => {
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+            const handler = { add: vi.fn() };
+            buffer.registerHandler("behavior", handler);
+
+            buffer.dispose();
+            buffer.push({ type: "add", target: "a", system: "behavior" });
+            buffer.flush();
+
+            expect(handler.add).not.toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Dropped 1 add/remove command(s)"),
+            );
+            warnSpy.mockRestore();
         });
     });
 });

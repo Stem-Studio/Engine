@@ -42,7 +42,7 @@ type ChoiceKind = "indexeddb" | "filesystem";
 export const OSSBootstrapModal = () => {
     const [visible, setVisible] = useState<boolean>(() => IS_OSS && !isOSSBootstrapped());
     const [fsSupported] = useState<boolean>(() => isFileSystemAccessSupported());
-    const [choice, setChoice] = useState<ChoiceKind>(fsSupported ? "filesystem" : "indexeddb");
+    const [choice, setChoice] = useState<ChoiceKind>("indexeddb");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | undefined>(undefined);
 

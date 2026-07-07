@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-import EngineRuntime from './EngineRuntime';
+import type EngineRuntime from "./EngineRuntime";
 
 interface GlobalType {
     app: EngineRuntime | null;

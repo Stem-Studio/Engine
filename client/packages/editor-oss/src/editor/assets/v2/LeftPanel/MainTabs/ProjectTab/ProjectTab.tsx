@@ -54,6 +54,8 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
     const [anchorUuid, setAnchorUuid] = useState<string | null>(null);
     const foundObjectsRef = useRef<THREE.Object3D[]>([]);
     const searchRef = useRef("");
+    const quickBuildBatchDepthRef = useRef(0);
+    const quickBuildBatchNeedsUpdateRef = useRef(false);
 
     const app = global.app as EngineRuntime;
     const editor = app.editor as Editor;
@@ -314,6 +316,26 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
 
         if (isArray(app.editor.selected)) return;
         setSelected([(app.editor.selected as any)?.uuid]);
+    };
+
+    const updateSceneTreeForSceneChange = () => {
+        if (quickBuildBatchDepthRef.current > 0) {
+            quickBuildBatchNeedsUpdateRef.current = true;
+            return;
+        }
+        updateUI();
+    };
+
+    const handleQuickBuildBatchStarted = () => {
+        quickBuildBatchDepthRef.current += 1;
+    };
+
+    const handleQuickBuildBatchEnded = () => {
+        quickBuildBatchDepthRef.current = Math.max(0, quickBuildBatchDepthRef.current - 1);
+        if (quickBuildBatchDepthRef.current !== 0 || !quickBuildBatchNeedsUpdateRef.current) return;
+
+        quickBuildBatchNeedsUpdateRef.current = false;
+        updateUI();
     };
 
     const expandData = (uuid: string, list: readonly TreeItemData[]) => {
@@ -652,16 +674,18 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
     useEffect(() => {
         if (!app) return;
         updateUI();
-        app.on(`sceneGraphChanged.ProjectTab`, updateUI);
-        app.on(`objectChanged.ProjectTab`, updateUI);
-        app.on(`objectRemoved.ProjectTab`, updateUI);
+        app.on(`sceneGraphChanged.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`objectChanged.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`objectRemoved.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`quickBuildBatchStarted.ProjectTab`, handleQuickBuildBatchStarted);
+        app.on(`quickBuildBatchEnded.ProjectTab`, handleQuickBuildBatchEnded);
         app.on(`objectSelected.ProjectTab`, handleObjectSelected);
         app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
-        app?.on(`objectRemoved.ProjectTab`, () => {
+        app?.on(`objectRemoved.ProjectTabSearch`, () => {
             const results = searchObjects(app.editor!.scene, searchRef.current);
             setFoundObjects(results);
         });
-        app?.on(`objectCloned.ProjectTab`, () => {
+        app?.on(`objectCloned.ProjectTabSearch`, () => {
             const results = searchObjects(app.editor!.scene, searchRef.current);
             setFoundObjects(results);
         });
@@ -670,9 +694,12 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
             app.on(`sceneGraphChanged.ProjectTab`, null);
             app.on(`objectChanged.ProjectTab`, null);
             app.on(`objectRemoved.ProjectTab`, null);
+            app.on(`quickBuildBatchStarted.ProjectTab`, null);
+            app.on(`quickBuildBatchEnded.ProjectTab`, null);
             app.on(`objectSelected.ProjectTab`, null);
             app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
-            app?.on(`objectRemoved.ModelsTabContext`, null);
+            app?.on(`objectRemoved.ProjectTabSearch`, null);
+            app?.on(`objectCloned.ProjectTabSearch`, null);
         };
     }, []);
 

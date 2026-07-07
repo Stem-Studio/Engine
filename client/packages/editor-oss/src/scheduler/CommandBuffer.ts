@@ -9,12 +9,26 @@ export type DeferredCommand =
     | { type: "remove"; target: string; system: string }
     | { type: "custom"; callback: () => void };
 
+export interface DeferredCommandHandler {
+    add?(target: string, data?: unknown): void;
+    remove?(target: string): void;
+}
+
 export class CommandBuffer {
     private commands: DeferredCommand[] = [];
+    private handlers = new Map<string, DeferredCommandHandler>();
     private hasWarnedUnwiredCommands = false;
 
     push(cmd: DeferredCommand): void {
         this.commands.push(cmd);
+    }
+
+    registerHandler(system: string, handler: DeferredCommandHandler): void {
+        this.handlers.set(system, handler);
+    }
+
+    unregisterHandler(system: string): void {
+        this.handlers.delete(system);
     }
 
     /**
@@ -38,9 +52,23 @@ export class CommandBuffer {
                 continue;
             }
 
-            // TODO: wire add/remove commands to concrete system adapters.
-            // Warn once to avoid silent data loss if callers start relying on this path.
-            droppedUnwiredCommands++;
+            const handler = this.handlers.get(cmd.system);
+            const commandHandler = cmd.type === "add" ? handler?.add : handler?.remove;
+
+            if (!commandHandler) {
+                droppedUnwiredCommands++;
+                continue;
+            }
+
+            try {
+                if (cmd.type === "add") {
+                    commandHandler.call(handler, cmd.target, cmd.data);
+                } else {
+                    commandHandler.call(handler, cmd.target);
+                }
+            } catch (e) {
+                console.error(`[CommandBuffer] Error executing ${cmd.type} command for system "${cmd.system}":`, e);
+            }
         }
 
         if (droppedUnwiredCommands > 0 && !this.hasWarnedUnwiredCommands) {
@@ -57,6 +85,7 @@ export class CommandBuffer {
 
     dispose(): void {
         this.commands = [];
+        this.handlers.clear();
         this.hasWarnedUnwiredCommands = false;
     }
 }

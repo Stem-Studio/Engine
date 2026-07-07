@@ -54,13 +54,12 @@ export enum NEW_MISC_NAME {
     VIDEO_BILLBOARD = "Video Billboard",
     VOLUMES = "Scene Volumes",
     SPAWN_POINT = "Spawn Point",
-    CHECK_POINT = "Check Point",
     POINT_SOUND = "Point Sound",
     DEFAULT_LIGHTS_FOG = "Environment lights and fog",
     AVATAR_CREATOR = "Avatar Creator",
 }
 
-export const ADMIN_ONLY_MISC_NAMES = [NEW_MISC_NAME.CESIUM, NEW_MISC_NAME.CHECK_POINT, LIGHT_NAME.RECT_AREA];
+export const ADMIN_ONLY_MISC_NAMES = [NEW_MISC_NAME.CESIUM, LIGHT_NAME.RECT_AREA];
 
 const LIGHTS_MISC_OPTIONS = [
     {icon: terrainIcon, text: "Terrain", name: NEW_MISC_NAME.TERRAIN},
@@ -70,7 +69,6 @@ const LIGHTS_MISC_OPTIONS = [
     {icon: billboardIcon, text: NEW_MISC_NAME.VIDEO_BILLBOARD, name: NEW_MISC_NAME.VIDEO_BILLBOARD},
     {icon: boxIcon, text: "Scene Volumes", name: NEW_MISC_NAME.VOLUMES},
     {icon: spawnPoint, text: "Spawn Point", name: NEW_MISC_NAME.SPAWN_POINT},
-    {icon: spawnPoint, text: "Check Point", name: NEW_MISC_NAME.CHECK_POINT},
     {icon: soundIcon, text: "Point Sound", name: NEW_MISC_NAME.POINT_SOUND},
     {icon: avatarCreatorIcon, text: "Avatar Creator", name: NEW_MISC_NAME.AVATAR_CREATOR},
     {
@@ -93,10 +91,6 @@ const LIGHTS_MISC_OPTIONS = [
     // },
 ];
 
-// TODO: simplify addition of objects with behaviors
-// Because its just an object with a behavior
-// we can have a list of behavior ids and their attributes optionally
-// the rest of the logic should be handled in the behavior itself
 export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => {
     const {isAdmin} = useAuthorizationContext();
     const {setActiveRightPanel} = useAppGlobalContext();
@@ -168,6 +162,34 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
         });
         return names;
     };
+
+    async function addBehaviorObject<T extends THREE.Object3D>({
+        object,
+        baseName,
+        behaviorID,
+        behaviorOptions,
+        offset,
+        clearSelection = false,
+        callback,
+    }: {
+        object: T;
+        baseName: string;
+        behaviorID: string;
+        behaviorOptions?: any;
+        offset?: THREE.Vector3;
+        clearSelection?: boolean;
+        callback?: (obj: T) => void;
+    }) {
+        if (clearSelection && engine?.editor?.selected) {
+            engine.editor.select(null);
+        }
+
+        object.name = generateUniqueName(baseName, getCurrentNames());
+        await editor.addBehaviorToObject(object, behaviorID, behaviorOptions);
+        addObjectToSceneInCameraView(object, offset);
+        callback?.(object);
+        return object;
+    }
 
     const handleAddAmbientLight = useCallback(
         (callback?: (obj: THREE.AmbientLight) => void) => {
@@ -300,12 +322,7 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
     );
 
     const handleAddVolumes = async (callback?: (obj: THREE.Mesh) => void) => {
-        const names = getCurrentNames();
-        if (engine?.editor?.selected) {
-            engine.editor.select(null);
-        }
-
-        let geometry = new THREE.BoxGeometry(3, 3, 3);
+        const geometry = new THREE.BoxGeometry(3, 3, 3);
         const material = new THREE.MeshBasicMaterial({
             color: 0x00aaff,
             transparent: true,
@@ -319,57 +336,47 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
         volumeObject.userData.editorVisibility = true;
         volumeObject.userData.gameVisibility = false;
 
-        const uniqueName = generateUniqueName(NEW_MISC_NAME.VOLUMES, names);
-        volumeObject.name = uniqueName;
-        await editor.addBehaviorToObject(volumeObject, VOLUME_BEHAVIOR_ID);
-
-        addObjectToSceneInCameraView(volumeObject);
-        if (callback) callback(volumeObject);
+        await addBehaviorObject({
+            object: volumeObject,
+            baseName: NEW_MISC_NAME.VOLUMES,
+            behaviorID: VOLUME_BEHAVIOR_ID,
+            clearSelection: true,
+            callback,
+        });
     };
 
-    const handleStartSpawnOrCheckPointTool = useCallback(
-        async (openCheckPoint: boolean, callback?: (obj: THREE.Object3D) => void) => {
-            const names = getCurrentNames();
-            if (engine?.editor?.selected) {
-                engine.editor.select(null);
-            }
-
+    const handleStartSpawnPointTool = useCallback(
+        async (callback?: (obj: THREE.Object3D) => void) => {
             const point = new THREE.Object3D();
-
-            if (openCheckPoint) {
-                const uniqueName = generateUniqueName(NEW_MISC_NAME.CHECK_POINT, names);
-                point.name = uniqueName;
-                // TODO: implement checkpoint, for now we just add spawnpoint behavior
-                await editor.addBehaviorToObject(point, SPAWN_POINT_BEHAVIOR_ID);
-            } else {
-                const uniqueName = generateUniqueName(NEW_MISC_NAME.SPAWN_POINT, names);
-                point.name = uniqueName;
-                await editor.addBehaviorToObject(point, SPAWN_POINT_BEHAVIOR_ID);
-            }
-            addObjectToSceneInCameraView(point);
-            if (callback) callback(point);
+            await addBehaviorObject({
+                object: point,
+                baseName: NEW_MISC_NAME.SPAWN_POINT,
+                behaviorID: SPAWN_POINT_BEHAVIOR_ID,
+                clearSelection: true,
+                callback,
+            });
         },
         [editor],
     );
 
     const handleAddPointSound = useCallback(async () => {
-        const names = getCurrentNames();
         const object = new THREE.Object3D();
-        object.name = generateUniqueName("Point Sound", names);
-        await editor.addBehaviorToObject(object, GENERIC_SOUND_BEHAVIOR_ID, {
-            attributesData: {autoPlay: true, positional: true},
+        await addBehaviorObject({
+            object,
+            baseName: NEW_MISC_NAME.POINT_SOUND,
+            behaviorID: GENERIC_SOUND_BEHAVIOR_ID,
+            behaviorOptions: {attributesData: {autoPlay: true, positional: true}},
+            offset: new THREE.Vector3(0, 5, 0),
         });
-
-        addObjectToSceneInCameraView(object, new THREE.Vector3(0, 5, 0));
     }, [editor, I18n]);
 
-    const handleBillboard = async (name: NEW_MISC_NAME) => {
+    const handleBillboard = async (name: NEW_MISC_NAME, callback?: (obj: THREE.Object3D) => void) => {
         if (name === NEW_MISC_NAME.IMAGE_BILLBOARD) {
-            await handleAddPlane(IMAGE_BILLBOARD_BEHAVIOR_ID);
+            await handleAddPlane(IMAGE_BILLBOARD_BEHAVIOR_ID, callback);
         } else if (name === NEW_MISC_NAME.VIDEO_BILLBOARD) {
-            await handleAddPlane(VIDEO_BILLBOARD_BEHAVIOR_ID);
+            await handleAddPlane(VIDEO_BILLBOARD_BEHAVIOR_ID, callback);
         } else if (name === NEW_MISC_NAME.BILLBOARD) {
-            await handleAddPlane(BILLBOARD_BEHAVIOR_ID);
+            await handleAddPlane(BILLBOARD_BEHAVIOR_ID, callback);
         }
     };
 
@@ -393,18 +400,14 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
             case NEW_MISC_NAME.BILLBOARD:
             case NEW_MISC_NAME.IMAGE_BILLBOARD:
             case NEW_MISC_NAME.VIDEO_BILLBOARD:
-                await handleBillboard(name);
+                await handleBillboard(name, callback);
                 break;
             case NEW_MISC_NAME.VOLUMES:
                 await handleAddVolumes(callback);
                 setActiveRightPanel(RIGHT_PANEL_VERSIONS.Volume);
                 break;
             case NEW_MISC_NAME.SPAWN_POINT:
-                await handleStartSpawnOrCheckPointTool(false, callback);
-                setActiveRightPanel(RIGHT_PANEL_VERSIONS.SpawnPoint);
-                break;
-            case NEW_MISC_NAME.CHECK_POINT:
-                await handleStartSpawnOrCheckPointTool(true, callback);
+                await handleStartSpawnPointTool(callback);
                 setActiveRightPanel(RIGHT_PANEL_VERSIONS.SpawnPoint);
                 break;
             case NEW_MISC_NAME.POINT_SOUND:
@@ -468,7 +471,6 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
 
     const handleAddPlane = useCallback(
         async (behaviorID: string, callback?: (obj: THREE.Object3D) => void) => {
-            const names = getCurrentNames();
             const material = new THREE.MeshStandardMaterial({
                 color: generateRandomColor(),
                 side: THREE.DoubleSide,
@@ -482,14 +484,14 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => 
             billboard.userData.isRuntimeOnly = true;
 
             billboardWrapper.add(billboard);
-            const uniqueName = generateUniqueName("Billboard", names);
-            billboardWrapper.name = uniqueName;
             billboardWrapper.userData.isBillboard = true;
             billboardWrapper.userData.billboardBehaviorID = behaviorID;
-            await editor.addBehaviorToObject(billboardWrapper, behaviorID);
-
-            addObjectToSceneInCameraView(billboardWrapper);
-            if (callback) callback(billboardWrapper);
+            await addBehaviorObject({
+                object: billboardWrapper,
+                baseName: NEW_MISC_NAME.BILLBOARD,
+                behaviorID,
+                callback,
+            });
         },
         [editor],
     );

@@ -23,6 +23,7 @@ import logo from "../../../HUD/HUDView/FloatingNav/AppVersion/stem-studio-alpha.
 import {DASHBOARD_MENU, PAGES} from "../../constants";
 import {getConfiguredSocialLinks} from "@stem/editor-oss/v2/pages/constants";
 import {MOBILE_DASHBOARD_BREAKPOINT} from "../DashboardHeader/DashboardHeader.style";
+import {getEditorDocsUrl} from "../../../common/docsUrl";
 
 // Map env-configured channels to local logo assets. Channels with no env
 // value are omitted from the list by `getConfiguredSocialLinks()`, so the
@@ -47,12 +48,12 @@ export const SideNavigation = ({mobileOpen = false, onClose}: Props) => {
 
     const handleActivePage = async (label: PAGES) => {
         if (label === PAGES.TUTORIALS) {
-            window.open(`https://docs.${window.location.hostname}`, "_blank");
+            window.open(getEditorDocsUrl(), "_blank");
             onClose?.();
             return;
         }
         if (label === PAGES.LEARN) {
-            window.open(`https://docs.${window.location.hostname}`, "_blank");
+            window.open(getEditorDocsUrl(), "_blank");
             onClose?.();
             return;
         }
