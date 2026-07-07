@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import * as THREE from "three";
 
 import global from "../../global";
+import {createQuickBuildObject} from "../../editor/assets/v2/QuickBuild/quickBuildObjects";
 import {getPickBlockReason, resolveSelectionTargetFromPickHit} from "./pickTargetUtils";
 
 describe("pickTargetUtils", () => {
@@ -82,6 +83,21 @@ describe("pickTargetUtils", () => {
         const target = resolveSelectionTargetFromPickHit(helperHandle);
 
         expect(target).toBe(targetObject);
+        expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+    });
+
+    it("resolves Quick Build child mesh hits to the editable stamp root", () => {
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera();
+        const stamp = createQuickBuildObject("house");
+        const childMesh = stamp.children[0];
+        scene.add(stamp);
+
+        global.app = {editor: {scene}} as any;
+
+        const target = resolveSelectionTargetFromPickHit(childMesh);
+
+        expect(target).toBe(stamp);
         expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
     });
 });
