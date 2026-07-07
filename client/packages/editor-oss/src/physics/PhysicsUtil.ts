@@ -160,9 +160,20 @@ export class PhysicsUtil {
         return defaultShape;
     }
 
+    public static clonePhysicsConfig(config: PhysicsConfig | undefined): PhysicsConfig | undefined {
+        if (!config) {
+            return undefined;
+        }
+
+        if (typeof structuredClone === "function") {
+            return structuredClone(config);
+        }
+
+        return JSON.parse(JSON.stringify(config)) as PhysicsConfig;
+    }
+
     public static copyPhysicsConfig(from: Object3D, to: Object3D) {
-        // TODO: should we do an actual copy here instead of an assignment?
-        to.userData.physics = PhysicsUtil.getPhysicsConfig(from);
+        to.userData.physics = PhysicsUtil.clonePhysicsConfig(PhysicsUtil.getPhysicsConfig(from));
     }
 
     public static updateShapeOffsetAndScale(object: Object3D) {

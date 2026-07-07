@@ -49,14 +49,6 @@ export const AiNpcsTab = ({search}: {search: string}) => {
         }
     };
 
-    const handleClone = () => {
-        // TODO: Implement clone using new API - requires asset duplication endpoint
-        showToast({
-            type: "info",
-            title: "Clone feature coming soon",
-        });
-    };
-
     useEffect(() => {
         if (!search) {
             setFilteredData(sceneAssets);
@@ -77,7 +69,6 @@ export const AiNpcsTab = ({search}: {search: string}) => {
                     data={filteredData}
                     selectedItemsIds={[]}
                     onClick={handleEdit}
-                    onReplace={handleClone}
                     onDelete={handleDelete}
                 />
             ) : (

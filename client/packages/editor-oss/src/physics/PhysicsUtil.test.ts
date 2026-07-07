@@ -5,6 +5,43 @@ import { BodyShapeType, IPhysics } from './common/types';
 import { PhysicsUtil } from './PhysicsUtil';
 
 describe('PhysicsUtil', () => {
+    describe('copyPhysicsConfig', () => {
+        it('copies physics config without sharing nested mutable state', () => {
+            const from = new Object3D();
+            const to = new Object3D();
+            from.userData.physics = {
+                enabled: true,
+                shape: 'btBoxShape',
+                anchorOffset: {x: 1, y: 2, z: 3},
+                scale: {x: 1, y: 1, z: 1},
+                rotationLock: {x: false, y: true, z: false},
+            };
+
+            PhysicsUtil.copyPhysicsConfig(from, to);
+
+            expect(to.userData.physics).toEqual(from.userData.physics);
+            expect(to.userData.physics).not.toBe(from.userData.physics);
+            expect(to.userData.physics.anchorOffset).not.toBe(from.userData.physics.anchorOffset);
+            expect(to.userData.physics.rotationLock).not.toBe(from.userData.physics.rotationLock);
+
+            to.userData.physics.anchorOffset.x = 99;
+            to.userData.physics.rotationLock.y = false;
+
+            expect(from.userData.physics.anchorOffset.x).toBe(1);
+            expect(from.userData.physics.rotationLock.y).toBe(true);
+        });
+
+        it('clears target physics when source has no physics config', () => {
+            const from = new Object3D();
+            const to = new Object3D();
+            to.userData.physics = {enabled: true};
+
+            PhysicsUtil.copyPhysicsConfig(from, to);
+
+            expect(to.userData.physics).toBeUndefined();
+        });
+    });
+
     describe('calculatePhysicsPositionFromObject', () => {
         const position = new Vector3();
         const quaternion = new Quaternion();

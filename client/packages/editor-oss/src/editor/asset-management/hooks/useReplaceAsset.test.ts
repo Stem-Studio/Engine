@@ -4,6 +4,7 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
 const hoisted = vi.hoisted(() => ({
     addMutateAsync: vi.fn(),
     removeMutateAsync: vi.fn(),
+    changeAssetRevision: vi.fn(),
     changeModelRevision: vi.fn(),
     changePrefabRevision: vi.fn(),
     changeLambdaRevision: vi.fn(),
@@ -13,6 +14,9 @@ const hoisted = vi.hoisted(() => ({
     assetSource: null,
 }));
 
+vi.mock("./useChangeAssetRevision", () => ({
+    useChangeAssetRevision: () => hoisted.changeAssetRevision,
+}));
 vi.mock("./useChangeModelRevision", () => ({
     useChangeModelRevision: () => hoisted.changeModelRevision,
 }));
@@ -26,7 +30,20 @@ vi.mock("./useChangeQuarksRevision", () => ({
     useChangeQuarksRevision: () => hoisted.changeQuarksRevision,
 }));
 vi.mock("@stem/network/api/asset", () => ({
-    AssetType: {Behavior: "behavior", Model: "model", Prefab: "prefab", Lambda: "lambda", Quarks: "quarks"},
+    AssetType: {
+        Animation: "animation",
+        Audio: "audio",
+        Behavior: "behavior",
+        File: "file",
+        Image: "image",
+        Lambda: "lambda",
+        Model: "model",
+        Npc: "npc",
+        Prefab: "prefab",
+        Quarks: "quarks",
+        Script: "script",
+        Video: "video",
+    },
 }));
 vi.mock("@stem/network/api/behavior", () => ({
     getBehaviorRevisionData: (...args: unknown[]) => hoisted.getBehaviorRevisionData(...args),
@@ -54,6 +71,7 @@ describe("useReplaceAsset", () => {
         setupAssetSource();
         hoisted.addMutateAsync.mockResolvedValue(undefined);
         hoisted.removeMutateAsync.mockResolvedValue(undefined);
+        hoisted.changeAssetRevision.mockResolvedValue(undefined);
         hoisted.changeModelRevision.mockResolvedValue(undefined);
         hoisted.changePrefabRevision.mockResolvedValue(undefined);
         hoisted.changeLambdaRevision.mockResolvedValue(undefined);
@@ -181,6 +199,29 @@ describe("useReplaceAsset", () => {
         expect(hoisted.changeModelRevision).toHaveBeenCalledTimes(1);
     });
 
+    const genericAssetTypes = ["image", "audio", "video", "animation", "npc", "file", "script"] as const;
+    it.each(genericAssetTypes)(
+        "%s swap: remaps generic AssetRefs through useChangeAssetRevision",
+        async assetType => {
+            const {result} = renderHook(() => useReplaceAsset());
+            await result.current({
+                originalAssetId: "old-ref",
+                newAssetId: "new-ref",
+                newRevisionId: "rev-ref",
+                assetType,
+            });
+
+            expect(hoisted.addMutateAsync).toHaveBeenCalledWith({"new-ref": "rev-ref"});
+            expect(hoisted.changeAssetRevision).toHaveBeenCalledWith(
+                "old-ref",
+                "rev-ref",
+                undefined,
+                "new-ref",
+            );
+            expect(hoisted.removeMutateAsync).toHaveBeenCalledWith(["old-ref"]);
+        },
+    );
+
     it("propagates the swap error and skips the dep removal so the new dep stays attached for retry", async () => {
         hoisted.changeModelRevision.mockRejectedValue(new Error("loader failed"));
 
@@ -205,7 +246,7 @@ describe("useReplaceAsset", () => {
                 originalAssetId: "old",
                 newAssetId: "new",
                 newRevisionId: "rev",
-                assetType: "image",
+                assetType: "scene",
             }),
         ).rejects.toThrow(/not yet supported/);
 

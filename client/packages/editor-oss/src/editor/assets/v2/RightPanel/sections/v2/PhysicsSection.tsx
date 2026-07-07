@@ -61,8 +61,6 @@ export const PhysicsSection = ({ isLocked }: Props) => {
     const previewShapeColor = 0x00ff00;
     const previewShapeOpacity = 0.5;
 
-    const cachedConvexHullPoints = new Map<string, number[]>();
-
     let userData: any = undefined;
     let rigidBodyPreviewObjects = [] as any;
     if (selected && !(selected instanceof Array)) {
@@ -299,14 +297,8 @@ export const PhysicsSection = ({ isLocked }: Props) => {
     };
 
     const getConvexHullPreview = (object: Object3D) => {
-        // TODO: what if the object scale or the children have changed? That
-        // should invalidate the cached points.
         const physicsConfig = PhysicsUtil.getPhysicsConfig(object)!;
-        let hullPoints = cachedConvexHullPoints.get(object.uuid);
-        if (!hullPoints) {
-            hullPoints = PhysicsUtil.getShapeData(object, BodyShapeType.CONVEX_HULL, physicsConfig.shapeExcludesHiddenObjects).vertices;
-            cachedConvexHullPoints.set(object.uuid, hullPoints);
-        }
+        const hullPoints = PhysicsUtil.getShapeData(object, BodyShapeType.CONVEX_HULL, physicsConfig.shapeExcludesHiddenObjects).vertices;
 
         const convexVerts: Vector3[] = [];
         for (let i = 0; i < hullPoints.length; i += 3) {
@@ -379,7 +371,6 @@ export const PhysicsSection = ({ isLocked }: Props) => {
 
         return () => {
             clearScenePreviewObjects();
-            cachedConvexHullPoints.clear();
             app?.on("objectChanged.PhysicsSection", null);
             app?.on("objectSelected.PhysicsSection", null);
             app?.on("objectArraySelected.PhysicsSection", null);
