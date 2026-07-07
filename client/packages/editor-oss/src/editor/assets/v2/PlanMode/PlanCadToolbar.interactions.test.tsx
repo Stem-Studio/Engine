@@ -121,6 +121,33 @@ function installViewportRaycastHarness(app: ReturnType<typeof installFakeApp>) {
     return viewport;
 }
 
+function installPerspectiveViewportRaycastHarness(app: ReturnType<typeof installFakeApp>) {
+    const viewport = document.createElement("canvas");
+    (viewport as any).getBoundingClientRect = vi.fn(() => ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 640,
+        bottom: 360,
+        width: 640,
+        height: 360,
+        toJSON: () => ({}),
+    }));
+    document.body.appendChild(viewport);
+    (app as any).renderer = {domElement: viewport};
+
+    const camera = new THREE.PerspectiveCamera(60, 640 / 360, 0.1, 100);
+    camera.position.set(0, 10, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    (app.editor as any).camera = camera;
+    (app.editor as any).view = "perspective";
+
+    return viewport;
+}
+
 async function installSyncedWall(app: ReturnType<typeof installFakeApp>) {
     const data = createPlanCadWall(
         createDefaultPlanCadData(),
@@ -207,7 +234,7 @@ describe("PlanCadToolbar interactions", () => {
         expect(app.editor.scene.userData.planCad).toBeUndefined();
     });
 
-    it("cancels a wall draft with Escape before returning to select", async () => {
+    it("cancels a wall draft with Escape and returns to select", async () => {
         const app = installFakeApp();
         render(<PlanCadToolbar />);
 
@@ -225,13 +252,32 @@ describe("PlanCadToolbar interactions", () => {
         fireEvent.keyDown(window, {key: "Escape"});
         await waitFor(() => {
             expect(screen.queryByText("Wall start")).not.toBeInTheDocument();
+            expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
+        });
+    });
+
+    it("cancels a wall draft from the toolbar without creating a wall", async () => {
+        const app = installFakeApp();
+        render(<PlanCadToolbar />);
+
+        activateGroupedTool("structure", "wall");
+        await waitFor(() => {
             expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
         });
 
-        fireEvent.keyDown(window, {key: "Escape"});
+        await act(async () => {
+            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(0, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
+            await Promise.resolve();
+        });
+        expect(screen.getByText("Wall start")).toBeInTheDocument();
+
+        fireEvent.click(screen.getByTestId("plan-cad-cancel-draft"));
+
         await waitFor(() => {
+            expect(screen.queryByText("Wall start")).not.toBeInTheDocument();
             expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
         });
+        expect(app.editor.scene.userData.planCad).toBeUndefined();
     });
 
     it("finishes room polygons with Enter", async () => {
@@ -258,6 +304,83 @@ describe("PlanCadToolbar interactions", () => {
             );
             expect(slabs[0]?.points).toHaveLength(3);
         });
+    });
+
+    it("finishes a room draft on double click without adding another point", async () => {
+        const app = installFakeApp();
+        const viewport = document.createElement("canvas");
+        (viewport as any).getBoundingClientRect = vi.fn(() => ({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 640,
+            bottom: 360,
+            width: 640,
+            height: 360,
+            toJSON: () => ({}),
+        }));
+        document.body.appendChild(viewport);
+        (app as any).renderer = {domElement: viewport};
+        app.editor.computeIntersectPoint
+            .mockReturnValueOnce(new THREE.Vector3(0, 0, 0))
+            .mockReturnValueOnce(new THREE.Vector3(4, 0, 0))
+            .mockReturnValueOnce(new THREE.Vector3(4, 0, 3));
+
+        render(<PlanCadToolbar />);
+        activateGroupedTool("structure", "room");
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-room")).toHaveAttribute("aria-pressed", "true");
+        });
+
+        for (const [clientX, clientY] of [[80, 120], [180, 120], [180, 220]]) {
+            await act(async () => {
+                viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                    button: 0,
+                    clientX,
+                    clientY,
+                    bubbles: true,
+                    cancelable: true,
+                }));
+                document.dispatchEvent(pointerViewportEvent("pointerup", {
+                    button: 0,
+                    clientX,
+                    clientY,
+                    bubbles: true,
+                    cancelable: true,
+                }));
+                await Promise.resolve();
+            });
+        }
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 200,
+                clientY: 240,
+                detail: 2,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 200,
+                clientY: 240,
+                detail: 2,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            const slabs = Object.values(app.editor.scene.userData.planCad.nodes).filter(
+                (node: any): node is {type: "slab"; points: unknown[]} => node.type === "slab",
+            );
+            expect(slabs[0]?.points).toHaveLength(3);
+        });
+        expect(app.editor.computeIntersectPoint).toHaveBeenCalledTimes(3);
+        viewport.remove();
     });
 
     it("explains why polygon finish is disabled before three points", async () => {
@@ -450,9 +573,78 @@ describe("PlanCadToolbar interactions", () => {
         viewport.remove();
     });
 
+    it("drafts structure points on the plan plane instead of perspective scene obstructions", async () => {
+        const app = installFakeApp();
+        const viewport = installPerspectiveViewportRaycastHarness(app);
+        const obstruction = new THREE.Mesh(
+            new THREE.BoxGeometry(6, 6, 6),
+            new THREE.MeshBasicMaterial(),
+        );
+        obstruction.position.set(0, 5, 5);
+        app.editor.scene.add(obstruction);
+
+        render(<PlanCadToolbar />);
+        activateGroupedTool("structure", "wall");
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
+        });
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 420,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 420,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            const walls = Object.values(app.editor.scene.userData.planCad.nodes).filter(
+                (node: any): node is {type: "wall"; start: {x: number; z: number}} => node.type === "wall",
+            );
+            expect(walls).toHaveLength(1);
+            expect(walls[0]?.start.z).toBeCloseTo(0, 5);
+        });
+        expect(app.editor.computeIntersectPoint).not.toHaveBeenCalled();
+        viewport.remove();
+    });
+
     it("selects generated BIM structures from viewport select hits", async () => {
         const app = installFakeApp();
         const viewport = installViewportRaycastHarness(app);
+        const obstruction = new THREE.Mesh(
+            new THREE.BoxGeometry(6, 1, 6),
+            new THREE.MeshBasicMaterial(),
+        );
+        obstruction.position.set(0, 6, 0);
+        app.editor.scene.add(obstruction);
         const wallObject = await installSyncedWall(app);
 
         render(<PlanCadToolbar />);

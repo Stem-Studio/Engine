@@ -107,6 +107,12 @@ type PlanCadToolGroup = {
 
 type PointerLike = { x: number; y: number };
 
+type PlanCadHitOptions = {
+  preferPlanPlane?: boolean;
+  preferPlanCadObject?: boolean;
+  planeY?: number;
+};
+
 type PlanCadRuntimeEditor = Partial<EngineRuntime["editor"]> & {
   scene?: THREE.Object3D;
   sceneHelpers?: THREE.Object3D;
@@ -187,6 +193,14 @@ const PLAN_CAD_TOOLS: PlanCadTool[] = [
     Icon: TbArmchair,
   },
 ];
+
+function isPlanStructureTool(tool: PlanCadToolId) {
+  return tool === "wall" || tool === "room" || tool === "zone";
+}
+
+function isPlanPlanePlacementTool(tool: PlanCadToolId) {
+  return isPlanStructureTool(tool) || tool === "part";
+}
 
 const PLAN_CAD_PRIMARY_TOOLS = PLAN_CAD_TOOLS.filter(
   (tool) => tool.id === "select",
@@ -441,6 +455,24 @@ function getFallbackIntersectPoint(
   }
 }
 
+function getActivePlanLevelElevation(data?: PlanCadSceneData | null) {
+  if (!data) return 0;
+  const activeLevel = data.activeLevelId
+    ? data.nodes[data.activeLevelId]
+    : undefined;
+  if (activeLevel?.type === "level") return activeLevel.elevation;
+  const firstLevel = Object.values(data.nodes).find(
+    (node): node is PlanLevelNode => node.type === "level",
+  );
+  return firstLevel?.elevation ?? 0;
+}
+
+function getPlanPlaneHitPoint(raycaster: THREE.Raycaster, planeY = 0) {
+  const planPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+  const point = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(planPlane, point) ? point : null;
+}
+
 function getPlanCadViewport(app: EngineRuntime): HTMLElement | null {
   const runtime = asPlanCadRuntime(app);
   const candidates = [
@@ -461,6 +493,7 @@ function getPlanCadViewport(app: EngineRuntime): HTMLElement | null {
 function getPointerPlanCadHit(
   app: EngineRuntime,
   event: MouseEvent | PointerEvent,
+  options: PlanCadHitOptions = {},
 ): { point: THREE.Vector3; object: THREE.Object3D | null } | null {
   const editor = asPlanCadRuntime(app).editor;
   const viewport = getPlanCadViewport(app);
@@ -501,6 +534,12 @@ function getPointerPlanCadHit(
   );
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera);
+  const planeY = options.planeY ?? 0;
+
+  if (options.preferPlanPlane) {
+    const planPoint = getPlanPlaneHitPoint(raycaster, planeY);
+    if (planPoint) return { point: planPoint, object: null };
+  }
 
   const sceneHelpers = editor.sceneHelpers as THREE.Object3D | undefined;
   const pickableChildren = scene.children.filter(
@@ -511,14 +550,21 @@ function getPointerPlanCadHit(
   );
   scene.updateMatrixWorld(true);
   const intersects = raycaster.intersectObjects(pickableChildren, true);
+  if (options.preferPlanCadObject) {
+    const planCadHit = intersects.find((hit) =>
+      !!findPlanCadNodeObject(hit.object),
+    );
+    if (planCadHit) {
+      return { point: planCadHit.point.clone(), object: planCadHit.object };
+    }
+  }
   if (intersects.length > 0) {
     const hit = intersects[0]!;
     return { point: hit.point.clone(), object: hit.object };
   }
 
-  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-  const point = new THREE.Vector3();
-  if (raycaster.ray.intersectPlane(groundPlane, point)) {
+  const point = getPlanPlaneHitPoint(raycaster, planeY);
+  if (point) {
     return { point, object: null };
   }
 
@@ -1266,6 +1312,17 @@ export const PlanCadToolbar = ({
       }
     };
 
+    const getPointerHitForTool = (
+      event: PointerEvent,
+      tool: PlanCadToolId,
+    ) =>
+      getPointerPlanCadHit(app, event, {
+        preferPlanPlane: isPlanPlanePlacementTool(tool),
+        preferPlanCadObject:
+          tool === "select" || tool === "door" || tool === "window",
+        planeY: getActivePlanLevelElevation(planDataRef.current),
+      });
+
     const handlePointerDown = (event: PointerEvent) => {
       if (event.pointerType === "touch") {
         activeTouchPointers.add(event.pointerId);
@@ -1281,7 +1338,7 @@ export const PlanCadToolbar = ({
         return;
       }
       if (activeTool === "select") {
-        const hit = getPointerPlanCadHit(app, event);
+        const hit = getPointerHitForTool(event, activeTool);
         selectPointerCapturedPlanCad = !!findPlanCadNodeObject(hit?.object);
         if (!selectPointerCapturedPlanCad) return;
       }
@@ -1303,7 +1360,8 @@ export const PlanCadToolbar = ({
         isPlanCadUi(event.target)
       )
         return;
-      const hit = getPointerPlanCadHit(app, event);
+      const tool = activeToolRef.current;
+      const hit = getPointerHitForTool(event, tool);
       updatePreview(hit?.point ?? null);
     };
 
@@ -1354,7 +1412,15 @@ export const PlanCadToolbar = ({
 
       if (activeTool === "select" && !capturedPlanCad) return;
       stopEditorClick(event);
-      const hit = getPointerPlanCadHit(app, event);
+      if (
+        isPlanStructureTool(activeTool) &&
+        polygonPointsRef.current.length >= 3 &&
+        event.detail > 1
+      ) {
+        finishPolygonDraft();
+        return;
+      }
+      const hit = getPointerHitForTool(event, activeTool);
       if (hit) {
         handlePlanCadHit(hit, event, { commit: true, source: "viewport" });
       }
@@ -1413,20 +1479,21 @@ export const PlanCadToolbar = ({
 
       if (key === "escape") {
         event.preventDefault();
+        if (
+          anchorPointRef.current ||
+          polygonPointsRef.current.length > 0 ||
+          activeToolRef.current !== "select"
+        ) {
+          cancelDraft();
+          activateTool("select");
+          return;
+        }
         if (openToolGroupId) {
           setOpenToolGroupId(null);
           return;
         }
-        if (
-          anchorPointRef.current ||
-          polygonPointsRef.current.length > 0 ||
-          previewRef.current
-        ) {
+        if (previewRef.current) {
           cancelDraft();
-          return;
-        }
-        if (activeToolRef.current !== "select") {
-          activateTool("select");
           return;
         }
         onClose?.();
@@ -1463,11 +1530,13 @@ export const PlanCadToolbar = ({
     finishPolygonDraft();
   };
 
-  const handleCancelPolygon = () => {
+  const handleCancelDraftAndSelect = () => {
     cancelDraft();
+    activateTool("select");
   };
 
   const handleClose = () => {
+    cancelDraft();
     activateTool("select");
     onClose?.();
   };
@@ -1487,6 +1556,7 @@ export const PlanCadToolbar = ({
     polygonPoints.length < 3 ? "Add at least 3 points to finish this polygon." : "";
   const finishPolygonTooltip =
     finishPolygonDisabledReason || "Finish polygon";
+  const hasStructureDraft = !!anchorPoint || polygonPoints.length > 0;
   const polygonStatus = [
     polygonPoints.length > 0
       ? `${activeTool === "zone" ? "Zone" : "Room"} ${polygonPoints.length} pts`
@@ -1833,26 +1903,28 @@ export const PlanCadToolbar = ({
       {polygonStatus && (
         <DraftStatusPill title={polygonStatus}>{polygonStatus}</DraftStatusPill>
       )}
-      {polygonPoints.length > 0 && (
+      {hasStructureDraft && (
         <UtilityGroup>
-          <Tooltip text={finishPolygonTooltip} height="auto">
+          {polygonPoints.length > 0 && (
+            <Tooltip text={finishPolygonTooltip} height="auto">
+              <UtilityButton
+                type="button"
+                aria-label="Finish BIM polygon"
+                data-testid="plan-cad-finish-polygon"
+                disabled={polygonPoints.length < 3}
+                title={finishPolygonTooltip}
+                onClick={handleFinishPolygon}
+              >
+                <VscCheck size={16} />
+              </UtilityButton>
+            </Tooltip>
+          )}
+          <Tooltip text="Cancel structure draft" height="auto">
             <UtilityButton
               type="button"
-              aria-label="Finish BIM polygon"
-              data-testid="plan-cad-finish-polygon"
-              disabled={polygonPoints.length < 3}
-              title={finishPolygonTooltip}
-              onClick={handleFinishPolygon}
-            >
-              <VscCheck size={16} />
-            </UtilityButton>
-          </Tooltip>
-          <Tooltip text="Cancel polygon" height="auto">
-            <UtilityButton
-              type="button"
-              aria-label="Cancel BIM polygon"
-              data-testid="plan-cad-cancel-polygon"
-              onClick={handleCancelPolygon}
+              aria-label="Cancel BIM structure draft"
+              data-testid="plan-cad-cancel-draft"
+              onClick={handleCancelDraftAndSelect}
             >
               <VscClose size={16} />
             </UtilityButton>
