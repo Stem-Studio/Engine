@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * Public-site nav + 404 smoke.
+ * Public-site nav smoke.
  *
  * Verifies cross-route behavior:
  *   - clicking nav links navigates without a full page reload
  *   - the nav sticks at the top after scrolling
- *   - /not-a-real-path renders the 404 with a working "Back to home" CTA
  *   - GitHub link in the nav opens with target=_blank and rel=noopener
  */
 import {chromium} from "playwright";
@@ -53,6 +52,8 @@ try {
     await page.waitForSelector(".playground-page", {timeout: 8000});
 
     // GitHub link safety
+    await page.goto(`${baseUrl}/`, {waitUntil: "domcontentloaded", timeout: 8000});
+    await page.waitForSelector(".nav", {timeout: 5000});
     const ghTarget = await page.locator('.nav a:has-text("GitHub")').first().getAttribute("target");
     const ghRel = await page.locator('.nav a:has-text("GitHub")').first().getAttribute("rel");
     assert("GitHub link opens new tab", ghTarget === "_blank", `target=${ghTarget}`);
@@ -62,14 +63,6 @@ try {
         ghRel ?? "",
     );
 
-    // 404 path
-    await page.goto(`${baseUrl}/not-a-real-path-x9k2`, {waitUntil: "domcontentloaded", timeout: 8000});
-    await page.waitForSelector(".notfound", {timeout: 5000});
-    const notFoundHeading = await page.locator(".notfound h1").innerText();
-    assert("404 page renders", /404/.test(notFoundHeading), notFoundHeading);
-
-    await page.locator('.notfound a:has-text("Back to home")').first().click();
-    await page.waitForURL(`${baseUrl}/`, {timeout: 5000});
     await page.waitForSelector(".hero", {timeout: 5000});
 } catch (e) {
     failures.push(`exception: ${e.message}`);

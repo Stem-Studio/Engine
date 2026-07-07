@@ -13,11 +13,14 @@ export const CADToolsSection: React.FC<CADToolsSectionProps> = ({
 }) => (
     <PanelCheckbox
         v2
-        text="Enable CAD Tools (beta)"
+        text="Enable CAD & BIM tools (beta)"
         checked={enabled}
         isGray
         regular
         onChange={() => onChange(!enabled)}
-        tooltipText="Shows the mesh edit-mode CAD toolbar and enables component-level modeling tools for supported meshes."
+        tooltipText="Shows Model and Plan beta tools in the Build menu."
+        dataTestId="cad-tools-toggle"
+        switchDataTestId="cad-tools-switch"
+        inputAriaLabel="Enable CAD and BIM tools"
     />
 );

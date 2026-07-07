@@ -162,6 +162,34 @@
             "default": 1,
             "description": "How frequently the enemy attacks in seconds. Lower values result in faster, more aggressive attacks."
         },
+        "engageDistance": {
+            "name": "Engage Distance",
+            "type": "number",
+            "min": 0,
+            "default": 10,
+            "description": "Distance at which the enemy switches from idle or retreating into pursuit. Larger values make the enemy chase players sooner."
+        },
+        "strikeDistance": {
+            "name": "Strike Distance",
+            "type": "number",
+            "min": 0,
+            "default": 3,
+            "description": "Distance at which the enemy switches from pursuit into its attack state."
+        },
+        "idleRetreatDelay": {
+            "name": "Idle Retreat Delay",
+            "type": "number",
+            "min": 0,
+            "default": 5,
+            "description": "Seconds the enemy waits while idle before backing away when no player is close enough to engage."
+        },
+        "retreatDuration": {
+            "name": "Retreat Duration",
+            "type": "number",
+            "min": 0,
+            "default": 2,
+            "description": "Seconds the enemy keeps retreating before returning to idle if the player remains outside engage distance."
+        },
         "respawnAmount": {
             "name": "Respawn",
             "type": "number",

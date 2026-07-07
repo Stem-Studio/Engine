@@ -523,6 +523,20 @@ button {
     font-size: 0.9rem;
 }
 
+.playground-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.playground-action {
+    padding: 6px 12px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+}
+
 .playground-bar .pill {
     padding: 3px 10px;
     border-radius: 999px;
@@ -538,6 +552,21 @@ button {
     width: 100%;
     border: 0;
     background: var(--bg);
+}
+
+@media (max-width: 720px) {
+    .playground-bar {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 14px;
+    }
+
+    .playground-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+        overflow-x: auto;
+    }
 }
 
 /* ===== Docs ===== */

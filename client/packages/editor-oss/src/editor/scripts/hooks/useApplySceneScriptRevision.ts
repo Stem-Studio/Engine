@@ -40,8 +40,6 @@ export const useApplySceneScriptRevision = () => {
 
             await updateSceneScriptRevision({assetId, revisionId, code});
 
-            app.call("currentRevisionUpdated");
-
             if (app.editor?.isCollaborative) {
                 await saveScene(false, false);
             }

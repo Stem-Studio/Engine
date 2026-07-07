@@ -18,13 +18,17 @@ class VideoSource {
 
     //private state
     private elem: HTMLVideoElement | null = null;
+    private pendingElem: HTMLVideoElement | null = null;
     private texture: THREE.VideoTexture | null = null;
+    private hls: Hls | null = null;
+    private released = false;
     private width: number = 0;
     private height: number = 0;
 
     //audio
     private audioCtx?: AudioContext;
     private gainNode?: GainNode;
+    private mediaSource?: MediaElementAudioSourceNode;
 
     constructor(renderer: RendererWithCapabilities | null | undefined, container: HTMLElement, muted: boolean, url: string) {
         this.container = container;
@@ -41,7 +45,9 @@ class VideoSource {
         if (this.elem) {
             return Promise.reject("Video BB: video source is already created");
         }
+        this.released = false;
         const elem = document.createElement("video");
+        this.pendingElem = elem;
         elem.crossOrigin = "anonymous";
         elem.playsInline = true;
         elem.loop = false;
@@ -55,15 +61,15 @@ class VideoSource {
         elem.style.overflow = "hidden";
         const needsPolyfill = this.isHLS && !elem.canPlayType("application/vnd.apple.mpegurl") && Hls.isSupported();
         if (needsPolyfill) {
-            const hls = new Hls();
-            hls.loadSource(this.url);
-            hls.attachMedia(elem);
+            this.hls = new Hls();
+            this.hls.loadSource(this.url);
+            this.hls.attachMedia(elem);
         } else {
             elem.src = this.url;
         }
         //connect audio graph
-        const track = this.audioCtx!.createMediaElementSource(elem);
-        track.connect(this.gainNode!).connect(this.audioCtx!.destination);
+        this.mediaSource = this.audioCtx!.createMediaElementSource(elem);
+        this.mediaSource.connect(this.gainNode!).connect(this.audioCtx!.destination);
         //create video texture
         this.texture = new THREE.VideoTexture(elem);
         this.texture.colorSpace = THREE.SRGBColorSpace;
@@ -85,6 +91,10 @@ class VideoSource {
             elem.addEventListener(
                 "loadeddata",
                 async () => {
+                    if (this.released) {
+                        reject(new Error(`Video source was released before load completed: ${this.url}`));
+                        return;
+                    }
                     // if we needed to hit play to fetch data then revert back to paused
                     //console.log('[video] loadeddata', { playing })
                     if (playing) elem.pause();
@@ -93,6 +103,7 @@ class VideoSource {
                     this.width = elem.videoWidth;
                     this.height = elem.videoHeight;
                     this.elem = elem;
+                    this.pendingElem = null;
                     this.container.appendChild(this.elem);
                     resolve(elem);
                 },
@@ -177,21 +188,32 @@ class VideoSource {
     }
 
     release() {
-        if (!this.elem) {
-            console.warn("Video BB: release is requested while video is not ready");
-            return;
-        }
-        this.stop();
+        this.released = true;
+        const elem = this.elem ?? this.pendingElem;
 
-        this.texture!.dispose();
-        if (this.elem.parentElement) {
-            this.container.removeChild(this.elem);
+        if (elem) {
+            elem.pause();
+            elem.muted = true;
+            elem.removeAttribute("src");
+            elem.load();
+            elem.remove();
         }
-        // delete this.sources;
-        // help to prevent chrome memory leaks
-        // see: https://github.com/facebook/react/issues/15583#issuecomment-490912533
-        this.elem.src = "";
-        this.elem.load();
+
+        this.texture?.dispose();
+        this.hls?.destroy();
+        this.mediaSource?.disconnect();
+        this.gainNode?.disconnect();
+        void this.audioCtx?.close().catch(() => undefined);
+
+        this.elem = null;
+        this.pendingElem = null;
+        this.texture = null;
+        this.hls = null;
+        this.mediaSource = undefined;
+        this.gainNode = undefined;
+        this.audioCtx = undefined;
+        this.width = 0;
+        this.height = 0;
     }
 
     getWidth() {

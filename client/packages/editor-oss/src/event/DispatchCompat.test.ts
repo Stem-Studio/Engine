@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {dispatch} from "./DispatchCompat";
+import EventList from "./EventList";
 
 describe("DispatchCompat", () => {
     it("delivers the same event to multiple suffix registrations", () => {
@@ -63,5 +64,10 @@ describe("DispatchCompat", () => {
         d.apply("update", null, ["x", "y"]);
 
         expect(handler).toHaveBeenCalledWith("x", "y");
+    });
+
+    it("registers Quick Build batch events used by the project tree", () => {
+        expect(EventList).toContain("quickBuildBatchStarted");
+        expect(EventList).toContain("quickBuildBatchEnded");
     });
 });

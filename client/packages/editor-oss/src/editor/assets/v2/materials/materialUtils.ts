@@ -228,6 +228,35 @@ export const generateMaterialPathKey = (
     return `${pathParts.join("///")}::${materialIndex}`;
 };
 
+const splitMaterialPath = (path: string, separator: string): string[] => path.split(separator);
+
+const isMaterialPathMatch = (
+    storedPath: string,
+    childPathParts: string[],
+    rootObject: THREE.Object3D,
+    separator: string,
+): boolean => {
+    const stableRootPath = ["root", ...childPathParts].join(separator);
+    const legacyNamedRootPath = [rootObject.name || "root", ...childPathParts].join(separator);
+    const rootlessPath = childPathParts.join(separator);
+
+    if (
+        storedPath === stableRootPath ||
+        storedPath === legacyNamedRootPath ||
+        storedPath === rootlessPath
+    ) {
+        return true;
+    }
+
+    const storedParts = splitMaterialPath(storedPath, separator);
+
+    if (storedParts.length !== childPathParts.length + 1) {
+        return false;
+    }
+
+    return childPathParts.every((part, index) => storedParts[index + 1] === part);
+};
+
 /**
  * Find a material by its path key in an object hierarchy
  * @param object - The root object to search from
@@ -257,14 +286,10 @@ export const findMaterialByPathKey = (
             childPathParts.unshift(current.name || current.uuid);
             current = current.parent;
         }
-        // FIXME: Parent can be renamed, causing mismatch, so we skip adding root name
-        // Find a better way to handle root identification
-        // childPathParts.unshift(object.name || "root");
 
         // Detect separator from pathKey to support backward compatibility
         const separator = path.includes("///") ? "///" : ".";
-        const childPath = childPathParts.join(separator);
-        if (path.endsWith(childPath)) {
+        if (isMaterialPathMatch(path, childPathParts, object, separator)) {
             const materials = Array.isArray(child.material) ? child.material : [child.material];
             const targetMaterial = materials[materialIndex] as THREE.Material | undefined;
             if (targetMaterial) {

@@ -69,6 +69,13 @@ export const EDITOR_KEYBINDINGS: Binding[] = [
     {label: "Group", keys: `${mod}+G`, section: "Objects"},
     {label: "Ungroup", keys: `${mod}+${shift}+G`, section: "Objects"},
     {label: "Toggle UI Panels", keys: `${mod}+.`, section: "View"},
+    {label: "Quick Build tool shortcuts", keys: "0-9, B/E/L/U/V", section: "Build Tools"},
+    {label: "Rotate Quick Build stamp", keys: "R", section: "Build Tools"},
+    {label: "Reverse Quick Build rotation", keys: `${shift}+R`, section: "Build Tools"},
+    {label: "Quick Build brush radius", keys: "[/]", section: "Build Tools"},
+    {label: "Finish BIM polygon", keys: "Enter", section: "Build Tools"},
+    {label: "Remove last BIM polygon point", keys: "Backspace", section: "Build Tools"},
+    {label: "Cancel or close active builder mode", keys: "Esc", section: "Build Tools"},
 ];
 
 // ── Styles ──────────────────────────────────────────────────────────────────

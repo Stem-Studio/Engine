@@ -308,15 +308,7 @@ class VideoBillboardBehavior extends BehaviorBase {
             this.target.material = this.originalMaterial;
         }
 
-        // TODO: find correct way to release video resources
-        // if (this.videoSource) {
-        //     if (this.videoSource.isReady()) {
-        //         this.videoSource.release();
-        //     } else {
-        //         this.videoElem?.addEventListener("loadeddata", () => this.videoSource?.release(), {once: true});
-        //     }
-        // }
-
+        this.videoSource?.release();
         this.videoElem = undefined;
         this.videoSource = undefined;
     }

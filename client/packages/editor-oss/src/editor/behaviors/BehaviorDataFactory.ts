@@ -3,7 +3,7 @@ import {MathUtils} from "three";
 import AttributeUtil from "./AttributeUtil";
 import {BehaviorAttributes} from "./BehaviorAttributes";
 import {BehaviorThrottleConfig} from "../../behaviors/Behavior";
-import BehaviorData from "../../behaviors/BehaviorData";
+import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
 
 
 class BehaviorDataFactory {
@@ -15,6 +15,7 @@ class BehaviorDataFactory {
         customUUID?: string,
     ): BehaviorData {
         const behaviorData: BehaviorData = {
+            schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
             id: id,
             uuid: customUUID || MathUtils.generateUUID(),
             priority: priority ?? 0,

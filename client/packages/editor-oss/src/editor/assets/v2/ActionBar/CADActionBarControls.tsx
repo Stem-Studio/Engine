@@ -1,17 +1,32 @@
-import {
-    HiOutlineArrowsExpand as ArrowsExpandIcon,
-    HiOutlineChevronUp as ChevronUpIcon,
-    HiOutlineCube as CubeIcon,
-    HiOutlinePencilAlt as PencilAltIcon,
-    HiOutlineRefresh as RefreshIcon,
-    HiOutlineScale as ScaleIcon,
-    HiOutlineViewGrid as ViewGridIcon,
-} from "react-icons/hi";
-import {useEffect, useMemo, useReducer, useRef, useState, type ReactNode, type SVGProps} from "react";
+import {useEffect, useMemo, useReducer, useRef, useState, type ReactNode} from "react";
 import styled from "styled-components";
 import * as THREE from "three";
 
 import {ActionButton, Separator} from "./ActionBar.style";
+import {
+    ChevronUpIcon,
+    CloseIcon,
+    CubeIcon,
+    MoveIcon as ArrowsExpandIcon,
+    PencilIcon as PencilAltIcon,
+    RefreshIcon,
+    ScaleIcon,
+    ViewGridIcon,
+} from "./icons/ActionBarIcons";
+import {
+    ApplyCheckIcon,
+    AxisIcon,
+    BevelIcon,
+    EdgeSelectIcon,
+    ExtrudeIcon,
+    FaceSelectIcon,
+    FlatProfileIcon,
+    InsetIcon,
+    LassoSelectIcon,
+    RoundProfileIcon,
+    RulerIcon,
+    VertexSelectIcon,
+} from "./icons/CADIcons";
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
 import {useEditorSelection} from "@stem/editor-oss/hooks/useEditorSelection";
@@ -19,6 +34,8 @@ import {isCADToolsEnabled} from "../../../cad/settings";
 import {CADAxisConstraint, CADSelectionMode, CADSelectionShape, CADTool} from "../../../cad/types";
 import {Tooltip} from "../common";
 import {NumericInput} from "../common/NumericInput";
+import {builderToolbarTokens, focusVisibleRing} from "../common/builderToolbar";
+import {getLogger} from "@stem/editor-oss/utils/Logger";
 
 const CadButton = styled(ActionButton)<{$active?: boolean; $iconOnly?: boolean}>`
     width: ${({$iconOnly}) => $iconOnly ? "32px" : "auto"};
@@ -52,6 +69,36 @@ const CadField = styled.div`
     display: flex;
     align-items: center;
     gap: 6px;
+`;
+
+const MeshCadStrip = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: min(900px, calc(100vw - 560px));
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: thin;
+    scrollbar-color: ${builderToolbarTokens.borderSubtle} transparent;
+    overscroll-behavior-x: contain;
+
+    &::-webkit-scrollbar {
+        height: 6px;
+    }
+
+    &::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: ${builderToolbarTokens.borderSubtle};
+        border-radius: 999px;
+    }
+
+    @media (max-width: 1180px) {
+        max-width: calc(100vw - 32px);
+    }
 `;
 
 const CadMenuGroup = styled.div`
@@ -97,9 +144,9 @@ const CadMenuSheet = styled.div`
     flex-direction: column;
     gap: 6px;
     border-radius: 14px;
-    border: 1px solid #ffffff1a;
+    border: 1px solid ${builderToolbarTokens.borderMuted};
     background: var(--theme-container-minor-dark);
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.38);
+    box-shadow: 0 20px 50px ${builderToolbarTokens.shadowStrong};
     z-index: 12;
 `;
 
@@ -120,6 +167,8 @@ const CadMenuItem = styled.button<{$active?: boolean}>`
         opacity: 0.45;
         cursor: not-allowed;
     }
+
+    ${focusVisibleRing}
 `;
 
 const CadMenuItemText = styled.span`
@@ -138,7 +187,7 @@ const CadMenuItemLabel = styled.span`
 const CadMenuItemDescription = styled.span`
     font-size: 10px;
     line-height: 1.35;
-    color: rgba(255, 255, 255, 0.72);
+    color: ${builderToolbarTokens.textMuted};
 `;
 
 const CadAxisPillRow = styled.div`
@@ -174,170 +223,8 @@ const CadTooltipTitle = styled.div`
 const CadTooltipBody = styled.div`
     font-size: 11px;
     line-height: 1.45;
-    color: rgba(255, 255, 255, 0.88);
+    color: ${builderToolbarTokens.textSecondary};
 `;
-
-const MeshToolIcon = (props: SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 20 20"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-        {...props}
-    />
-);
-
-const VertexSelectIcon = () => (
-    <MeshToolIcon>
-        <path d="M5 14L10 5.5L15 14" />
-        <path d="M5 14H15" />
-        <circle cx="10"
-            cy="5.5"
-            r="1.8"
-            fill="currentColor"
-            stroke="none"
-        />
-        <circle cx="5"
-            cy="14"
-            r="1.3"
-        />
-        <circle cx="15"
-            cy="14"
-            r="1.3"
-        />
-    </MeshToolIcon>
-);
-
-const EdgeSelectIcon = () => (
-    <MeshToolIcon>
-        <path d="M4.5 6.5L15.5 6.5L13.5 13.5L6.5 13.5Z" />
-        <path d="M4.5 6.5L6.5 13.5" />
-        <path d="M15.5 6.5L13.5 13.5" />
-        <path d="M4.5 6.5L15.5 6.5"
-            strokeWidth="2.6"
-        />
-    </MeshToolIcon>
-);
-
-const FaceSelectIcon = () => (
-    <MeshToolIcon>
-        <path d="M4.5 6.5L15.5 6.5L13.5 13.5L6.5 13.5Z" />
-        <path d="M4.5 6.5L6.5 13.5" />
-        <path d="M15.5 6.5L13.5 13.5" />
-        <path d="M6.2 8.1H13.8L12.6 11.9H7.4Z"
-            fill="currentColor"
-            fillOpacity="0.3"
-            stroke="none"
-        />
-    </MeshToolIcon>
-);
-
-const LassoSelectIcon = () => (
-    <MeshToolIcon>
-        <path d="M4.5 10.5C4.7 7.1 7.4 5 10.4 5C13.4 5 15.8 6.7 15.8 9.4C15.8 12.2 13.4 14 9.9 14C7.4 14 5.8 13.2 5.2 12.1" />
-        <path d="M5 12.1L3.8 14.8L6.9 14.3" />
-        <circle cx="8"
-            cy="9.3"
-            r="1"
-            fill="currentColor"
-            stroke="none"
-        />
-        <circle cx="12.1"
-            cy="10.8"
-            r="1"
-            fill="currentColor"
-            stroke="none"
-        />
-    </MeshToolIcon>
-);
-
-const ExtrudeIcon = () => (
-    <MeshToolIcon>
-        <path d="M5.5 12.8H14.5V16H5.5Z" />
-        <path d="M7 10.2H13V12.8H7Z"
-            fill="currentColor"
-            fillOpacity="0.2"
-        />
-        <path d="M10 12.3V4.5" />
-        <path d="M7.7 6.8L10 4.5L12.3 6.8" />
-    </MeshToolIcon>
-);
-
-const InsetIcon = () => (
-    <MeshToolIcon>
-        <rect x="4.5"
-            y="4.5"
-            width="11"
-            height="11"
-            rx="0.5"
-        />
-        <rect x="7.3"
-            y="7.3"
-            width="5.4"
-            height="5.4"
-            rx="0.5"
-        />
-        <path d="M10 4.7V2.9" />
-        <path d="M10 17.1V15.3" />
-        <path d="M4.7 10H2.9" />
-        <path d="M17.1 10H15.3" />
-    </MeshToolIcon>
-);
-
-const BevelIcon = () => (
-    <MeshToolIcon>
-        <path d="M5 5H12.2L15 7.8V15H5Z" />
-        <path d="M12.2 5V7.8H15" />
-        <path d="M8 12L12 8" />
-        <path d="M7 14H10.2L14 10.2V7" />
-    </MeshToolIcon>
-);
-
-const ApplyCheckIcon = () => (
-    <MeshToolIcon>
-        <path d="M4.5 10.5L8.5 14.5L15.5 5.5" />
-    </MeshToolIcon>
-);
-
-const RulerIcon = () => (
-    <MeshToolIcon>
-        <path d="M3 10H17" />
-        <path d="M3 8V12" />
-        <path d="M17 8V12" />
-        <path d="M10 8.5V10" />
-        <path d="M6.5 9V10" />
-        <path d="M13.5 9V10" />
-    </MeshToolIcon>
-);
-
-const AxisIcon = () => (
-    <MeshToolIcon>
-        <path d="M10 10H16.5" />
-        <path d="M14.5 8L16.5 10L14.5 12" />
-        <path d="M10 10V3.5" />
-        <path d="M8 5.5L10 3.5L12 5.5" />
-        <path d="M10 10L5.5 14.5" />
-        <path d="M5.8 12.2L5.5 14.5L7.8 14.2" />
-    </MeshToolIcon>
-);
-
-const FlatProfileIcon = () => (
-    <MeshToolIcon>
-        <circle cx="5" cy="10" r="1.5" fill="currentColor" stroke="none" />
-        <circle cx="15" cy="10" r="1.5" fill="currentColor" stroke="none" />
-        <path d="M6.5 10H13.5" />
-    </MeshToolIcon>
-);
-
-const RoundProfileIcon = () => (
-    <MeshToolIcon>
-        <circle cx="5" cy="13" r="1.5" fill="currentColor" stroke="none" />
-        <circle cx="15" cy="13" r="1.5" fill="currentColor" stroke="none" />
-        <path d="M5 13C5 6 15 6 15 13" />
-    </MeshToolIcon>
-);
 
 interface CadDropdownOption {
     id: string;
@@ -354,14 +241,14 @@ interface CadDropdownOption {
 const CadMenuSeparator = styled.hr`
     border: 0;
     height: 1px;
-    background: rgba(255, 255, 255, 0.1);
+    background: ${builderToolbarTokens.borderMuted};
     margin: 2px 0;
 `;
 
 const CadMenuItemShortcut = styled.span`
     font-size: 10px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.4);
+    color: ${builderToolbarTokens.textDisabled};
     margin-left: auto;
     white-space: nowrap;
     padding-left: 12px;
@@ -369,36 +256,58 @@ const CadMenuItemShortcut = styled.span`
 
 const CAD_AXES: CADAxisConstraint[] = ["x", "y", "z"];
 
-export const CADActionBarControls = () => {
+interface CADActionBarControlsProps {
+    forceVisible?: boolean;
+    allowAutoVisible?: boolean;
+    onClose?: () => void;
+}
+
+type CadMenuId =
+    | "selectionMode"
+    | "transformTool"
+    | "selectionShape"
+    | "surfaceOperation"
+    | "axis"
+    | "selectionActions"
+    | "annotate";
+
+function logMeshCad(stage: string, details?: Record<string, unknown>, level: "info" | "warn" = "info") {
+    const logger = getLogger();
+    const payload = details ? [details] : [];
+    logger?.[level]?.(`[MeshCAD] ${stage}`, ...payload);
+}
+
+export const CADActionBarControls = ({forceVisible = false, allowAutoVisible = true, onClose}: CADActionBarControlsProps) => {
     const app = global.app as EngineRuntime;
     const {selected, editor} = useEditorSelection("CADActionBarControls");
     const [, forceCadRefresh] = useReducer((count: number) => count + 1, 0);
-    const [openCadMenu, setOpenCadMenu] = useState<null | "selectionMode" | "transformTool" | "selectionShape" | "surfaceOperation" | "axis" | "selectionActions" | "meshOps" | "annotate">(null);
+    const [openCadMenu, setOpenCadMenu] = useState<null | CadMenuId>(null);
     const [cadAmount, setCadAmount] = useState(0.25);
     const [bevelSteps, setBevelSteps] = useState(1);
     const [bevelProfile, setBevelProfile] = useState<"flat" | "round">("flat");
     const [edgeLength, setEdgeLength] = useState(1);
     const cadMenusRef = useRef<HTMLDivElement>(null);
 
-    const selectedMesh = !Array.isArray(selected) && selected instanceof THREE.Mesh ? selected : null;
+    const cadEditedMesh = editor?.cadEditedObject instanceof THREE.Mesh ? editor.cadEditedObject : null;
+    const selectedMesh = cadEditedMesh ?? (!Array.isArray(selected) && selected instanceof THREE.Mesh ? selected : null);
     const cadToolsEnabled = !!editor && isCADToolsEnabled(editor.scene);
     const cadSupport = cadToolsEnabled && selectedMesh ? editor?.getCADSupport(selectedMesh) : null;
-    const isEditingSelectedMesh = !!(
-        editor?.cadMode &&
-        selectedMesh &&
-        editor.cadEditedObject &&
-        editor.cadEditedObject.uuid === selectedMesh.uuid
+    const isEditingSelectedMesh = !!(editor?.cadMode && cadEditedMesh);
+    const canUseCAD = cadToolsEnabled && !!(
+        forceVisible ||
+        isEditingSelectedMesh ||
+        (allowAutoVisible && cadSupport?.supported)
     );
-    const canUseCAD = cadToolsEnabled && !!(isEditingSelectedMesh || cadSupport?.supported);
+    const canEnterCADMode = !!selectedMesh && !!cadSupport?.supported;
     const activeCADOperation =
         editor?.cadTool === "extrude" || editor?.cadTool === "inset" || editor?.cadTool === "bevel" ? editor.cadTool : null;
     const isFaceOnlyToolActive = !!activeCADOperation;
-    const selectedEdgeCount = editor?.cadController.selectedEdgeIds.size || 0;
-    const selectedVertexCount = editor?.cadController.selectedVertexIds.size || 0;
-    const selectedFaceCount = editor?.cadController.selectedFaceIds.size || 0;
+    const selectedEdgeCount = editor?.cadController?.selectedEdgeIds?.size || 0;
+    const selectedVertexCount = editor?.cadController?.selectedVertexIds?.size || 0;
+    const selectedFaceCount = editor?.cadController?.selectedFaceIds?.size || 0;
     const cadAxisConstraint = editor?.cadAxisConstraint || CAD_AXES;
     const selectedEdgeLength =
-        isEditingSelectedMesh && editor?.cadSelectionMode === "edge" ? editor.cadController.getSelectedEdgeLength() : null;
+        isEditingSelectedMesh && editor?.cadSelectionMode === "edge" ? editor.cadController?.getSelectedEdgeLength() ?? null : null;
     const canEditEdgeLength = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount > 0;
     const canApplyCADOperation = !!(
         isEditingSelectedMesh &&
@@ -406,6 +315,19 @@ export const CADActionBarControls = () => {
         activeCADOperation &&
         (activeCADOperation === "extrude" ? selectedFaceCount > 0 : selectedFaceCount === 1)
     );
+    const cadApplyDisabledReason =
+        !isEditingSelectedMesh
+            ? "Enter Mesh CAD edit mode first."
+            : editor?.cadSelectionMode !== "face"
+                ? "Switch to face selection to apply this operation."
+                : !activeCADOperation
+                    ? "Choose Extrude, Inset, or Bevel first."
+                    : activeCADOperation === "extrude"
+                        ? "Select at least one face to apply Extrude."
+                        : `Select exactly one face to apply ${activeCADOperation.charAt(0).toUpperCase()}${activeCADOperation.slice(1)}.`;
+    const cadApplyTooltipDescription = canApplyCADOperation
+        ? "Apply the current surface operation."
+        : cadApplyDisabledReason;
     const disabledSelectionModeReason = activeCADOperation
         ? activeCADOperation === "extrude"
             ? "Extrude is active and currently works on face selections only."
@@ -422,6 +344,18 @@ export const CADActionBarControls = () => {
     const canEdgeBevel = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount >= 1;
     const canDissolveCAD = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount > 0;
     const canLoopSelectCAD = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount > 0;
+    const edgeSelectionDisabledReason =
+        !isEditingSelectedMesh
+            ? "Enter Mesh CAD edit mode first."
+            : editor?.cadSelectionMode !== "edge"
+                ? "Switch to edge selection first."
+                : "Select at least one edge first.";
+    const edgeLengthTooltipDescription = canEditEdgeLength
+        ? "Apply the edge length."
+        : edgeSelectionDisabledReason;
+    const edgeBevelTooltipDescription = canEdgeBevel
+        ? "Apply edge bevel to selection."
+        : edgeSelectionDisabledReason;
     const canLoopCutCAD = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount === 1;
     const canBridgeCAD = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount === 2;
     const canFillCAD = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount >= 3;
@@ -442,11 +376,31 @@ export const CADActionBarControls = () => {
         }
 
         if (enabled) {
+            if (!canEnterCADMode) {
+                logMeshCad("Edit mode blocked", {
+                    selectedType: selected ? (Array.isArray(selected) ? "array" : selected.type) : "none",
+                    reason: cadSupport?.reason ?? "Select one supported mesh.",
+                }, "warn");
+                return;
+            }
+            logMeshCad("Entering edit mode", {object: selectedMesh?.name || selectedMesh?.uuid});
             editor.enterCADMode(selectedMesh);
             return;
         }
 
+        logMeshCad("Exiting edit mode");
         editor.exitCADMode();
+    };
+
+    const closeMeshCadPanel = () => {
+        if (editor?.cadMode) {
+            logMeshCad("Closing panel and exiting edit mode");
+            editor.exitCADMode();
+        } else {
+            logMeshCad("Closing panel");
+        }
+        setOpenCadMenu(null);
+        onClose?.();
     };
 
     const setCADSelectionMode = (mode: CADSelectionMode) => editor?.setCADSelectionMode(mode);
@@ -546,6 +500,7 @@ export const CADActionBarControls = () => {
         editor?.cadSelectionMode,
         editor?.cadSelectionShape,
         editor?.cadTool,
+        cadEditedMesh?.uuid,
         selectedMesh?.uuid,
         cadToolsEnabled,
     ]);
@@ -707,13 +662,6 @@ export const CADActionBarControls = () => {
     const canMergeCoplanar = isEditingSelectedMesh && editor?.cadSelectionMode === "face" && selectedFaceCount >= 2;
     const canEdgeToEdgeCut = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount === 2;
     const canArcEdge = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount > 0;
-    const canMirror = isEditingSelectedMesh;
-    const canArray = isEditingSelectedMesh;
-    // Scatter needs two meshes selected — source and target.
-    const scatterSelectedMeshes = Array.isArray(selected)
-        ? (selected).filter(o => (o as any).isMesh) as THREE.Mesh[]
-        : [];
-    const canScatter = scatterSelectedMeshes.length >= 2;
     const canMergeEdges = isEditingSelectedMesh && editor?.cadSelectionMode === "edge" && selectedEdgeCount >= 1;
     const canFillFromVertices = isEditingSelectedMesh && editor?.cadSelectionMode === "vertex" && selectedVertexCount >= 3;
 
@@ -939,7 +887,7 @@ export const CADActionBarControls = () => {
     ]);
 
     const renderCadDropdown = (
-        menuId: "selectionMode" | "transformTool" | "selectionShape" | "surfaceOperation" | "selectionActions" | "meshOps" | "annotate",
+        menuId: Exclude<CadMenuId, "axis">,
         triggerLabel: string,
         triggerIcon: ReactNode,
         options: CadDropdownOption[],
@@ -954,6 +902,7 @@ export const CADActionBarControls = () => {
                 <CadMenuTrigger
                     $active={options.some(option => option.active) || menuId === "selectionActions"}
                     $open={openCadMenu === menuId}
+                    data-testid={`mesh-cad-menu-${menuId}`}
                     disabled={disabled}
                     onClick={() => setOpenCadMenu(current => current === menuId ? null : menuId)}
                 >
@@ -974,6 +923,7 @@ export const CADActionBarControls = () => {
                                 <CadMenuItem
                                     $active={option.active}
                                     disabled={option.disabled}
+                                    data-testid={`mesh-cad-option-${option.id}`}
                                     onClick={() => {
                                         if (option.disabled) {
                                             return;
@@ -1006,18 +956,38 @@ export const CADActionBarControls = () => {
 
     return (
         <>
-            <div ref={cadMenusRef}
-                style={{display: "flex", alignItems: "center", gap: 8}}
+            <MeshCadStrip
+                ref={cadMenusRef}
+                data-testid="mesh-cad-toolbar"
             >
+                {(forceVisible || isEditingSelectedMesh) && onClose && (
+                    <Tooltip
+                        content={renderCadTooltip("Close Mesh CAD", "Hide the mesh CAD tools and return to normal object editing.")}
+                        {...cadTooltipProps}
+                    >
+                        <CadButton
+                            $iconOnly
+                            aria-label="Close Mesh CAD"
+                            data-testid="mesh-cad-close"
+                            onClick={closeMeshCadPanel}
+                        >
+                            <CadIcon><CloseIcon /></CadIcon>
+                        </CadButton>
+                    </Tooltip>
+                )}
                 <Tooltip content={isEditingSelectedMesh
                     ? renderCadTooltip("Object Mode", "Leave component editing and go back to whole-object transforms and selection.")
-                    : renderCadTooltip("Edit Mode", "Edit the mesh directly by selecting vertices, edges, and faces instead of moving the whole object.")}
+                    : selectedMesh
+                        ? renderCadTooltip("Edit Mode", cadSupport?.reason || "Edit the mesh directly by selecting vertices, edges, and faces instead of moving the whole object.")
+                        : renderCadTooltip("Select Mesh", "Select one mesh object to enable Mesh CAD tools.")}
                     {...cadTooltipProps}
                 >
                     <CadButton
                         $active={isEditingSelectedMesh}
                         $iconOnly
                         aria-label={isEditingSelectedMesh ? "Object mode" : "Edit mode"}
+                        data-testid="mesh-cad-edit-mode"
+                        disabled={!isEditingSelectedMesh && !canEnterCADMode}
                         onClick={() => setCADMode(!isEditingSelectedMesh)}
                     >
                         <CadIcon>
@@ -1039,78 +1009,9 @@ export const CADActionBarControls = () => {
                         "Available operations for the current selection.",
                     )}
                 {renderCadDropdown(
-                    "meshOps",
-                    "Mesh Ops",
-                    <CubeIcon />,
-                    [
-                        {
-                            id: "offsetTop",
-                            label: "Offset Top",
-                            description: "Raise or lower the highest vertices of the mesh.",
-                            shortcut: "O",
-                            disabled: !isEditingSelectedMesh,
-                            onSelect: () => editor?.applyCADOffsetTop(cadAmount),
-                        },
-                        {
-                            id: "inflate",
-                            label: "Inflate",
-                            description: "Expand the mesh outward along averaged vertex normals.",
-                            disabled: !isEditingSelectedMesh,
-                            onSelect: () => editor?.applyCADInflateDeflate(cadAmount),
-                        },
-                        {
-                            id: "deflate",
-                            label: "Deflate",
-                            description: "Shrink the mesh inward along averaged vertex normals.",
-                            disabled: !isEditingSelectedMesh,
-                            onSelect: () => editor?.applyCADInflateDeflate(-cadAmount),
-                        },
-                        {
-                            id: "mirror",
-                            label: "Mirror",
-                            description: "Mirror the mesh geometry across the chosen axis.",
-                            disabled: !canMirror,
-                            onSelect: () => editor?.applyCADMirror("x"),
-                        },
-                        {
-                            id: "arrayLinear",
-                            label: "Array Linear",
-                            description: "Repeat the mesh along X. Count fixed at 3; step uses the CAD amount field.",
-                            disabled: !canArray,
-                            onSelect: () => editor?.applyCADArrayLinear(3, new THREE.Vector3(cadAmount || 1, 0, 0)),
-                        },
-                        {
-                            id: "arrayRadial",
-                            label: "Array Radial",
-                            description: "Repeat the mesh evenly around Y. Count fixed at 6; full 360° sweep.",
-                            disabled: !canArray,
-                            onSelect: () => editor?.applyCADArrayRadial(6, "y", Math.PI * 2),
-                        },
-                        {
-                            id: "scatter",
-                            label: "Scatter on Surface",
-                            description: "Select 2+ meshes — first is the source prop, second is the target surface. Produces an InstancedMesh with 100 sampled positions aligned to the surface normal.",
-                            disabled: !canScatter,
-                            onSelect: () => {
-                                const [source, target] = scatterSelectedMeshes as [THREE.Mesh, THREE.Mesh];
-                                void editor?.applyCADSurfaceScatter(source, target, {
-                                    count: 100,
-                                    seed: Math.floor(Math.random() * 1e9),
-                                    alignToNormal: true,
-                                    scale: 1,
-                                    scaleJitter: 0.2,
-                                    rotationJitter: Math.PI,
-                                });
-                            },
-                        },
-                    ],
-                    !isEditingSelectedMesh && !canScatter,
-                    "Whole-mesh operations like offset, inflate, mirror, array, and scatter.",
-                )}
-                {renderCadDropdown(
                     "annotate",
                     "Annotate",
-                    <CubeIcon />,
+                    <RulerIcon />,
                     [
                         {
                             id: "ann-distance",
@@ -1165,10 +1066,13 @@ export const CADActionBarControls = () => {
                                 disabled={!isEditingSelectedMesh}
                             />
                         </Tooltip>
-                        <Tooltip content={renderCadTooltip("Apply", "Apply the current surface operation.")} {...cadTooltipProps}>
+                        <Tooltip content={renderCadTooltip("Apply", cadApplyTooltipDescription)} {...cadTooltipProps}>
                             <CadButton
                                 $iconOnly
+                                aria-label={canApplyCADOperation ? "Apply Mesh CAD operation" : `Apply Mesh CAD operation disabled: ${cadApplyDisabledReason}`}
+                                data-testid="mesh-cad-apply-operation"
                                 disabled={!canApplyCADOperation}
+                                title={cadApplyTooltipDescription}
                                 onClick={applyCADOperation}
                             >
                                 <CadIcon><ApplyCheckIcon /></CadIcon>
@@ -1185,6 +1089,7 @@ export const CADActionBarControls = () => {
                             <CadMenuTrigger
                                 $active={cadAxisConstraint.length > 0}
                                 $open={openCadMenu === "axis"}
+                                data-testid="mesh-cad-axis-menu"
                                 onClick={() => setOpenCadMenu(current => current === "axis" ? null : "axis")}
                             >
                                 <CadIcon><AxisIcon /></CadIcon>
@@ -1197,6 +1102,7 @@ export const CADActionBarControls = () => {
                             <CadMenuSheet>
                                 <CadMenuItem
                                     $active={cadAxisConstraint.length === 3}
+                                    data-testid="mesh-cad-axis-all"
                                     onClick={() => setAllAxes()}
                                 >
                                     <CadMenuItemText>
@@ -1209,6 +1115,7 @@ export const CADActionBarControls = () => {
                                         <CadAxisPill
                                             key={axis}
                                             $active={cadAxisConstraint.includes(axis)}
+                                            data-testid={`mesh-cad-axis-${axis}`}
                                             onClick={() => toggleAxis(axis)}
                                         >
                                             {axis.toUpperCase()}
@@ -1233,10 +1140,13 @@ export const CADActionBarControls = () => {
                                 disabled={!canEditEdgeLength}
                             />
                         </Tooltip>
-                        <Tooltip content={renderCadTooltip("Resize", "Apply the edge length.")} {...cadTooltipProps}>
+                        <Tooltip content={renderCadTooltip("Resize", edgeLengthTooltipDescription)} {...cadTooltipProps}>
                             <CadButton
                                 $iconOnly
+                                aria-label={canEditEdgeLength ? "Apply Mesh CAD edge length" : `Apply Mesh CAD edge length disabled: ${edgeSelectionDisabledReason}`}
+                                data-testid="mesh-cad-apply-edge-length"
                                 disabled={!canEditEdgeLength}
+                                title={edgeLengthTooltipDescription}
                                 onClick={applyEdgeLength}
                             >
                                 <CadIcon><RulerIcon /></CadIcon>
@@ -1271,20 +1181,31 @@ export const CADActionBarControls = () => {
                                 disabled={!isEditingSelectedMesh}
                             />
                         </Tooltip>
-                        <Tooltip content={renderCadTooltip(bevelProfile === "flat" ? "Profile: Flat" : "Profile: Round", "Toggle between flat chamfer and round bevel.")} {...cadTooltipProps}>
+                        <Tooltip
+                            content={renderCadTooltip(
+                                bevelProfile === "flat" ? "Profile: Flat" : "Profile: Round",
+                                canEdgeBevel ? "Toggle between flat chamfer and round bevel." : edgeSelectionDisabledReason,
+                            )}
+                            {...cadTooltipProps}
+                        >
                             <CadButton
                                 $iconOnly
+                                aria-label={canEdgeBevel ? "Toggle Mesh CAD edge bevel profile" : `Toggle Mesh CAD edge bevel profile disabled: ${edgeSelectionDisabledReason}`}
                                 disabled={!canEdgeBevel}
+                                title={canEdgeBevel ? "Toggle between flat chamfer and round bevel." : edgeSelectionDisabledReason}
                                 onClick={() => setBevelProfile(bevelProfile === "flat" ? "round" : "flat")}
                                 style={{minWidth: "28px", padding: "0 4px"}}
                             >
                                 <CadIcon>{bevelProfile === "flat" ? <FlatProfileIcon /> : <RoundProfileIcon />}</CadIcon>
                             </CadButton>
                         </Tooltip>
-                        <Tooltip content={renderCadTooltip("Apply Bevel", "Apply edge bevel to selection.")} {...cadTooltipProps}>
+                        <Tooltip content={renderCadTooltip("Apply Bevel", edgeBevelTooltipDescription)} {...cadTooltipProps}>
                             <CadButton
                                 $iconOnly
+                                aria-label={canEdgeBevel ? "Apply Mesh CAD edge bevel" : `Apply Mesh CAD edge bevel disabled: ${edgeSelectionDisabledReason}`}
+                                data-testid="mesh-cad-apply-edge-bevel"
                                 disabled={!canEdgeBevel}
+                                title={edgeBevelTooltipDescription}
                                 onClick={applyCADEdgeBevel}
                             >
                                 <CadIcon><BevelIcon /></CadIcon>
@@ -1292,7 +1213,7 @@ export const CADActionBarControls = () => {
                         </Tooltip>
                     </CadField>
                 )}
-            </div>
+            </MeshCadStrip>
             <Separator />
         </>
     );

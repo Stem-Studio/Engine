@@ -13,11 +13,11 @@ import type {StemEditorMetadata} from "../../../../../../editor/stem-editor/save
 import global from "@stem/editor-oss/global";
 import type {LambdaInstanceData} from "../../../../../../lambdas/Lambda";
 import {getPrefabId, isPrefab} from "@stem/editor-oss/prefab/util";
-import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
 import {showToast} from "@stem/editor-oss/showToast";
 import {isProtectedTreeNode} from "../../../../../../ui/tree/v2/helpers";
 import {Tree} from "../../../../../../ui/tree/v2/Tree";
 import {TreeItemData} from "../../../../../../ui/tree/v2/TreeItem";
+import {shouldIncludeProjectTreeObject} from "./projectTreeFilters";
 import {TextInput} from "../../../common/TextInput";
 import searchIcon from "../../../icons/search-icon-small.svg";
 import "../../css/ProjectTab.css";
@@ -353,7 +353,7 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
         const scene = app.editor.scene;
         const camera = app.editor.camera;
 
-        if (obj.name === DYNAMIC_ROOT_NAME || obj.userData.isRuntimeOnly) {
+        if (!shouldIncludeProjectTreeObject(obj)) {
             return;
         }
 

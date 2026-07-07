@@ -5,7 +5,7 @@ import BehaviorAttributeType from "./BehaviorAttributeType";
 import BehaviorConfigRegistry from "./BehaviorConfigRegistry";
 import {BehaviorContext} from "./BehaviorContextProvider";
 import BehaviorDataFactory from "./BehaviorDataFactory";
-import BehaviorData from "../../behaviors/BehaviorData";
+import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
 import { getPrefabRoot, isPrefabUnlocked } from '@stem/editor-oss/prefab/util';
 import { showToast } from "@stem/editor-oss/showToast";
 
@@ -35,6 +35,7 @@ class BehaviorDataManager {
 
     cloneBehaviorData(data: BehaviorData): BehaviorData {
         return {
+            schemaVersion: data.schemaVersion ?? BEHAVIOR_DATA_SCHEMA_VERSION,
             id: data.id,
             uuid: MathUtils.generateUUID(),
             enabled: data.enabled,

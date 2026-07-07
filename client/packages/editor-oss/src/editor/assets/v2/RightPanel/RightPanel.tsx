@@ -44,6 +44,7 @@ import {isChildOfScene} from "@stem/editor-oss/utils/SceneUtil";
 import {ResizableWrapper} from "../common/ResizableWrapper/ResizableWrapper";
 import {StyledButton} from "../common/StyledButton";
 import {NEW_MISC_NAME} from "../LeftPanel/MainTabs/AssetsTab/SubTabs/MiscTab";
+import {PlanCadPropertiesSection} from "../PlanMode/PlanCadPropertiesSection";
 
 export enum TABS {
     OBJECT_3D = "Properties",
@@ -77,6 +78,20 @@ export interface IBehaviorUISettings {
     justPosition?: boolean;
 }
 
+function hasPlanCadMetadata(object?: THREE.Object3D | null) {
+    let current = object;
+    while (current) {
+        if (
+            typeof current.userData?.planNodeId === "string" ||
+            current.userData?.planCad
+        ) {
+            return true;
+        }
+        current = current.parent;
+    }
+    return false;
+}
+
 const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibilityChange, pinnedCodeEditorWidth = 0, aiCopilotOffsetRight = 0}: Props) => {
     const {activeRightPanel, setActiveRightPanel} = useAppGlobalContext();
     const isGameSettingsPanelOpen = activeRightPanel === RIGHT_PANEL_VERSIONS.GameSettings;
@@ -103,6 +118,10 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
     const [color, setColor] = useState<string | null>(null);
     const {selected, selectionVersion, app} = useEditorSelection("RightPanel");
     const selectedObj = useMemo(() => app?.editor?.getSelectedObject(), [selectionVersion]);
+    const shouldRenderPlanCadProperties = useMemo(
+        () => hasPlanCadMetadata(selectedObj),
+        [selectedObj, selectionVersion],
+    );
     const activeRightPanelRef = useRef(activeRightPanel);
     const keepMaterialPanelOpenRef = useRef(false);
 
@@ -638,6 +657,9 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
                                                 : undefined
                                         }
                                     />
+                                    {selectedObj && shouldRenderPlanCadProperties && (
+                                        <PlanCadPropertiesSection selectedObject={selectedObj} />
+                                    )}
 
                                     {/* Special editor panels - render before other sections to keep them visible */}
                                     {selectedObj instanceof CustomTube && <CurveEditorPanel />}

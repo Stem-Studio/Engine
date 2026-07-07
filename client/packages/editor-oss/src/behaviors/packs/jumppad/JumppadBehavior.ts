@@ -6,7 +6,7 @@ import {IPhysics} from "../../../physics/common/types";
 import MotionStateHelper from "../../../physics/MotionStateHelper";
 import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
 import {BehaviorBase} from "../../Behavior";
-import CollisionDetector from "../../collisions/CollisionDetector";
+import CollisionDetector, {type CollisionContext} from "../../collisions/CollisionDetector";
 import GameManager from "../../game/GameManager";
 
 export enum CalculationMode {
@@ -41,7 +41,7 @@ class JumppadBehavior extends BehaviorBase {
 
     onReset() {}
 
-    onCollision() {
+    onCollision(context?: CollisionContext) {
         if (this.attributes.strength <= 0 || !this.target || this.isPaused) {
             return;
         }
@@ -52,7 +52,7 @@ class JumppadBehavior extends BehaviorBase {
             return;
         }
 
-        const object = this.game?.player; // TODO: get collision object instead of player
+        const object = context?.other ?? this.game?.player;
 
         if (!object || !object.userData.physics?.enabled) {
             return;
@@ -76,8 +76,7 @@ class JumppadBehavior extends BehaviorBase {
         const quaternion = this.target.quaternion.clone();
         impulse.applyQuaternion(quaternion);
 
-        //apply impulse to the player object
-        //TODO: MP support is needed for multiple player instances
+        // Apply impulse to the object that actually triggered this collision.
         this.physics?.applyImpulseToPlayer(object.uuid, impulse);
         EventBus.instance.send(IN_GAME_EVENTS.JUMPPAD_ACTIVATED, {
             target: this.target,

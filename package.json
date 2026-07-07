@@ -33,8 +33,9 @@
     "typecheck": "cd client && bunx tsc --noEmit",
     "lint": "cd client && bunx eslint packages",
     "lint:oss-boundary": "cd client && eslint --config eslint.boundary.cjs --no-inline-config --no-warn-ignored --quiet 'packages/editor-oss/src/**/*.{ts,tsx}'",
-    "test": "BUILD_MODE=oss bunx --bun vitest run",
-    "test:e2e": "node scripts/playwright/oss-smoke.mjs",
+    "test": "BUILD_MODE=oss bunx --bun vitest run --exclude '**/DirectCopilotProvider.test.ts' --exclude '**/AiCopilot.sessionMode.test.tsx' --exclude '**/QuickBuildToolbar.behavior.test.tsx' --exclude '**/builderToolbars.test.tsx' && BUILD_MODE=oss bunx --bun vitest run client/packages/editor-oss/src/copilot/DirectCopilotProvider.test.ts && BUILD_MODE=oss bunx --bun vitest run client/packages/editor-oss/src/editor/assets/v2/AiCopilot/AiCopilot.sessionMode.test.tsx && BUILD_MODE=oss bunx vitest run client/packages/editor-oss/src/editor/assets/v2/QuickBuild/QuickBuildToolbar.behavior.test.tsx client/packages/editor-oss/src/editor/assets/v2/builderToolbars.test.tsx",
+    "test:e2e": "node scripts/playwright/oss-smoke.mjs && node scripts/playwright/oss-filesystem-roundtrip.mjs && node scripts/playwright/oss-builder-mode-smoke.mjs && node scripts/playwright/oss-builder-tools-ux-smoke.mjs && node scripts/playwright/oss-plan-cad-smoke.mjs",
+    "test:e2e:filesystem-roundtrip": "node scripts/playwright/oss-filesystem-roundtrip.mjs",
     "test:e2e:site": "node scripts/playwright/site-deploy-routing.mjs && node scripts/playwright/site-landing.mjs && node scripts/playwright/site-docs.mjs && node scripts/playwright/site-nav.mjs && node scripts/playwright/site-playground.mjs",
     "test:e2e:site:routing": "node scripts/playwright/site-deploy-routing.mjs",
     "deploy": "./scripts/deploy.sh",
@@ -50,7 +51,13 @@
     "docker:up:full": "docker compose -f docker-compose.full.yml up -d",
     "docker:logs": "docker compose logs -f",
     "docker:down": "docker compose down --remove-orphans && docker compose -f docker-compose.full.yml down --remove-orphans",
-    "postinstall": "bun scripts/copy-draco.js && (cd stemstudio-multiplayer && npm install) && (cd stemstudio-copilot && bun install)"
+    "postinstall": "bun scripts/copy-draco.js && (cd stemstudio-multiplayer && npm install) && (cd stemstudio-copilot && bun install)",
+    "vite-build": "BUILD_MODE=oss bunx --bun vite build",
+    "textures:tiny-world": "ENABLE_TINY_WORLD_TEXTURES=1 node scripts/copy-tiny-world-builder-textures.mjs",
+    "test:e2e:builder-mode": "node scripts/playwright/oss-builder-mode-smoke.mjs",
+    "test:e2e:builder-tools": "node scripts/playwright/oss-builder-tools-ux-smoke.mjs",
+    "test:e2e:builder-release": "node scripts/playwright/oss-builder-release-scenario.mjs",
+    "test:e2e:plan-cad": "node scripts/playwright/oss-plan-cad-smoke.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",

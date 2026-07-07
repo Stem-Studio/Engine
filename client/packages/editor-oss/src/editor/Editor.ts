@@ -71,7 +71,7 @@ import {isDefaultSceneObject} from "@stem/editor-oss/agent/script-tool/defaultSc
 import ChildrenAttributeConverter from "./behaviors/converters/ChildrenAttributeConverter";
 import EnumAttributeConverter from "./behaviors/converters/EnumConverter";
 import ModelLoader from "../assets/js/loaders/ModelLoader";
-import BehaviorData from "../behaviors/BehaviorData";
+import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../behaviors/BehaviorData";
 import {CreateBehaviorOptions} from "../behaviors/BehaviorManager";
 import BehaviorScriptInjector from "../behaviors/BehaviorScriptInjector";
 import BehaviorTypeRegistry from "../behaviors/BehaviorTypeRegistry";
@@ -141,6 +141,7 @@ import Vector3Widget from "./behaviors/widgets/Vector3Widget";
 import VideoWidget from "./behaviors/widgets/VideoWidget";
 import {CADController} from "./cad/CADController";
 import {ensureObjectMeshData} from "./cad/meshDataUtils";
+import {removedObjectContainsCADEditedObject, resetCADModeState, restoreCADTransformControls} from "./cad/removeGuards";
 import {isCADToolsEnabled} from "./cad/settings";
 import {CADAxisConstraint, CADSelectionMode, CADSelectionShape, CADTool} from "./cad/types";
 import {CurveEditorControls} from "./controls/CurveEditorControls";
@@ -1687,18 +1688,14 @@ class Editor {
         return true;
     }
 
-    exitCADMode() {
+    exitCADMode(options: {notifySelection?: boolean} = {}) {
         if (!this.cadMode && !this.cadEditedObjectUuid) {
             return;
         }
 
-        this.cadMode = false;
-        this.cadSelectionMode = "object";
-        this.cadSelectionShape = "box";
-        this.cadAxisConstraint = ["x", "y", "z"];
-        this.cadTool = "select";
-        this.cadEditedObjectUuid = null;
+        resetCADModeState(this);
         this.cadController.deactivate();
+        restoreCADTransformControls(this.engine);
         // Leaving CAD mode cancels any in-progress annotation pick session
         // so the tool's event listeners don't outlive the mode.
         this._annotationTool?.cancel();
@@ -1713,7 +1710,7 @@ class Editor {
         this.engine?.call("cadAxisConstraintChanged", this, this.cadAxisConstraint);
         this.engine?.call("cadToolChanged", this, this.cadTool);
 
-        if (this.selected && !Array.isArray(this.selected)) {
+        if (options.notifySelection !== false && this.selected && !Array.isArray(this.selected)) {
             this.engine?.call("objectSelected", this, this.selected);
         }
     }
@@ -2054,7 +2051,7 @@ class Editor {
         }
 
         if (Array.isArray(this.selected) || !this.selected || this.selected.uuid !== editedObject.uuid) {
-            this.exitCADMode();
+            this.selected = editedObject;
         }
     }
 
@@ -2224,12 +2221,15 @@ class Editor {
             }
         }
 
-        if (
-            this.cadEditedObjectUuid &&
-            (object.uuid === this.cadEditedObjectUuid || object.getObjectByProperty("uuid", this.cadEditedObjectUuid))
-        ) {
-            this.exitCADMode();
+        const removedCadEditedObject = removedObjectContainsCADEditedObject(object, this.cadEditedObjectUuid);
+        if (removedCadEditedObject) {
+            this.exitCADMode({notifySelection: false});
         }
+        const selectedObject = this.selected instanceof THREE.Object3D ? this.selected : null;
+        const removedSelectedObject =
+            !!selectedObject &&
+            (object === selectedObject ||
+                Boolean(object.getObjectByProperty("uuid", selectedObject.uuid)));
 
         // Clean up behavior plugins first (Editor responsibility)
         this.cleanupBehaviorPluginsForObjectAndChildren(object);
@@ -2241,6 +2241,9 @@ class Editor {
         }
 
         object.parent.remove(object);
+        if (removedSelectedObject) {
+            this.deselect();
+        }
 
         this.engine?.game?.disposeObject(object);
 
@@ -3101,6 +3104,7 @@ class Editor {
         if (behavior.name) {
             console.log(`[Editor] Converting behavior v2 "${behavior.name}" to new format, `);
             return {
+                schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
                 id: behavior.name,
                 uuid: behavior.id,
                 enabled: behavior.enabled,
@@ -3142,6 +3146,7 @@ class Editor {
         const id = behavior.type.toLowerCase().trim();
 
         const newBehavior = {
+            schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
             id: id,
             uuid: behavior.uuid,
             enabled: behavior.enabled,
@@ -3414,6 +3419,27 @@ class Editor {
     }
 
     select(object: THREE.Object3D | THREE.Object3D[] | null, noFocus?: boolean) {
+        const cadEditedObject = this.cadEditedObject;
+        if (this.cadMode && cadEditedObject) {
+            if (!object) {
+                return;
+            }
+
+            const requestedObjects = Array.isArray(object) ? object : [object];
+            const targetsEditedObject = requestedObjects.some(candidate => {
+                if (!candidate) {
+                    return false;
+                }
+                return this.getSelectionBoundaryObject(candidate)?.uuid === cadEditedObject.uuid;
+            });
+
+            if (!targetsEditedObject) {
+                return;
+            }
+
+            object = cadEditedObject;
+        }
+
         if (!object) {
             this.clearSelection();
             return;

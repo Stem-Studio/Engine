@@ -136,6 +136,9 @@ const EventList = [
     "cadAxisConstraintChanged",
     "cadToolsSettingsChanged",
     "cadSelectionChanged",
+    "planCadChanged",
+    "quickBuildBatchStarted",
+    "quickBuildBatchEnded",
 
     // Asset events
     "assetAdded",

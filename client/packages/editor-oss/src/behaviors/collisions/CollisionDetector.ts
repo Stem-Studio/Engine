@@ -10,8 +10,16 @@ export interface CollisionListener {
     type: COLLISION_TYPE;
     useBoundingBoxes?: boolean;
     distanceThreshold?: number;
-    callback: () => void;
+    callback: (context: CollisionContext) => void;
 }
+
+export type CollisionContext = {
+    target: THREE.Object3D;
+    other?: THREE.Object3D;
+    listener: CollisionListener;
+    source: "distance" | "physics";
+    collision?: CollisionData;
+};
 
 /**
  * This class does both physics and distance base collision detection.
@@ -104,8 +112,8 @@ class CollisionDetector {
             return isIntersecting;
         }
 
-        // TODO: use SAT for more accurate collision detection or leave only bounding boxes collision and use physics for more complex cases
-        //try by distance by default
+        // Distance mode is intentionally a simple proximity trigger. Use
+        // bounding boxes or physics listeners for shape-accurate collision.
         const distance = obj.position.distanceTo(target.position);
         const collisionThreshold = distanceThreshold || obj.userData.collision_sensitivity;
         if (debug) {
@@ -124,21 +132,23 @@ class CollisionDetector {
     }
 
     private detectCollisionViaDistance() {
-        [this.objectsWithoutPhysics, this.objectsWithPhysics].forEach(map => {
-            map.forEach((listenerArr, obj) => {
-                listenerArr.forEach(listener => {
-                    //FIXME: can be further optimized
-                    if (listener.type === COLLISION_TYPE.WITH_PLAYER) {
-                        if (!this.player) return;
-                        if (
-                            this.isColliding(obj, this.player, !!listener.useBoundingBoxes, listener.distanceThreshold)
-                        ) {
-                            listener.callback();
-                        }
-                    } else {
-                        console.warn("Unsupported collision type: "+listener.type);
+        this.objectsWithoutPhysics.forEach((listenerArr, obj) => {
+            listenerArr.forEach(listener => {
+                if (listener.type === COLLISION_TYPE.WITH_PLAYER) {
+                    if (!this.player) return;
+                    if (
+                        this.isColliding(obj, this.player, !!listener.useBoundingBoxes, listener.distanceThreshold)
+                    ) {
+                        listener.callback({
+                            target: obj,
+                            other: this.player,
+                            listener,
+                            source: "distance",
+                        });
                     }
-                });
+                } else {
+                    console.warn("Unsupported collision type: "+listener.type);
+                }
             });
         });
     }
@@ -151,7 +161,13 @@ class CollisionDetector {
                 if (arr && arr.length > 0) {
                     let listener = arr.find(l => l.id === collision.listenerId);
                     if (listener) {
-                        listener.callback();
+                        listener.callback({
+                            target,
+                            other: listener.type === COLLISION_TYPE.WITH_PLAYER ? this.player : undefined,
+                            listener,
+                            source: "physics",
+                            collision,
+                        });
                     } else {
                         console.warn("detectCollisionViaPhysics failed to get listener: " + collision.listenerId);
                     }
