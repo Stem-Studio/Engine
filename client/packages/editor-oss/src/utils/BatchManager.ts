@@ -1433,7 +1433,11 @@ export default class BatchManager {
     }
 
     private updateBatchedMeshes(): void {
-        for (const mesh of this.meshDataMap.keys()) {
+        for (const mesh of [...this.meshDataMap.keys()]) {
+            if (!this.canBatch(mesh)) {
+                this.removeMesh(mesh);
+                continue;
+            }
             this.updateMeshTransform(mesh);
             this.updateMeshMaterial(mesh);
         }

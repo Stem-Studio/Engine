@@ -51,6 +51,35 @@ export const ActionButton = styled.button<{
     &:hover {
         background: #0284c7;
     }
+
+    &:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 2px;
+    }
+`;
+
+export const BuildSplitControl = styled.div<{$isSelected?: boolean}>`
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    border-radius: 8px;
+    overflow: auto;
+    background: ${({$isSelected}) => $isSelected ? "var(--theme-grey-bg-secondary-button)" : "transparent"};
+    border: 1px solid ${({$isSelected}) => $isSelected ? "#ffffff20" : "transparent"};
+`;
+
+export const BuildPrimaryButton = styled(ActionButton)`
+    border-radius: 0;
+    border: 0;
+    width: 36px;
+`;
+
+export const BuildMenuButton = styled(ActionButton)<{$isOpen?: boolean}>`
+    width: 24px;
+    border-radius: 0;
+    border: 0;
+    border-left: 1px solid #ffffff1a;
+    background: ${({$isOpen}) => $isOpen ? "#0284c7" : "transparent"};
 `;
 
 export const InputWrapper = styled.div`
@@ -179,15 +208,57 @@ export const MenuPopover = styled.div`
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
 `;
 
-export const MenuItem = styled.div`
+export const MenuItem = styled.button`
+    ${buttonReset};
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
     padding: 8px 12px;
     cursor: pointer;
     font-size: 12px;
     color: #ccc;
+    text-align: left;
     &:hover {
         background: #2a2d2e;
     }
+
+    &:disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+    }
+
+    &:disabled:hover {
+        background: transparent;
+    }
+`;
+
+export const MenuItemText = styled.span`
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+`;
+
+export const MenuItemLabel = styled.span`
+    color: #e5e7eb;
+    font-size: 12px;
+    line-height: 1.2;
+`;
+
+export const MenuItemDescription = styled.span`
+    color: #9ca3af;
+    font-size: 10px;
+    line-height: 1.2;
+`;
+
+export const MenuItemBadge = styled.span`
+    margin-left: auto;
+    border-radius: 999px;
+    border: 1px solid #ffffff22;
+    padding: 1px 5px;
+    color: #cbd5e1;
+    font-size: 9px;
+    line-height: 1.2;
 `;
