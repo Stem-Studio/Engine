@@ -43,15 +43,10 @@ import type {
 } from "./planCadEditorBridge";
 import {
   getPlanCadOpeningPlacement,
-  getPlanCadToolMeasurement,
   planPointDistanceSq,
   snapPlanPointToGuides,
 } from "./planCadGuides";
-import type {
-  PlanCadMeasurement,
-  PlanCadOpeningPlacement,
-  PlanCadSnapResult,
-} from "./planCadGuides";
+import type { PlanCadOpeningPlacement, PlanCadSnapResult } from "./planCadGuides";
 import { createPlanNode } from "./planCadCore";
 import type { PlanDisplayMode, PlanLevelNode } from "./planCadCore";
 import {
@@ -85,7 +80,6 @@ import {
 import { Tooltip } from "../common/Tooltip";
 import {
   getSnappingSettings,
-  getUnitsSettings,
 } from "../RightPanel/panels/ProjectSettings/constants";
 import { isInputActive } from "../utils/isInputActive";
 import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
@@ -512,9 +506,10 @@ function getPointerPlanCadHit(
   const pickableChildren = scene.children.filter(
     (child) =>
       child !== sceneHelpers &&
-      !child.userData?.isRuntimeOnly &&
+      (!child.userData?.isRuntimeOnly || child.userData?.isPlanCadManaged) &&
       !child.userData?.isPlanCadPreview,
   );
+  scene.updateMatrixWorld(true);
   const intersects = raycaster.intersectObjects(pickableChildren, true);
   if (intersects.length > 0) {
     const hit = intersects[0]!;
@@ -547,9 +542,6 @@ export const PlanCadToolbar = ({
     getPlanCadSceneData(
       (global.app as EngineRuntime | undefined)?.editor?.scene,
     ),
-  );
-  const [measurement, setMeasurement] = useState<PlanCadMeasurement | null>(
-    null,
   );
   const [partPresetId, setPartPresetId] = useState(
     PLAN_CAD_PART_PRESETS[0]?.id ?? "",
@@ -643,12 +635,10 @@ export const PlanCadToolbar = ({
       const tool = activeToolRef.current;
       if (!app || !helperScene || !point || tool === "select") {
         clearPreview();
-        setMeasurement(null);
         return;
       }
 
       const resolved = resolvePlanPoint(app, point);
-      const unitsSettings = getUnitsSettings(app.editor?.scene);
       const current = resolved.point;
       const openingPlacement =
         tool === "door" || tool === "window"
@@ -659,17 +649,6 @@ export const PlanCadToolbar = ({
               Math.max(0.5, getQuickSnapIncrement(app) * 1.25),
             )
           : null;
-      setMeasurement(
-        getPlanCadToolMeasurement({
-          tool,
-          anchorPoint: anchor,
-          polygonPoints: polygon,
-          currentPoint: current,
-          snap: resolved.snap,
-          openingPlacement,
-          unitsSettings,
-        }),
-      );
 
       const previewKey = JSON.stringify({
         tool,
@@ -766,7 +745,6 @@ export const PlanCadToolbar = ({
         planDataRef.current = next;
         setPlanData(next);
         clearPreview();
-        setMeasurement(null);
         logPlanCad("Commit complete", {
           nodeCount: Object.keys(next.nodes).length,
           sceneChildren: scene.children.length,
@@ -931,7 +909,6 @@ export const PlanCadToolbar = ({
         setAnchorDraft(null);
         setPolygonDraft([]);
         clearPreview();
-        setMeasurement(null);
       }
       setActiveTool(tool);
     },
@@ -942,7 +919,6 @@ export const PlanCadToolbar = ({
     setAnchorDraft(null);
     setPolygonDraft([]);
     clearPreview();
-    setMeasurement(null);
   }, [clearPreview, setAnchorDraft, setPolygonDraft]);
 
   const removeLastPolygonPoint = useCallback(() => {
@@ -952,7 +928,6 @@ export const PlanCadToolbar = ({
     setPolygonDraft(nextPoints);
     if (nextPoints.length === 0) {
       clearPreview();
-      setMeasurement(null);
     }
     return true;
   }, [clearPreview, setPolygonDraft]);
@@ -968,7 +943,6 @@ export const PlanCadToolbar = ({
         : createPlanCadPolygonZone(data, points),
     ).then(() => {
       setPolygonDraft([]);
-      setMeasurement(null);
     });
     return true;
   }, [commitMutation, setPolygonDraft]);
@@ -980,7 +954,6 @@ export const PlanCadToolbar = ({
       setAnchorDraft(null);
       setPolygonDraft([]);
       clearPreview();
-      setMeasurement(null);
     }
   }, [activeTool, clearPreview, setAnchorDraft, setPolygonDraft]);
 
@@ -1190,14 +1163,6 @@ export const PlanCadToolbar = ({
           Math.max(0.5, increment * 1.25),
         );
         if (!openingPlacement) {
-          setMeasurement(
-            getPlanCadToolMeasurement({
-              tool,
-              currentPoint: point,
-              openingPlacement: null,
-              unitsSettings: getUnitsSettings(app.editor.scene),
-            }),
-          );
           clearPreview();
           return;
         }
@@ -1277,6 +1242,7 @@ export const PlanCadToolbar = ({
     const activeTouchPointers = new Set<number>();
     let pendingPointerMove: PointerEvent | null = null;
     let pointerMoveFrame: number | null = null;
+    let selectPointerCapturedPlanCad = false;
 
     const isPlanCadUi = (target: EventTarget | null) =>
       target instanceof Element &&
@@ -1304,8 +1270,8 @@ export const PlanCadToolbar = ({
       if (event.pointerType === "touch") {
         activeTouchPointers.add(event.pointerId);
       }
+      const activeTool = activeToolRef.current;
       if (
-        activeToolRef.current === "select" ||
         event.button !== 0 ||
         shouldIgnorePointer(event) ||
         app.isPlaying ||
@@ -1313,6 +1279,11 @@ export const PlanCadToolbar = ({
         isPlanCadUi(event.target)
       ) {
         return;
+      }
+      if (activeTool === "select") {
+        const hit = getPointerPlanCadHit(app, event);
+        selectPointerCapturedPlanCad = !!findPlanCadNodeObject(hit?.object);
+        if (!selectPointerCapturedPlanCad) return;
       }
       downPoint = { x: event.clientX, y: event.clientY };
       activePointerId = event.pointerId;
@@ -1351,6 +1322,7 @@ export const PlanCadToolbar = ({
 
     const handlePointerLeave = () => {
       cancelScheduledPointerMove();
+      selectPointerCapturedPlanCad = false;
       updatePreview(null);
     };
 
@@ -1359,8 +1331,10 @@ export const PlanCadToolbar = ({
         activeTouchPointers.delete(event.pointerId);
       }
       cancelScheduledPointerMove();
-      if (activeToolRef.current === "select") return;
       if (!downPoint || activePointerId !== event.pointerId) return;
+      const activeTool = activeToolRef.current;
+      const capturedPlanCad = selectPointerCapturedPlanCad;
+      selectPointerCapturedPlanCad = false;
       const distance = Math.hypot(
         event.clientX - downPoint.x,
         event.clientY - downPoint.y,
@@ -1378,6 +1352,7 @@ export const PlanCadToolbar = ({
       )
         return;
 
+      if (activeTool === "select" && !capturedPlanCad) return;
       stopEditorClick(event);
       const hit = getPointerPlanCadHit(app, event);
       if (hit) {
@@ -1408,6 +1383,7 @@ export const PlanCadToolbar = ({
         activePointerId = null;
         downPoint = null;
       }
+      selectPointerCapturedPlanCad = false;
       updatePreview(null);
     };
 
@@ -1511,19 +1487,14 @@ export const PlanCadToolbar = ({
     polygonPoints.length < 3 ? "Add at least 3 points to finish this polygon." : "";
   const finishPolygonTooltip =
     finishPolygonDisabledReason || "Finish polygon";
-  const measurementPrimary =
-    measurement?.primary ??
-    (polygonPoints.length > 0
+  const polygonStatus = [
+    polygonPoints.length > 0
       ? `${activeTool === "zone" ? "Zone" : "Room"} ${polygonPoints.length} pts`
-      : "");
-  const measurementSecondary = [
-    measurement?.secondary,
-    measurement?.snapLabel,
+      : "",
     polygonDraftHint,
   ]
     .filter(Boolean)
     .join(" / ");
-  const showMeasurementStrip = !!measurement || polygonPoints.length > 0;
 
   return (
     <Toolbar
@@ -1851,7 +1822,7 @@ export const PlanCadToolbar = ({
       )}
       {anchorPoint && (
         <AnchorPill>
-          Wall {anchorPoint.x.toFixed(1)},{anchorPoint.z.toFixed(1)}
+          Wall start
         </AnchorPill>
       )}
       {polygonPoints.length > 0 && (
@@ -1859,17 +1830,8 @@ export const PlanCadToolbar = ({
           {activeTool === "zone" ? "Zone" : "Room"} {polygonPoints.length} pts
         </AnchorPill>
       )}
-      {showMeasurementStrip && (
-        <MeasurementStrip
-          data-testid="plan-cad-measurement"
-          aria-live="polite"
-          title={[measurementPrimary, measurementSecondary]
-            .filter(Boolean)
-            .join(" - ")}
-        >
-          <MeasurementPrimary>{measurementPrimary}</MeasurementPrimary>
-          <MeasurementSecondary>{measurementSecondary}</MeasurementSecondary>
-        </MeasurementStrip>
+      {polygonStatus && (
+        <DraftStatusPill title={polygonStatus}>{polygonStatus}</DraftStatusPill>
       )}
       {polygonPoints.length > 0 && (
         <UtilityGroup>
@@ -1981,42 +1943,24 @@ const LevelSelect = styled(PartSelect)`
 
 const AnchorPill = styled(BuilderAnchorPill).attrs({ $width: "96px" })``;
 
-const MeasurementStrip = styled.div`
-  width: 152px;
+const DraftStatusPill = styled.div`
+  width: 128px;
   height: 40px;
-  display: grid;
-  grid-template-rows: 20px 16px;
-  align-content: center;
-  gap: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
   border: 1px solid ${builderToolbarTokens.accentPlanBorderStrong};
   border-radius: 8px;
   background: ${builderToolbarTokens.measurementSurface};
   color: ${builderToolbarTokens.textPrimary};
-  padding: 2px 8px;
+  padding: 0 8px;
   box-shadow: inset 0 0 0 1px ${builderToolbarTokens.surfaceSubtle};
   overflow: hidden;
-`;
-
-const MeasurementPrimary = styled.div`
-  min-width: 0;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 900;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-`;
-
-const MeasurementSecondary = styled.div`
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: ${builderToolbarTokens.textMuted};
-  font-size: 14px;
-  font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 `;

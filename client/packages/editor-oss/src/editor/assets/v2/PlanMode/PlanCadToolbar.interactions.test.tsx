@@ -5,6 +5,13 @@ import * as THREE from "three";
 
 import global from "@stem/editor-oss/global";
 import {PlanCadToolbar} from "./PlanCadToolbar";
+import {
+    createDefaultPlanCadData,
+    createPlanCadWall,
+    findPlanCadNodeObjectById,
+    findPlanCadRoot,
+    syncPlanCadScene,
+} from "./planCadEditorBridge";
 
 vi.mock("../common/Tooltip", () => ({
     Tooltip: ({children}: {children: ReactNode}) => <>{children}</>,
@@ -88,6 +95,48 @@ function activateGroupedTool(groupId: string, toolId: string) {
     fireEvent.click(screen.getByTestId(`plan-cad-tool-${toolId}`));
 }
 
+function installViewportRaycastHarness(app: ReturnType<typeof installFakeApp>) {
+    const viewport = document.createElement("canvas");
+    (viewport as any).getBoundingClientRect = vi.fn(() => ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 640,
+        bottom: 360,
+        width: 640,
+        height: 360,
+        toJSON: () => ({}),
+    }));
+    document.body.appendChild(viewport);
+    (app as any).renderer = {domElement: viewport};
+
+    const camera = new THREE.OrthographicCamera(-4, 4, 2.25, -2.25, 0.1, 50);
+    camera.position.set(0, 10, 0);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    (app.editor as any).orthCamera = camera;
+
+    return viewport;
+}
+
+async function installSyncedWall(app: ReturnType<typeof installFakeApp>) {
+    const data = createPlanCadWall(
+        createDefaultPlanCadData(),
+        {x: -2, z: 0},
+        {x: 2, z: 0},
+    );
+    app.editor.scene.userData.planCad = data;
+    await syncPlanCadScene(app.editor as any, {force: true});
+    const root = findPlanCadRoot(app.editor.scene);
+    const wallObject = findPlanCadNodeObjectById(root, data.selectedNodeId);
+    expect(wallObject).toBeTruthy();
+    expect(wallObject?.userData.isRuntimeOnly).toBe(true);
+    expect(wallObject?.userData.isPlanCadManaged).toBe(true);
+    return wallObject!;
+}
+
 describe("PlanCadToolbar interactions", () => {
     afterEach(() => {
         cleanup();
@@ -154,9 +203,7 @@ describe("PlanCadToolbar interactions", () => {
             app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(2, 0, 2), object: null}, {preventDefault: vi.fn()});
         });
 
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-measurement")).toHaveTextContent("Door needs wall");
-        });
+        expect(screen.queryByTestId("plan-cad-measurement")).toBeNull();
         expect(app.editor.scene.userData.planCad).toBeUndefined();
     });
 
@@ -173,11 +220,11 @@ describe("PlanCadToolbar interactions", () => {
             app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(0, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
             await Promise.resolve();
         });
-        expect(screen.getByText("Wall 0.0,0.0")).toBeInTheDocument();
+        expect(screen.getByText("Wall start")).toBeInTheDocument();
 
         fireEvent.keyDown(window, {key: "Escape"});
         await waitFor(() => {
-            expect(screen.queryByText("Wall 0.0,0.0")).not.toBeInTheDocument();
+            expect(screen.queryByText("Wall start")).not.toBeInTheDocument();
             expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
         });
 
@@ -286,9 +333,6 @@ describe("PlanCadToolbar interactions", () => {
             app.emit("gpuPick.PlanCadToolbar", {point: new THREE.Vector3(2, 0, 2)});
         });
 
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-measurement")).toHaveTextContent("Object placement");
-        });
         expect(app.editor.sceneHelpers.children.some(child => child.userData.isPlanCadPreview)).toBe(true);
     });
 
@@ -363,7 +407,7 @@ describe("PlanCadToolbar interactions", () => {
             expect(walls).toHaveLength(1);
         });
 
-        expect(screen.getByText("Wall 4.0,0.0")).toBeInTheDocument();
+        expect(screen.getByText("Wall start")).toBeInTheDocument();
 
         await act(async () => {
             viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
@@ -403,6 +447,74 @@ describe("PlanCadToolbar interactions", () => {
             ).toBe(true);
         });
 
+        viewport.remove();
+    });
+
+    it("selects generated BIM structures from viewport select hits", async () => {
+        const app = installFakeApp();
+        const viewport = installViewportRaycastHarness(app);
+        const wallObject = await installSyncedWall(app);
+
+        render(<PlanCadToolbar />);
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        expect(app.editor.select).toHaveBeenCalledWith(wallObject);
+        viewport.remove();
+    });
+
+    it("adds an opening when viewport raycast hits a generated wall", async () => {
+        const app = installFakeApp();
+        const viewport = installViewportRaycastHarness(app);
+        await installSyncedWall(app);
+
+        render(<PlanCadToolbar />);
+        activateGroupedTool("openings", "door");
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-door")).toHaveAttribute("aria-pressed", "true");
+        });
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 320,
+                clientY: 180,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            const walls = Object.values(app.editor.scene.userData.planCad.nodes).filter(
+                (node: any): node is {type: "wall"; openings: unknown[]} => node.type === "wall",
+            );
+            expect(walls[0]?.openings).toHaveLength(1);
+        });
+        expect(screen.queryByTestId("plan-cad-measurement")).toBeNull();
         viewport.remove();
     });
 
@@ -485,7 +597,7 @@ describe("PlanCadToolbar interactions", () => {
             await Promise.resolve();
         });
         await waitFor(() => {
-            expect(screen.getByText("Wall 0.0,0.0")).toBeInTheDocument();
+            expect(screen.getByText("Wall start")).toBeInTheDocument();
         });
 
         await act(async () => {
