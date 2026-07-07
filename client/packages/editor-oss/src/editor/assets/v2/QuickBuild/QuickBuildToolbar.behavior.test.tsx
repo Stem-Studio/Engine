@@ -586,7 +586,7 @@ describe("QuickBuildToolbar behavior", () => {
         viewport.remove();
     });
 
-    it("shows text placement status for ready and blocked preview cells", async () => {
+    it("keeps placement status out of the toolbar while previewing cells", async () => {
         const app = installFakeApp();
         const ground = createQuickBuildObject("ground");
         app.editor.scene.add(ground);
@@ -595,9 +595,7 @@ describe("QuickBuildToolbar behavior", () => {
         await act(async () => {
             await Promise.resolve();
         });
-        const placementStatus = screen.getByTestId("quick-build-placement-status");
-        expect(placementStatus).toHaveAttribute("aria-hidden", "true");
-        expect(placementStatus).toHaveTextContent("");
+        expect(screen.queryByTestId("quick-build-placement-status")).toBeNull();
 
         await act(async () => {
             app.emit(
@@ -609,9 +607,11 @@ describe("QuickBuildToolbar behavior", () => {
         });
 
         await waitFor(() => {
-            expect(placementStatus).toHaveAttribute("aria-hidden", "false");
-            expect(placementStatus).toHaveTextContent("Ready 1 cell");
+            expect(app.editor.sceneHelpers.children.some(
+                (child: THREE.Object3D) => child.userData?.isQuickBuildPreview,
+            )).toBe(true);
         });
+        expect(screen.queryByTestId("quick-build-placement-status")).toBeNull();
 
         await act(async () => {
             app.emit(
@@ -623,9 +623,11 @@ describe("QuickBuildToolbar behavior", () => {
         });
 
         await waitFor(() => {
-            expect(placementStatus).toHaveAttribute("aria-hidden", "false");
-            expect(placementStatus).toHaveTextContent("Blocked occupied");
+            expect(app.editor.sceneHelpers.children.some(
+                (child: THREE.Object3D) => child.userData?.isQuickBuildPreview,
+            )).toBe(true);
         });
+        expect(screen.queryByTestId("quick-build-placement-status")).toBeNull();
     });
 
     it("skips an occupied terrain cell even when the raycast hits another quick build layer", async () => {

@@ -139,11 +139,6 @@ type QuickBuildBrushTool = {
 
 type TexturePackStatus = "loading" | "loaded" | "unavailable" | "error";
 
-type QuickBuildPlacementStatus = {
-  tone: "ready" | "blocked";
-  message: string;
-};
-
 const QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS = 250;
 const QUICK_BUILD_LIVE_REFRESH_GRACE_MS =
   QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS + 50;
@@ -687,52 +682,6 @@ function getQuickBuildRotationRadians(rotationSteps: number) {
 
 function getQuickBuildRotationDegrees(rotationSteps: number) {
   return normalizeRotationStep(rotationSteps) * 90;
-}
-
-function formatQuickBuildPlacementStatus(
-  candidates: QuickBuildPlacementCandidate[],
-): QuickBuildPlacementStatus | null {
-  if (candidates.length === 0) return null;
-
-  const validCount = candidates.filter((candidate) => candidate.valid).length;
-  if (validCount > 0) {
-    const noun = validCount === 1 ? "cell" : "cells";
-    return {
-      tone: "ready",
-      message:
-        validCount === candidates.length
-          ? `Ready ${validCount} ${noun}`
-          : `Ready ${validCount}/${candidates.length}`,
-    };
-  }
-
-  const reasons = new Set(
-    candidates
-      .map((candidate) => candidate.reason)
-      .filter(Boolean),
-  );
-  const reasonLabel =
-    reasons.size > 1
-      ? "mixed"
-      : reasons.has("overlap")
-        ? "overlap"
-        : reasons.has("duplicate")
-          ? "occupied"
-          : "blocked";
-
-  return {
-    tone: "blocked",
-    message: `Blocked ${reasonLabel}`,
-  };
-}
-
-function resolveQuickBuildPlacementStatus(
-  current: QuickBuildPlacementStatus | null,
-  next: QuickBuildPlacementStatus | null,
-) {
-  return current?.tone === next?.tone && current?.message === next?.message
-    ? current
-    : next;
 }
 
 function movePreviewObjectToPoint(
@@ -1627,8 +1576,6 @@ export const QuickBuildToolbar = ({
   >({});
   const [selectedQuickBuildKind, setSelectedQuickBuildKind] =
     useState<QuickBuildStampKind | null>(null);
-  const [placementStatus, setPlacementStatus] =
-    useState<QuickBuildPlacementStatus | null>(null);
   const [sceneSummary, setSceneSummary] = useState<QuickBuildSceneSummary>({
     stampCount: 0,
     bakedBatchCount: 0,
@@ -1714,21 +1661,15 @@ export const QuickBuildToolbar = ({
           ? formatQuickBuildTexturePresetCredit(selectedTexturePreset)
           : "Texture applies to the selected Quick Build object and future matching stamps";
 
-  const clearPreview = useCallback(
-    (options: { preservePlacementStatus?: boolean } = {}) => {
-      const preview = previewGroupRef.current;
-      previewKeyRef.current = "";
-      if (!options.preservePlacementStatus) {
-        setPlacementStatus(null);
-      }
-      if (!preview) return;
+  const clearPreview = useCallback(() => {
+    const preview = previewGroupRef.current;
+    previewKeyRef.current = "";
+    if (!preview) return;
 
-      preview.parent?.remove(preview);
-      disposePreviewObject(preview);
-      previewGroupRef.current = null;
-    },
-    [],
-  );
+    preview.parent?.remove(preview);
+    disposePreviewObject(preview);
+    previewGroupRef.current = null;
+  }, []);
 
   const clearEraseHighlight = useCallback(() => {
     const highlighted = eraseHighlightRef.current;
@@ -1826,10 +1767,6 @@ export const QuickBuildToolbar = ({
         baseCellSize,
         rotationY,
       );
-      const nextPlacementStatus = formatQuickBuildPlacementStatus(candidates);
-      setPlacementStatus((current) =>
-        resolveQuickBuildPlacementStatus(current, nextPlacementStatus),
-      );
       const previewCellCounts = new Map<string, number>();
       const previewPlacements = candidates.map((candidate) => ({
         candidate,
@@ -1857,7 +1794,7 @@ export const QuickBuildToolbar = ({
       });
       if (previewKeyRef.current === previewKey) return;
 
-      clearPreview({ preservePlacementStatus: true });
+      clearPreview();
       previewKeyRef.current = previewKey;
       const previewGroup = new THREE.Group();
       previewGroup.name = "Quick Build Preview";
@@ -3122,16 +3059,6 @@ export const QuickBuildToolbar = ({
         $color={activeToolDefinition?.color}
         aria-hidden="true"
       />
-      <PlacementStatusPill
-        data-testid="quick-build-placement-status"
-        aria-hidden={!placementStatus}
-        aria-live={placementStatus ? "polite" : "off"}
-        $tone={placementStatus?.tone ?? "ready"}
-        $visible={!!placementStatus}
-        title={placementStatus?.message ?? ""}
-      >
-        {placementStatus?.message ?? ""}
-      </PlacementStatusPill>
       <PanelDivider />
       <Tooltip
         text={textureTooltip}
@@ -3308,8 +3235,7 @@ export const QuickBuildToolbar = ({
       </BakeGroup>
       {brushAnchor && (
         <AnchorPill>
-          {brushMode === "line" ? "Line" : "Rect"} {brushAnchor.x.toFixed(0)},
-          {brushAnchor.z.toFixed(0)}
+          {brushMode === "line" ? "Line" : "Rect"} start
         </AnchorPill>
       )}
     </Toolbar>
@@ -3403,39 +3329,6 @@ const ActiveDot = styled.span<{ $active: boolean; $color?: string }>`
   border-radius: 999px;
   background: ${({ $color }) => $color || builderToolbarTokens.activeFallback};
   opacity: ${({ $active }) => ($active ? 1 : 0)};
-`;
-
-const PlacementStatusPill = styled.div<{
-  $tone: "ready" | "blocked";
-  $visible: boolean;
-}>`
-  width: 112px;
-  flex: 0 0 112px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid
-    ${({ $tone }) =>
-      $tone === "blocked"
-        ? builderToolbarTokens.errorBorder
-        : builderToolbarTokens.accentPlanBorderStrong};
-  border-radius: 8px;
-  background: ${({ $tone }) =>
-    $tone === "blocked"
-      ? builderToolbarTokens.errorSurface
-      : builderToolbarTokens.accentPlanSurface};
-  color: ${({ $tone }) =>
-    $tone === "blocked"
-      ? builderToolbarTokens.errorText
-      : builderToolbarTokens.accentPlanText};
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-  white-space: nowrap;
-  padding: 0 10px;
-  opacity: ${({ $visible }) => ($visible ? 1 : 0)};
-  visibility: ${({ $visible }) => ($visible ? "visible" : "hidden")};
 `;
 
 const TextureSelectShell = styled.div<{
