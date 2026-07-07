@@ -27,11 +27,18 @@ import {
   DebugButtonWrapper,
   ErrorBadge,
 } from "./ActionBar.style";
+import { CADActionBarControls } from "./CADActionBarControls";
 import {
   CameraOrientationPanel,
   CameraOrientation,
 } from "./CameraOrientationPanel";
-import { BrushIcon, ToolsIcon } from "./icons/ActionBarIcons";
+import {
+  BrushIcon,
+  ChevronUpIcon,
+  CloseIcon,
+  ToolsIcon,
+  type ActionBarIconComponent,
+} from "./icons/ActionBarIcons";
 import askIcon from "./icons/askIcon.svg";
 import cameraIcon from "./icons/camera.svg";
 import gridSnapIcon from "./icons/gridSnap.svg";
@@ -53,6 +60,7 @@ import {
 } from "../BehaviorEditor/KeybindingsPanel";
 import { GameDebugPanel, GameLog } from "../GameDebugPanel/GameDebugPanel";
 import { QuickBuildToolbar } from "../QuickBuild/QuickBuildToolbar";
+import { isCADToolsEnabled } from "../../../cad/settings";
 import {
   DEFAULT_SNAPPING_SETTINGS,
   DEFAULT_UNITS_SETTINGS,
@@ -65,16 +73,24 @@ const LONG_PRESS_DELAY = 500;
 const MENU_VIEWPORT_MARGIN = 8;
 const MENU_ANCHOR_GAP = 6;
 const COPILOT_MENU_WIDTH = 160;
-const DOCUMENTED_BUILDER_MODE_PARAM_VALUES = new Set(["1", "quick"]);
-const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set([
-  "true",
-  "build",
-  "builder",
-  "bim",
-]);
-type BuilderMode = "none" | "quick";
-type BuilderModeRequest = BuilderMode | ((current: BuilderMode) => BuilderMode);
-type BuilderModeReason = "url" | "primary" | "close" | "scene-loaded";
+const BUILD_MENU_WIDTH = 240;
+const DOCUMENTED_BUILDER_MODE_PARAM_VALUES = new Set(["1", "quick", "cad"]);
+const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set(["true", "build", "builder"]);
+
+type BuilderMode = "none" | "quick" | "mesh-cad";
+type ActiveBuilderMode = Exclude<BuilderMode, "none">;
+type BuilderModeRequest =
+  | ActiveBuilderMode
+  | "none"
+  | ((current: BuilderMode) => BuilderMode);
+type BuilderModeReason =
+  | "url"
+  | "toggle"
+  | "menu"
+  | "primary"
+  | "close"
+  | "cad-disabled"
+  | "scene-loaded";
 type CameraControlsLike = {
   target?: THREE.Vector3;
   center?: THREE.Vector3;
@@ -101,7 +117,7 @@ function getActiveCameraControls(
   return controlsManager?.current?.controls ?? null;
 }
 
-function getBuilderStudioMode(): "quick" | null {
+function getBuilderStudioMode(): ActiveBuilderMode | null {
   if (typeof window === "undefined") return null;
   const value = new URLSearchParams(window.location.search)
     .get("builder")
@@ -110,9 +126,9 @@ function getBuilderStudioMode(): "quick" | null {
     !value ||
     (!DOCUMENTED_BUILDER_MODE_PARAM_VALUES.has(value) &&
       !LEGACY_BUILDER_MODE_PARAM_VALUES.has(value))
-  ) {
+  )
     return null;
-  }
+  if (value === "cad") return "mesh-cad";
   return "quick";
 }
 
@@ -161,6 +177,33 @@ function getAnchoredMenuPosition(
   };
 }
 
+const BUILDER_MODE_COPY: Record<
+  ActiveBuilderMode,
+  {
+    label: string;
+    description: string;
+    shortcut: string;
+    beta?: boolean;
+    Icon: ActionBarIconComponent;
+  }
+> = {
+  quick: {
+    label: "Build",
+    description: "Stamp terrain, props, and blockout pieces",
+    shortcut: "Quick Build",
+    Icon: BrushIcon,
+  },
+  "mesh-cad": {
+    label: "Model",
+    description: "Edit mesh vertices, edges, and faces",
+    shortcut: "Mesh CAD",
+    beta: true,
+    Icon: ToolsIcon,
+  },
+};
+
+const BUILDER_MENU_MODES: ActiveBuilderMode[] = ["quick", "mesh-cad"];
+
 interface ActionBarProps {
   errorCount?: number;
   openGameDebugPanel?: () => void;
@@ -183,6 +226,8 @@ export const ActionBar = ({
   const [builderMode, setBuilderMode] = useState<BuilderMode>("none");
   const builderModeRef = useRef<BuilderMode>("none");
   const keybindingsBtnRef = useRef<HTMLButtonElement>(null);
+  const cadModeBtnRef = useRef<HTMLButtonElement>(null);
+  const firstBuildMenuItemRef = useRef<HTMLButtonElement>(null);
   const firstCopilotMenuItemRef = useRef<HTMLButtonElement>(null);
   const gameDebugLogsRef = useRef<GameLog[]>([]);
   const [updateTrigger, setUpdateTrigger] = useState(0);
@@ -191,6 +236,9 @@ export const ActionBar = ({
   const app = global.app as EngineRuntime;
   const didApplyBuilderModeRef = useRef(false);
   const collaborationStatus = useCollaborationStatus();
+  const [cadToolsEnabled, setCadToolsEnabled] = useState(() =>
+    isCADToolsEnabled(app.editor?.scene),
+  );
 
   // Camera orientation state
   const [showCameraPanel, setShowCameraPanel] = useState(false);
@@ -201,8 +249,11 @@ export const ActionBar = ({
 
   // Copilot long-press menu state
   const [showCopilotMenu, setShowCopilotMenu] = useState(false);
+  const [showCadModeMenu, setShowCadModeMenu] = useState(false);
+  const [focusBuildMenuOnOpen, setFocusBuildMenuOnOpen] = useState(false);
   const copilotBtnRef = useRef<HTMLButtonElement>(null);
   const copilotMenuRef = useRef<HTMLDivElement>(null);
+  const buildMenuRef = useRef<HTMLDivElement>(null);
   const [menuLayoutVersion, setMenuLayoutVersion] = useState(0);
   const longPressTimerRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
@@ -213,13 +264,16 @@ export const ActionBar = ({
   const [showSnapPanel, setShowSnapPanel] = useState(false);
   const [snappingSettings, setSnappingSettings] =
     useState<SnappingSettings | null>(() =>
-      mergeSnappingSettings(app.editor?.scene?.userData?.snapping || DEFAULT_SNAPPING_SETTINGS),
+      mergeSnappingSettings(
+        app.editor?.scene?.userData?.snapping || DEFAULT_SNAPPING_SETTINGS,
+      ),
     );
   const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(() =>
     app.editor?.scene?.userData?.units || DEFAULT_UNITS_SETTINGS,
   );
   const snapBtnRef = useRef<HTMLButtonElement>(null);
   const showQuickBuild = builderMode === "quick";
+  const showMeshCad = builderMode === "mesh-cad";
 
   // Calculate error count from logs
   const errorCount = gameDebugLogsRef.current.filter(
@@ -284,9 +338,16 @@ export const ActionBar = ({
       const next = typeof request === "function" ? request(current) : request;
       const scene = app.editor?.scene;
 
+      setShowCadModeMenu(false);
+      if (
+        next === "mesh-cad" && !isCADToolsEnabled(scene)
+      ) {
+        logBuilderMode("CAD mode blocked", { mode: next, reason });
+        return;
+      }
       if (current === next) return;
 
-      if (next === "quick") {
+      if (next !== "mesh-cad") {
         exitMeshCadMode();
       }
 
@@ -343,6 +404,35 @@ export const ActionBar = ({
     };
   }, [app]);
 
+  useEffect(() => {
+    const syncCadToolsEnabled = () => {
+      const enabled = isCADToolsEnabled(app.editor?.scene);
+      setCadToolsEnabled(enabled);
+      if (!enabled) {
+        transitionBuilderMode(
+          (current) =>
+            current === "mesh-cad" ? "none" : current,
+          "cad-disabled",
+        );
+      }
+    };
+
+    app.on("cadToolsSettingsChanged.ActionBar", syncCadToolsEnabled);
+    app.on("editorCleared.ActionBarCadTools", syncCadToolsEnabled);
+    app.on(
+      "objectChanged.ActionBarCadTools",
+      (_source: unknown, object?: THREE.Object3D) => {
+        if (!object || object === app.editor?.scene) syncCadToolsEnabled();
+      },
+    );
+    syncCadToolsEnabled();
+
+    return () => {
+      app.on("cadToolsSettingsChanged.ActionBar", null);
+      app.on("editorCleared.ActionBarCadTools", null);
+      app.on("objectChanged.ActionBarCadTools", null);
+    };
+  }, [app, transitionBuilderMode]);
 
   useEffect(() => {
     const applyInitialUrlBuilderMode = () => {
@@ -434,7 +524,9 @@ export const ActionBar = ({
     const editor = app.editor;
     if (!editor?.scene) return;
     editor.scene.userData = editor.scene.userData || {};
-    const currentSettings = mergeSnappingSettings(editor.scene.userData.snapping || DEFAULT_SNAPPING_SETTINGS);
+    const currentSettings = mergeSnappingSettings(
+      editor.scene.userData.snapping || DEFAULT_SNAPPING_SETTINGS,
+    );
     const updated: SnappingSettings = {
       ...currentSettings,
       grid: { ...currentSettings.grid, enabled: true, increment: value },
@@ -451,6 +543,12 @@ export const ActionBar = ({
     app.call("focusProjectSettingsSection", app.editor, "snapping");
   };
 
+  const handleOpenCadSettings = useCallback(() => {
+    const setActiveRightPanel =
+      app.editor?.component?.props?.setActiveRightPanel;
+    setActiveRightPanel?.(RIGHT_PANEL_VERSIONS.GameSettings);
+    app.call("focusProjectSettingsSection", app.editor, "cadTools");
+  }, [app]);
 
   const gridSnapEnabled = snappingSettings?.grid?.enabled ?? false;
   const gridSnapIncrement = snappingSettings?.grid?.increment ?? 1;
@@ -500,6 +598,13 @@ export const ActionBar = ({
     );
   }, [menuLayoutVersion]);
 
+  const getCadModeMenuPosition = useCallback(() => {
+    return getAnchoredMenuPosition(
+      cadModeBtnRef.current,
+      BUILD_MENU_WIDTH,
+      buildMenuRef.current?.offsetHeight ?? 0,
+    );
+  }, [menuLayoutVersion]);
 
   const closeCopilotMenu = useCallback((restoreFocus = false) => {
     setShowCopilotMenu(false);
@@ -508,6 +613,31 @@ export const ActionBar = ({
     }
   }, []);
 
+  const closeBuildMenu = useCallback((restoreFocus = false) => {
+    setShowCadModeMenu(false);
+    setFocusBuildMenuOnOpen(false);
+    if (restoreFocus) {
+      requestAnimationFrame(() => cadModeBtnRef.current?.focus());
+    }
+  }, []);
+
+  const selectBuilderMenuMode = useCallback(
+    (target: ActiveBuilderMode) => {
+      if (
+        target === "mesh-cad" && !cadToolsEnabled
+      ) {
+        handleOpenCadSettings();
+        closeBuildMenu(true);
+        return;
+      }
+      transitionBuilderMode(
+        (current) => (current === target ? "none" : target),
+        "menu",
+      );
+      closeBuildMenu(false);
+    },
+    [cadToolsEnabled, closeBuildMenu, handleOpenCadSettings, transitionBuilderMode],
+  );
 
   const activatePrimaryBuildMode = useCallback(() => {
     transitionBuilderMode(
@@ -516,6 +646,13 @@ export const ActionBar = ({
     );
   }, [transitionBuilderMode]);
 
+  useEffect(() => {
+    if (!showCadModeMenu || !focusBuildMenuOnOpen) return;
+    const frame = requestAnimationFrame(() => {
+      firstBuildMenuItemRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusBuildMenuOnOpen, showCadModeMenu]);
 
   useEffect(() => {
     if (!showCopilotMenu) return;
@@ -526,7 +663,7 @@ export const ActionBar = ({
   }, [showCopilotMenu]);
 
   useLayoutEffect(() => {
-    if (!showCopilotMenu) return;
+    if (!showCadModeMenu && !showCopilotMenu) return;
     const frame = requestAnimationFrame(refreshMenuLayout);
     window.addEventListener("resize", refreshMenuLayout);
     window.addEventListener("scroll", refreshMenuLayout, true);
@@ -535,8 +672,19 @@ export const ActionBar = ({
       window.removeEventListener("resize", refreshMenuLayout);
       window.removeEventListener("scroll", refreshMenuLayout, true);
     };
-  }, [refreshMenuLayout, showCopilotMenu]);
+  }, [refreshMenuLayout, showCadModeMenu, showCopilotMenu]);
 
+  useEffect(() => {
+    if (!showCadModeMenu) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeBuildMenu(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeBuildMenu, showCadModeMenu]);
 
   useEffect(() => {
     if (!showCopilotMenu) return;
@@ -559,6 +707,11 @@ export const ActionBar = ({
             : undefined
         }
       >
+        <CADActionBarControls
+          forceVisible={showMeshCad}
+          allowAutoVisible={showMeshCad}
+          onClose={() => transitionBuilderMode("none", "close")}
+        />
         <Tooltip text="Help" height="auto">
           <ActionButton
             aria-label="Open help documentation"
@@ -575,8 +728,11 @@ export const ActionBar = ({
             <img src={infoIcon} />
           </ActionButton>
         </Tooltip>
-        <BuildSplitControl $isSelected={showQuickBuild}>
-          <Tooltip text="Build tools: Quick Build" height="auto">
+        <BuildSplitControl $isSelected={builderMode !== "none"}>
+          <Tooltip
+            text="Build tools: Quick Build"
+            height="auto"
+          >
             <BuildPrimaryButton
               data-testid="actionbar-quick-build"
               $isSelected={showQuickBuild}
@@ -586,6 +742,42 @@ export const ActionBar = ({
             >
               <BrushIcon size={18} />
             </BuildPrimaryButton>
+          </Tooltip>
+          <Tooltip
+            text={
+              cadToolsEnabled
+                ? "Build tools"
+                : "Build tools - enable CAD tools in Project Settings"
+            }
+            height="auto"
+          >
+            <BuildMenuButton
+              ref={cadModeBtnRef}
+              data-testid="actionbar-cad-tools"
+              $isOpen={showCadModeMenu}
+              $isSelected={showMeshCad}
+              aria-label="Open build tools menu"
+              aria-haspopup="menu"
+              aria-expanded={showCadModeMenu}
+              onPointerDown={() => setFocusBuildMenuOnOpen(false)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "ArrowDown" ||
+                  event.key === "Enter" ||
+                  event.key === " "
+                ) {
+                  event.preventDefault();
+                  setFocusBuildMenuOnOpen(true);
+                  setShowCadModeMenu(true);
+                }
+              }}
+              onClick={() => {
+                setFocusBuildMenuOnOpen(false);
+                setShowCadModeMenu((v) => !v);
+              }}
+            >
+              <ChevronUpIcon size={14} />
+            </BuildMenuButton>
           </Tooltip>
         </BuildSplitControl>
 
@@ -712,6 +904,86 @@ export const ActionBar = ({
                   <ToolsIcon size={14} />
                   Script Tool
                 </MenuItem>
+              </MenuPopover>
+            </>,
+            document.body,
+          )}
+        {showCadModeMenu &&
+          createPortal(
+            <>
+              <MenuOverlay onClick={() => closeBuildMenu(false)} />
+              <MenuPopover
+                ref={buildMenuRef}
+                style={getCadModeMenuPosition()}
+                role="menu"
+                aria-label="Build tools"
+              >
+                {BUILDER_MENU_MODES.map((mode, index) => {
+                  const item = BUILDER_MODE_COPY[mode];
+                  const Icon = item.Icon;
+                  const disabled =
+                    mode === "mesh-cad" && !cadToolsEnabled;
+                  const testId =
+                    mode === "quick"
+                      ? "actionbar-build-quick"
+                      : "actionbar-mesh-cad";
+                  return (
+                    <MenuItem
+                      key={mode}
+                      ref={index === 0 ? firstBuildMenuItemRef : undefined}
+                      type="button"
+                      role="menuitem"
+                      data-testid={testId}
+                      disabled={disabled}
+                      aria-pressed={builderMode === mode}
+                      onClick={() => selectBuilderMenuMode(mode)}
+                    >
+                      <Icon size={14} />
+                      <MenuItemText>
+                        <MenuItemLabel>{item.label}</MenuItemLabel>
+                        <MenuItemDescription>
+                          {disabled
+                            ? "Enable CAD tools in Project Settings"
+                            : item.description}
+                        </MenuItemDescription>
+                      </MenuItemText>
+                      {item.beta && <MenuItemBadge>beta</MenuItemBadge>}
+                    </MenuItem>
+                  );
+                })}
+                <MenuItem
+                  type="button"
+                  role="menuitem"
+                  data-testid="actionbar-build-cancel"
+                  onClick={() => closeBuildMenu(false)}
+                >
+                  <CloseIcon size={14} />
+                  <MenuItemText>
+                    <MenuItemLabel>Cancel</MenuItemLabel>
+                    <MenuItemDescription>
+                      Close without changing tools.
+                    </MenuItemDescription>
+                  </MenuItemText>
+                </MenuItem>
+                {!cadToolsEnabled && (
+                  <MenuItem
+                    type="button"
+                    role="menuitem"
+                    data-testid="actionbar-enable-cad-tools"
+                    onClick={() => {
+                      handleOpenCadSettings();
+                      closeBuildMenu(true);
+                    }}
+                  >
+                    <ToolsIcon size={14} />
+                    <MenuItemText>
+                      <MenuItemLabel>Enable CAD tools</MenuItemLabel>
+                      <MenuItemDescription>
+                        Opens Project Settings.
+                      </MenuItemDescription>
+                    </MenuItemText>
+                  </MenuItem>
+                )}
               </MenuPopover>
             </>,
             document.body,

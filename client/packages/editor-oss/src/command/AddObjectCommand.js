@@ -33,8 +33,8 @@ class AddObjectCommand extends Command {
         }
     }
 
-    execute() {
-        this.editor.addObject(this.object, this.parent);
+    async execute() {
+        await this.editor.addObject(this.object, this.parent);
         if (!this.noSelect) {
             this.editor.select?.(this.object, this.noFocus);
         }
