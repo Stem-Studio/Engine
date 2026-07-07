@@ -193,8 +193,6 @@ export const useUpdateSceneBehaviorRevision = () => {
             config: newConfig,
         });
 
-        // TODO: get rid of this event
-        app.call("currentRevisionUpdated");
         return true;
     };
 };

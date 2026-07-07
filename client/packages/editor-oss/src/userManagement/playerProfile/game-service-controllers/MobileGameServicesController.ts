@@ -12,6 +12,7 @@ import {getAuthProvider} from "../../../auth";
 import {IUser} from "../../types";
 import {GameServiceType} from "../../utils/PlatformDetector";
 import {capacitorMobileServices} from "../capacitor-mobile-wrapper";
+import {createMobileGameServiceEmail} from "./MobileGameServiceIdentity";
 
 /**
  * Handles mobile game services authentication and operations
@@ -65,28 +66,6 @@ export class MobileGameServicesController extends BaseGameServiceController {
         console.error("No user is currently signed in.");
         return null;
     };
-
-    private sanitizeUsername(inputString: string): string {
-        // 1. Convert to lowercase
-        let sanitizedUsername = inputString.toLowerCase();
-
-        // 2. Replace common separators (spaces, dots, underscores) with hyphens
-        // This adheres to RFC 5322 (which allows dots/underscores but hyphens are safer for many systems)
-        sanitizedUsername = sanitizedUsername.replace(/[ ._]/g, '-');
-
-        // 3. Remove any characters that are NOT letters, numbers, or hyphens
-        // This creates a very strict and safe local part.
-        // The pattern [^a-z0-9\-] matches any character that is not a lowercase letter, a digit, or a hyphen.
-        sanitizedUsername = sanitizedUsername.replace(/[^a-z0-9-]/g, '');
-
-        // 4. Remove duplicate hyphens (e.g., --) that might have been created
-        sanitizedUsername = sanitizedUsername.replace(/--+/g, '-');
-
-        // 5. Remove leading or trailing hyphens
-        sanitizedUsername = sanitizedUsername.replace(/^-+|-+$/g, '');
-
-        return sanitizedUsername ?? "guest_"+Math.random().toString(36).substring(2, 15);
-    }
 
     /**
      * Main authentication flow
@@ -143,6 +122,10 @@ export class MobileGameServicesController extends BaseGameServiceController {
                 throw new Error(`Unsupported service: ${this.activeService}`);
             }
 
+            if (!credentialData.credential.playerID) {
+                throw new Error(`${this.activeService} credential is missing playerID`);
+            }
+
             // Step 3: Sign in to Firebase with the credential
             const fbAuthData = await authenticateWithGameCenter({
                 player_id: credentialData.credential.playerID,
@@ -159,7 +142,11 @@ export class MobileGameServicesController extends BaseGameServiceController {
                 id: credentialData.credential.playerID,
                 username: credentialData.credential.playerID,
                 name: credentialData.credential.displayName,
-                email: `${this.activeService}_${this.sanitizeUsername(credentialData.credential.displayName)}@erthgames.com`, //FIXME: we need to make it unique by using playerID
+                email: createMobileGameServiceEmail(
+                    this.activeService,
+                    credentialData.credential.displayName,
+                    credentialData.credential.playerID,
+                ),
                 firebaseId: fbAuthData?.user.user_id,
                 avatar: null,
                 token: fbAuthData?.id_token,
