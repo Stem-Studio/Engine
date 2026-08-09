@@ -1,4 +1,3 @@
-
 package helper
 
 import (
@@ -21,7 +20,7 @@ func TestJSON(t *testing.T) {
 			"hello",
 			123.4, // float64
 		},
-		"time": time.Date(2020, 4, 27, 20, 34, 10, 0, time.Local),
+		"time": time.Date(2020, 4, 27, 20, 34, 10, 0, time.UTC),
 		"id":   id,
 		"d":    primitiveD,
 	}
@@ -55,9 +54,9 @@ func TestJSON(t *testing.T) {
 		t.Errorf("expect 123.4, got %v", bar2)
 	}
 
-	time := result["time"].(string)
-	if time != "2020-04-27 20:34:10" {
-		t.Errorf("expect 2020-04-27 20:34:10, got %v", time)
+	encodedTime := result["time"].(string)
+	if encodedTime != "2020-04-27T20:34:10Z" {
+		t.Errorf("expect 2020-04-27T20:34:10Z, got %v", encodedTime)
 	}
 
 	id2 := result["id"].(string)

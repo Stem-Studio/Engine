@@ -11,7 +11,7 @@ export function Playground() {
     const [iframeSrc, setIframeSrc] = useState(PLAYGROUND_APP_URL);
     const [fallbackAttempted, setFallbackAttempted] = useState(false);
 
-    const useLegacyDashboardRoute = useCallback(() => {
+    const fallbackToLegacyDashboardRoute = useCallback(() => {
         if (fallbackAttempted || iframeSrc === STATIC_PLAYGROUND_APP_URL) return;
         setFallbackAttempted(true);
         setIframeSrc(STATIC_PLAYGROUND_APP_URL);
@@ -23,14 +23,14 @@ export function Playground() {
             // HTTP 200 for the dashboard entrypoint. That shell contains its
             // own playground iframe, so detect it before recursive nesting.
             if (iframe.contentDocument?.querySelector(".playground-page")) {
-                useLegacyDashboardRoute();
+                fallbackToLegacyDashboardRoute();
             }
         } catch {
             // Cross-origin hosts cannot be inspected; the normal load remains
             // valid and the iframe's own error handler still provides a path
             // back to the legacy route.
         }
-    }, [useLegacyDashboardRoute]);
+    }, [fallbackToLegacyDashboardRoute]);
 
     useEffect(() => {
         let cancelled = false;
@@ -40,15 +40,15 @@ export function Playground() {
         // only runs once.
         void fetch(PLAYGROUND_APP_URL, {cache: "no-store"})
             .then((response) => {
-                if (!response.ok && !cancelled) useLegacyDashboardRoute();
+                if (!response.ok && !cancelled) fallbackToLegacyDashboardRoute();
             })
             .catch(() => {
-                if (!cancelled) useLegacyDashboardRoute();
+                if (!cancelled) fallbackToLegacyDashboardRoute();
             });
         return () => {
             cancelled = true;
         };
-    }, [useLegacyDashboardRoute]);
+    }, [fallbackToLegacyDashboardRoute]);
 
     return (
         <div className="playground-page">
@@ -75,7 +75,7 @@ export function Playground() {
                 className="playground-frame"
                 title="StemStudio playground"
                 src={iframeSrc}
-                onError={useLegacyDashboardRoute}
+                onError={fallbackToLegacyDashboardRoute}
                 onLoad={(event) => {
                     // Let the embedded app finish its first React commit before
                     // checking for the recursive public-shell failure mode.
