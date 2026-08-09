@@ -38,7 +38,7 @@ jobs:
         run: BUILD_MODE=oss bun run build
 
       # GitHub Pages does not apply `_redirects` and responds to clean
-      # directory URLs with its global 404 fallback.  Materialize the two
+      # directory URLs with its global 404 fallback. Materialize the two
       # public Playground entrypoints so refresh/deep-link navigation returns
       # HTTP 200 before the SPA boots.
       - name: Materialize Playground entrypoints
