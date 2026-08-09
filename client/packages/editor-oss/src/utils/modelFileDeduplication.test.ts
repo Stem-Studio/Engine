@@ -9,16 +9,13 @@ describe("isUnprocessableFormat", () => {
         expect(isUnprocessableFormat("chair.blend")).toBe(true);
     });
 
-    it("returns true for .usd, .usda, .usdc files", () => {
-        expect(isUnprocessableFormat("model.usd")).toBe(true);
-        expect(isUnprocessableFormat("model.usda")).toBe(true);
-        expect(isUnprocessableFormat("model.usdc")).toBe(true);
-    });
-
     it("returns false for processable formats", () => {
         expect(isUnprocessableFormat("model.glb")).toBe(false);
         expect(isUnprocessableFormat("model.fbx")).toBe(false);
         expect(isUnprocessableFormat("model.obj")).toBe(false);
+        expect(isUnprocessableFormat("model.usd")).toBe(false);
+        expect(isUnprocessableFormat("model.usda")).toBe(false);
+        expect(isUnprocessableFormat("model.usdc")).toBe(false);
         expect(isUnprocessableFormat("model.usdz")).toBe(false);
     });
 });
@@ -70,8 +67,7 @@ describe("deduplicateModelFiles", () => {
     it("filters out unprocessable formats from mixed input", () => {
         const files = [file("chair.blend"), file("chair.glb"), file("table.usd")];
         const result = deduplicateModelFiles(files);
-        expect(result).toHaveLength(1);
-        expect(result[0]!.name).toBe("chair.glb");
+        expect(result.map(item => item.name).sort()).toEqual(["chair.glb", "table.usd"]);
     });
 
     it("preserves full file objects with extra properties", () => {
@@ -88,14 +84,21 @@ describe("deduplicateModelFiles", () => {
     });
 
     it("returns empty array when all files are unprocessable", () => {
-        const files = [file("a.blend"), file("b.usd"), file("c.usda")];
+        const files = [file("a.blend")];
         expect(deduplicateModelFiles(files)).toEqual([]);
     });
 
-    it("handles USDZ as processable (zipped USD format)", () => {
-        const files = [file("model.usdz")];
+    it("handles USD variants as processable formats", () => {
+        const files = [file("model.usd"), file("model.usda"), file("model.usdc"), file("model.usdz")];
         const result = deduplicateModelFiles(files);
         expect(result).toHaveLength(1);
         expect(result[0]!.name).toBe("model.usdz");
+    });
+
+    it("picks GLB over USD variants for the same base name", () => {
+        const files = [file("model.usdz"), file("model.glb")];
+        const result = deduplicateModelFiles(files);
+        expect(result).toHaveLength(1);
+        expect(result[0]!.name).toBe("model.glb");
     });
 });

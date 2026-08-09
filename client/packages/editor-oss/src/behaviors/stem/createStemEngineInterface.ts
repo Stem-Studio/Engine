@@ -8,6 +8,7 @@ import {
     StemEngineInterface,
     StemLambdas,
     StemBehaviors,
+    type StemRuntimeProcessInBatchesOptions,
 } from "./StemEngineInterface";
 import { createEventsInterface } from './events/createEventsInterface';
 import { createFsmInterface } from './fsm/createFsmInterface';
@@ -22,9 +23,99 @@ import { createTweenInterface } from './tween/createTweenInterface';
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import { createForeignLambdaView } from "../../lambdas/Lambda";
 import GameManager from "../game/GameManager";
+import {createProgressiveYieldController} from "../../utils/progressiveYield";
+
+const DEFAULT_RUNTIME_BATCH_SIZE = 32;
+const DEFAULT_RUNTIME_FRAME_BUDGET_MS = 4;
+
+const nowForRuntimeBatch = (): number =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+
+const positiveInteger = (value: number | undefined, fallback: number): number =>
+    Number.isFinite(value) && value! > 0 ? Math.floor(value!) : fallback;
+
+const nonNegativeNumber = (value: number | undefined, fallback: number): number =>
+    Number.isFinite(value) && value! >= 0 ? value! : fallback;
+
+const isPromiseLike = <T = unknown>(value: unknown): value is PromiseLike<T> =>
+    !!value &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as {then?: unknown}).then === "function";
+
+const throwIfAborted = (signal: AbortSignal | undefined): void => {
+    if (!signal?.aborted) return;
+    if (signal.reason !== undefined) {
+        throw signal.reason;
+    }
+    throw new Error("Stem runtime batch processing was aborted");
+};
+
+const yieldBrowserFrame = (): Promise<void> =>
+    new Promise(resolve => {
+        const finish = () => setTimeout(resolve, 0);
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => finish());
+        } else {
+            finish();
+        }
+    });
 
 const createViewportInterface = (game: GameManager) => ({
     getSafeArea: () => game.getViewportSafeArea(),
+});
+
+const processRuntimeBatches = async <T>(
+    items: Iterable<T>,
+    process: (item: T, index: number) => void | Promise<void>,
+    options: StemRuntimeProcessInBatchesOptions = {},
+    yieldToFrame: () => Promise<void>,
+): Promise<void> => {
+    const batchSize = positiveInteger(options.batchSize, DEFAULT_RUNTIME_BATCH_SIZE);
+    const frameBudgetMs = nonNegativeNumber(options.frameBudgetMs, DEFAULT_RUNTIME_FRAME_BUDGET_MS);
+    const maybeYield = createProgressiveYieldController({
+        batchSize: 1,
+        frameBudgetMs: 0,
+        yieldToFrame,
+    }, {
+        batchSize: 1,
+        frameBudgetMs: 0,
+    });
+    let index = 0;
+    let processedThisSlice = 0;
+    let sliceStart = nowForRuntimeBatch();
+
+    for (const item of items) {
+        throwIfAborted(options.signal);
+        const result = process(item, index);
+        if (isPromiseLike(result)) {
+            await result;
+        }
+        throwIfAborted(options.signal);
+        index++;
+        processedThisSlice++;
+
+        if (
+            processedThisSlice >= batchSize ||
+            nowForRuntimeBatch() - sliceStart >= frameBudgetMs
+        ) {
+            await maybeYield(true);
+            processedThisSlice = 0;
+            sliceStart = nowForRuntimeBatch();
+        }
+    }
+};
+
+const createRuntimeInterface = (game: GameManager) => ({
+    yieldToFrame: (force?: boolean) => game.yieldRuntimeToFrame(force),
+    processInBatches: async <T>(
+        items: Iterable<T>,
+        process: (item: T, index: number) => void | Promise<void>,
+        options: StemRuntimeProcessInBatchesOptions = {},
+    ): Promise<void> => {
+        await processRuntimeBatches(items, process, options, () => game.yieldRuntimeToFrame(true));
+    },
 });
 
 const createLambdasInterface = (game: GameManager): StemLambdas => {
@@ -71,6 +162,7 @@ export const createStemEngineInterface = (game: GameManager, globalStore: Global
         pool: createPoolInterface(),
         object: createObjectInterface(game),
         viewport: createViewportInterface(game),
+        runtime: createRuntimeInterface(game),
         scene: createSceneInterface(game),
         store: createStoreInterface(globalStore),
         lambdas: createLambdasInterface(game),
@@ -98,6 +190,16 @@ export const createEditorErthInterface = (engine: EngineRuntime): StemEngineInte
         camera: { setTarget: () => notAvailable('camera'), getPosition: () => notAvailable('camera') } as any,
         object: { create: () => notAvailable('object'), destroy: () => notAvailable('object') } as any,
         viewport: { getSafeArea: () => engine.getViewportSafeArea() },
+        runtime: {
+            yieldToFrame: () => yieldBrowserFrame(),
+            processInBatches: async <T>(
+                items: Iterable<T>,
+                process: (item: T, index: number) => void | Promise<void>,
+                options: StemRuntimeProcessInBatchesOptions = {},
+            ): Promise<void> => {
+                await processRuntimeBatches(items, process, options, yieldBrowserFrame);
+            },
+        },
         scene: { getObjects: () => notAvailable('scene') } as any,
         lambdas: { getInstance: () => notAvailable('lambdas') } as any,
         behaviors: { find: () => notAvailable('behaviors') } as any,

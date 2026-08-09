@@ -1,4 +1,4 @@
-import { Matrix4, Object3D } from "three/webgpu";
+import {BoxGeometry, Matrix4, Mesh, MeshBasicMaterial, Object3D} from "three";
 import { describe, expect, it, vi } from "vitest";
 
 import { EndlessTerrainObjects, TerrainObjectType, type TerrainObjectModel } from "./EndlessTerrainObjects";
@@ -29,6 +29,18 @@ function createTerrainObjects() {
     (terrainObjects as any).modelsReady = true;
 
     return terrainObjects;
+}
+
+function addDeepObjectChain(root: Object3D, depth = 12_000): Object3D {
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        current.add(child);
+        current = child;
+    }
+
+    return current;
 }
 
 describe("EndlessTerrainObjects worker lifecycle", () => {
@@ -157,5 +169,50 @@ describe("EndlessTerrainObjects worker lifecycle", () => {
         expect(queuedAdds[0]).toMatchObject({ chunkX: 1, chunkZ: 0 });
         expect(queuedAdds[1]).toMatchObject({ chunkX: 3, chunkZ: 0 });
         expect(queuedAdds[2]).toMatchObject({ chunkX: 6, chunkZ: 0 });
+    });
+
+    it("readds active chunks when density changes without reparsing malformed keys", () => {
+        const terrainObjects = createTerrainObjects();
+        const removeObjectsForChunk = vi.spyOn(terrainObjects, "removeObjectsForChunk").mockImplementation(() => undefined);
+        const addObjectsForChunk = vi.spyOn(terrainObjects, "addObjectsForChunk").mockImplementation(() => undefined);
+        const addedChunkKeys = (terrainObjects as any).addedChunkKeys as Set<string>;
+        addedChunkKeys.add("2,3");
+        addedChunkKeys.add("bad-key");
+        addedChunkKeys.add("4,5");
+
+        terrainObjects.setDensity(0.35, true);
+
+        expect((terrainObjects as any).options.density).toBe(0.35);
+        expect(removeObjectsForChunk).toHaveBeenCalledTimes(2);
+        expect(addObjectsForChunk).toHaveBeenCalledTimes(2);
+        expect(removeObjectsForChunk).toHaveBeenNthCalledWith(1, 2, 3);
+        expect(addObjectsForChunk).toHaveBeenNthCalledWith(1, 2, 3);
+        expect(removeObjectsForChunk).toHaveBeenNthCalledWith(2, 4, 5);
+        expect(addObjectsForChunk).toHaveBeenNthCalledWith(2, 4, 5);
+        expect((terrainObjects as any).densityReaddChunkKeysScratch).toHaveLength(0);
+    });
+
+    it("loads scene object models from deep hierarchies without recursive traversal", () => {
+        const sceneRoot = new Object3D();
+        const leaf = addDeepObjectChain(sceneRoot);
+        const selectedObject = new Object3D();
+        const material = new MeshBasicMaterial();
+        const mesh = new Mesh(new BoxGeometry(), material);
+        selectedObject.add(mesh);
+        leaf.add(selectedObject);
+        const terrainObjects = new EndlessTerrainObjects(new Object3D(), () => 0, [], {
+            sceneRoot,
+        });
+        const sceneTraverseSpy = vi.spyOn(sceneRoot, "traverse");
+        const selectedTraverseSpy = vi.spyOn(selectedObject, "traverse");
+
+        const result = (terrainObjects as any).loadModelFromSceneObject(selectedObject.uuid);
+
+        expect(result?.geometry).toBeDefined();
+        expect(result?.geometry).not.toBe(mesh.geometry);
+        expect(result?.material).toBeDefined();
+        expect(result?.material).not.toBe(material);
+        expect(sceneTraverseSpy).not.toHaveBeenCalled();
+        expect(selectedTraverseSpy).not.toHaveBeenCalled();
     });
 });

@@ -158,6 +158,8 @@ const patchAssetInCaches = (
 
 export type CreateAssetParams = CreateAssetWithDataParams & {
     assetSource?: AssetSource;
+    /** For batch imports: add dependency context immediately, but defer objectChanged to the batch flush. */
+    deferAssetSourceSceneSync?: boolean;
 };
 
 /**
@@ -169,10 +171,14 @@ export type CreateAssetParams = CreateAssetWithDataParams & {
  * @param params
  */
 export const createAsset = async (params: CreateAssetParams): Promise<Asset> => {
-    const {assetSource, ...assetParams} = params;
+    const {assetSource, deferAssetSourceSceneSync, ...assetParams} = params;
 
     const asset = assetSource
-        ? await assetSource.createAsset(assetParams)
+        ? await assetSource.createAsset(
+            deferAssetSourceSceneSync
+                ? {...assetParams, deferSceneSync: true}
+                : assetParams,
+        )
         : await rawCreateAssetWithData(assetParams);
 
     // Seed the detail cache so subsequent fetches are instant
@@ -629,9 +635,9 @@ export const fetchAssetImageDerivative = async (
 
     // No image derivative — fall back to the revision's inline data URL, the
     // same fallback AssetLoader.getImageDataUrl uses. This is the *only* path
-    // that works in OSS: there is no integrated CDN, so getAssetDerivatives
+    // that works locally: there is no hosted CDN, so getAssetDerivatives
     // always returns [] and the image bytes live inline as a data: URL on the
-    // synthesized revision record. (It also covers the integrated case where a
+    // synthesized revision record. (It also covers server-backed cases where a
     // derivative simply hasn't been generated yet.) Without this, textures
     // resolved through this fallback — e.g. an OceanSurface base map whose
     // revision id isn't in the resolution context, so materialUtils skips the

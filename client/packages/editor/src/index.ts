@@ -1,9 +1,7 @@
 // This is needed by old build system.
 import "@web-shared/polyfills";
-// Side-effect import: installs the integrated providers (Firebase auth,
-// Firestore, AIBackend, copilot, …) before EngineRuntime.init() mounts the
-// editor React tree, whose AuthorizationContext queries `getAuthProvider()`
-// during render. In OSS builds the vite alias makes this a no-op.
+// Side-effect import: keeps the historical bootstrap path alive and
+// registers open-source browser integrations.
 import "@web-shared/bootstrap/integrated";
 
 import EngineRuntime from "@web-shared/EngineRuntime";

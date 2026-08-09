@@ -987,17 +987,31 @@ export const remapBehaviorAttributeUuids = (
     uuidMap: Map<string, string>,
     recursive = true,
 ): void => {
-    if (object.userData?.behaviors) {
-        for (const behavior of object.userData.behaviors as BehaviorData[]) {
+    const remapObject = (target: Object3D): void => {
+        if (!target.userData?.behaviors) {
+            return;
+        }
+
+        for (const behavior of target.userData.behaviors as BehaviorData[]) {
             if (behavior.attributesData) {
                 remapAttributeValuesRecursive(behavior.attributesData, uuidMap);
             }
         }
+    };
+
+    if (!recursive) {
+        remapObject(object);
+        return;
     }
 
-    if (recursive) {
-        for (const child of object.children) {
-            remapBehaviorAttributeUuids(child, uuidMap, true);
+    const stack: Object3D[] = [object];
+    while (stack.length > 0) {
+        const target = stack.pop()!;
+        remapObject(target);
+
+        const children = target.children;
+        for (let i = children.length - 1; i >= 0; i--) {
+            stack.push(children[i]!);
         }
     }
 };

@@ -3,7 +3,8 @@ import * as THREE from "three";
 
 import global from "../../global";
 import {createQuickBuildObject} from "../../editor/assets/v2/QuickBuild/quickBuildObjects";
-import {getPickBlockReason, resolveSelectionTargetFromPickHit} from "./pickTargetUtils";
+import {getNonSelectableReason} from "../../utils/SelectionUtils";
+import {resolveSelectionTargetFromPickHit} from "./pickTargetUtils";
 
 describe("pickTargetUtils", () => {
     const previousApp = global.app;
@@ -32,12 +33,12 @@ describe("pickTargetUtils", () => {
         root.add(armature);
         armature.add(mesh);
 
-        global.app = {editor: {scene}} as any;
+        global.app = {editor: {scene}} as unknown as typeof global.app;
 
         const target = resolveSelectionTargetFromPickHit(mesh);
 
         expect(target).toBe(root);
-        expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+        expect(getNonSelectableReason(target, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
     });
 
     it("keeps hidden dynamic-root content blocked when no visible ancestor exists", () => {
@@ -55,12 +56,12 @@ describe("pickTargetUtils", () => {
         scene.add(dynamicRoot);
         dynamicRoot.add(hiddenMesh);
 
-        global.app = {editor: {scene}} as any;
+        global.app = {editor: {scene}} as unknown as typeof global.app;
 
         const target = resolveSelectionTargetFromPickHit(hiddenMesh);
 
         expect(target).toBe(hiddenMesh);
-        expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBe("hidden-hierarchy");
+        expect(getNonSelectableReason(target, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBe("hidden-hierarchy");
     });
 
     it("uses helper-linked selection targets instead of blocking helper hits", () => {
@@ -83,7 +84,7 @@ describe("pickTargetUtils", () => {
         const target = resolveSelectionTargetFromPickHit(helperHandle);
 
         expect(target).toBe(targetObject);
-        expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+        expect(getNonSelectableReason(target, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
     });
 
     it("resolves Quick Build child mesh hits to the editable stamp root", () => {
@@ -93,11 +94,86 @@ describe("pickTargetUtils", () => {
         const childMesh = stamp.children[0];
         scene.add(stamp);
 
-        global.app = {editor: {scene}} as any;
+        global.app = {editor: {scene}} as unknown as typeof global.app;
 
         const target = resolveSelectionTargetFromPickHit(childMesh);
 
         expect(target).toBe(stamp);
-        expect(getPickBlockReason(target, {app: {mode: "edit", game: null}, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+        expect(getNonSelectableReason(target, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+    });
+
+    it("does not treat scene-level BIM data as a selection target for ordinary objects", () => {
+        const scene = new THREE.Scene();
+        scene.userData.planCad = {
+            schema: "stem.planCad.v1",
+            rootNodeIds: [],
+            nodes: {},
+        };
+        const looseMesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+        scene.add(looseMesh);
+        global.app = {editor: {scene}} as unknown as typeof global.app;
+
+        const target = resolveSelectionTargetFromPickHit(looseMesh);
+
+        expect(target).toBe(looseMesh);
+    });
+
+    it("promotes imported BIM model child hits to the BIM group transform target", () => {
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera();
+
+        const bimItem = new THREE.Group();
+        bimItem.name = "BIM Item";
+        bimItem.userData = {
+            isStemObject: true,
+            isRuntimeOnly: true,
+            isPlanCadManaged: true,
+            planNodeId: "item-1",
+            managedBy: "BIM Plan",
+        };
+
+        const importedRoot = new THREE.Group();
+        importedRoot.name = "Imported Chair";
+        importedRoot.userData = {
+            isStemObject: true,
+            isRuntimeOnly: true,
+        };
+
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+        mesh.name = "ChairSeat";
+        mesh.userData = {
+            isRuntimeOnly: true,
+            isPlanCadExternalModelChild: true,
+        };
+
+        scene.add(bimItem);
+        bimItem.add(importedRoot);
+        importedRoot.add(mesh);
+        global.app = {editor: {scene}} as unknown as typeof global.app;
+
+        const target = resolveSelectionTargetFromPickHit(mesh);
+
+        expect(target).toBe(bimItem);
+        expect(getNonSelectableReason(target, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
+    });
+
+    it("does not block selected BIM wrapper groups whose children carry BIM metadata", () => {
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera();
+        const wrapper = new THREE.Group();
+        wrapper.userData = {
+            isRuntimeOnly: true,
+            isSelectable: true,
+        };
+        const bimChild = new THREE.Group();
+        bimChild.userData = {
+            isPlanCadManaged: true,
+            planNodeId: "wall-1",
+        };
+
+        scene.add(wrapper);
+        wrapper.add(bimChild);
+
+        expect(getNonSelectableReason(wrapper, {mode: "edit", game: null, editor: {scene, camera, sceneLockedItems: []}})).toBeNull();
     });
 });

@@ -8,7 +8,7 @@ import {
     MainColumn,
     RightSideContainer,
 } from "./DashboardLayout.style";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {useWindowPathname} from "@stem/editor-oss/hooks/useWindowPathname";
 import {ROUTES} from "@web-shared/routes";
 import {Footer} from "../../../../../v2/Footer/Footer";

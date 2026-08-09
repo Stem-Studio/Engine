@@ -1,6 +1,7 @@
 import {useCallback} from "react";
 
 import {useAddEditorDependencies, useRemoveEditorDependencies} from "./assets";
+import {useChangeAssetRevision} from "./useChangeAssetRevision";
 import {useChangeLambdaRevision} from "./useChangeLambdaRevision";
 import {useChangeModelRevision} from "./useChangeModelRevision";
 import {useChangePrefabRevision} from "./useChangePrefabRevision";
@@ -48,13 +49,14 @@ export type ReplaceAssetParams = {
  * Sits alongside useChangeAssetRevision, which handles "same id, new
  * revision". useReplaceAsset handles "new id + new revision".
  *
- * TODO: extend to the remaining AssetType values — Image, Audio, Video,
- * Animation, Npc, File. Each needs a per-type swap helper that locates
- * instances by old id, re-keys them to newAssetId, and pins newRevisionId
- * in the resolution context (via useChangeAssetRevision). Until those
- * land, this dispatcher throws for unsupported types.
+ * Reference-only assets — Image, Audio, Video, Animation, Npc, File, and
+ * Script — are swapped through the generic AssetRef remapper in
+ * useChangeAssetRevision. Scene object asset types still route through their
+ * per-type helpers because they need instance reloads in addition to ref
+ * remapping.
  */
 export const useReplaceAsset = () => {
+    const changeAssetRevision = useChangeAssetRevision();
     const changeModelRevision = useChangeModelRevision();
     const changePrefabRevision = useChangePrefabRevision();
     const changeLambdaRevision = useChangeLambdaRevision();
@@ -109,6 +111,15 @@ export const useReplaceAsset = () => {
                 case AssetType.Quarks:
                     await changeQuarksRevision(originalAssetId, newRevisionId, newAssetId, excludeUuids);
                     break;
+                case AssetType.Image:
+                case AssetType.Audio:
+                case AssetType.Video:
+                case AssetType.Animation:
+                case AssetType.Npc:
+                case AssetType.File:
+                case AssetType.Script:
+                    await changeAssetRevision(originalAssetId, newRevisionId, undefined, newAssetId);
+                    break;
                 default:
                     throw new Error(
                         `useReplaceAsset: asset type "${String(assetType)}" is not yet supported. ` +
@@ -124,6 +135,7 @@ export const useReplaceAsset = () => {
             }
         },
         [
+            changeAssetRevision,
             changeModelRevision,
             changePrefabRevision,
             changeLambdaRevision,

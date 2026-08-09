@@ -54,7 +54,7 @@ vi.mock("../../utils/ModelUtils", () => ({
     getModelStats: vi.fn(),
 }));
 
-vi.mock("three/examples/jsm/math/ImprovedNoise", () => ({
+vi.mock("three/addons/math/ImprovedNoise", () => ({
     ImprovedNoise: class {
         noise() {
             return 0;
@@ -62,23 +62,23 @@ vi.mock("three/examples/jsm/math/ImprovedNoise", () => ({
     },
 }));
 
-vi.mock("three/examples/jsm/renderers/CSS3DRenderer", () => ({
+vi.mock("three/addons/renderers/CSS3DRenderer", () => ({
     CSS3DObject: class {},
     CSS3DSprite: class {},
     CSS3DRenderer: class {},
 }));
 
-vi.mock("three/examples/jsm/renderers/CSS3DRenderer.js", () => ({
+vi.mock("three/addons/renderers/CSS3DRenderer.js", () => ({
     CSS3DObject: class {},
     CSS3DSprite: class {},
     CSS3DRenderer: class {},
 }));
 
-vi.mock("three/examples/jsm/exporters/GLTFExporter", () => ({
+vi.mock("three/addons/exporters/GLTFExporter", () => ({
     GLTFExporter: class {},
 }));
 
-vi.mock("three/examples/jsm/exporters/GLTFExporter.js", () => ({
+vi.mock("three/addons/exporters/GLTFExporter.js", () => ({
     GLTFExporter: class {},
 }));
 
@@ -389,6 +389,9 @@ describe("CollaborationClient", () => {
         root.add(serverOnly);
         scene.add(root);
         root.removeFromParent();
+        const traverse = vi.spyOn(root, "traverse").mockImplementation(() => {
+            throw new Error("recursive traversal should not be used");
+        });
 
         (client as any).removeObject(root);
 
@@ -398,6 +401,34 @@ describe("CollaborationClient", () => {
             .map((payload: any) => payload.uuid);
 
         expect(removals).toEqual(["root-stem", "child-stem", "grandchild-stem"]);
+        expect(traverse).not.toHaveBeenCalled();
+    });
+
+    it("serializes deep scene children without recursive stack growth", () => {
+        const workerHandler = {postMessage: vi.fn()} as any;
+        const {scene} = createApp();
+        const client = new CollaborationClient(workerHandler);
+        clients.push(client);
+
+        let cursor: Object3D = scene;
+        for (let i = 0; i < 12_000; i++) {
+            const child = setUuid(new Object3D(), `deep-child-${i}`);
+            cursor.add(child);
+            cursor = child;
+        }
+
+        const children = (client as any).updateSceneChildren(scene) as Array<{uuid: string; children: any[]}>;
+        let node = children[0]!;
+        for (let i = 1; i < 12_000; i++) {
+            node = node.children[0]!;
+        }
+
+        expect(node.uuid).toBe(cursor.uuid);
+        expect(workerHandler.postMessage).toHaveBeenCalledWith({
+            event: SNAPSHOT_EVENTS.UPDATE.SCENE_CHILDREN,
+            uuid: scene.uuid,
+            children,
+        });
     });
 
     it("emits collabObjectRemoved when a remote object is deleted", async () => {

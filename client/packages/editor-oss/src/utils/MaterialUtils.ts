@@ -35,7 +35,7 @@ import {
     varying,
     mix,
     normalLocal,
-    positionLocal,
+    positionGeometry,
 } from "three/tsl";
 import {MeshPhysicalNodeMaterial, MeshStandardNodeMaterial} from "three/webgpu";
 
@@ -205,7 +205,7 @@ export function convertMeshStandardToNodeMaterial(src: MeshStandardMaterial): Me
     dst.userData.tslNodes = {} as Record<string, any>;
 
     const _store = (name: string, node: any) => {
-        if (node) dst.userData.tslNodes[name] = node;
+        if (node !== null && node !== undefined) dst.userData.tslNodes[name] = node;
     };
 
     const uvNode = uv().setName("uv");
@@ -224,7 +224,7 @@ export function convertMeshStandardToNodeMaterial(src: MeshStandardMaterial): Me
 
     const opacityFactor = float(src.opacity ?? 1.0).setName("opacityFactor");
     dst.opacityNode = alphaMapNode
-        ? clamp(alphaMapNode.a.mul(opacityFactor), float(0.0), float(1.0)).setName("opacityNode")
+        ? clamp(alphaMapNode.g.mul(opacityFactor), float(0.0), float(1.0)).setName("opacityNode")
         : baseColorMapNode
           ? clamp(baseColorMapNode.a.mul(opacityFactor), float(0.0), float(1.0)).setName("opacityNode")
           : opacityFactor;
@@ -272,8 +272,12 @@ export function convertMeshStandardToNodeMaterial(src: MeshStandardMaterial): Me
     if (src.aoMap) {
         const aoTexNode = texture(src.aoMap, uvNode).setName("aoMap");
         const aoIntensityNode = float(src.aoMapIntensity ?? 1.0).setName("aoIntensity");
-        dst.aoNode = aoTexNode.r.mul(aoIntensityNode).setName("aoNode");
+        const aoFactorNode = aoTexNode.r.mul(aoIntensityNode).setName("aoFactor");
+        // Avoid assigning aoNode/aoMap on generated node materials. Three r185's
+        // built-in AO lighting path currently emits a TSL stack warning there.
+        dst.colorNode = (dst.colorNode as any).mul(aoFactorNode).setName("colorNode");
         _store("aoMap", src.aoMap ?? null);
+        _store("aoMapIntensity", src.aoMapIntensity ?? 1.0);
     }
 
     if (src.displacementMap) {
@@ -281,7 +285,7 @@ export function convertMeshStandardToNodeMaterial(src: MeshStandardMaterial): Me
         const dispScaleNode = float(src.displacementScale ?? 1.0).setName("displacementScale");
         const dispBiasNode = float(src.displacementBias ?? 0.0).setName("displacementBias");
         const displacement = dispTexNode.r.mul(dispScaleNode).add(dispBiasNode);
-        dst.positionNode = positionLocal.add(normalLocal.mul(displacement)).setName("positionNode");
+        dst.positionNode = positionGeometry.add(normalLocal.mul(displacement)).setName("positionNode");
         _store("displacementMap", src.displacementMap ?? null);
     }
 
@@ -354,8 +358,8 @@ export function patchNodeMaterialSetup(material: any, batchedMesh: any) {
                 const uTex = batchedMesh.uniformsTexture;
                 const map = uTex.uniformMap;
 
-                const uSize = uniform(uTex.image.width, "float");
-                const uPPI = uniform(uTex.pixelsPerInstance, "float");
+                const uSize = uniform(uTex.image.width, "int");
+                const uPPI = uniform(uTex.pixelsPerInstance, "int");
 
                 const hasIndirect = Boolean(batchedMesh._indirectTexture);
                 let idx: any;
@@ -372,7 +376,7 @@ export function patchNodeMaterialSetup(material: any, batchedMesh: any) {
 
                 if (hasIndirect) {
                     const indTex: any = batchedMesh._indirectTexture;
-                    const iSize = uniform(indTex.image.width, "float");
+                    const iSize = uniform(indTex.image.width, "int");
                     const ix = drawIdInt.mod(iSize);
                     const iy = drawIdInt.div(iSize);
                     idx = int(textureLoad(indTex, ivec2(ix, iy)).x);
@@ -444,7 +448,7 @@ export function patchNodeMaterialSetup(material: any, batchedMesh: any) {
                 // opacity: float -> material.opacityNode
                 // diffuse: vec3 -> material.colorNode (combined with saved baseColorMap if present)
                 // emissive: vec3 -> material.emissiveNode
-                // emissiveIntensity: float -> material.emissiveIntensityNode
+                // emissiveIntensity: float -> composed into material.emissiveNode
 
                 // Use the material's existing nodes (created by convertMeshStandardToNodeMaterial)
                 // as the base formulas, then apply per-instance uniform modifiers when present.
@@ -525,29 +529,33 @@ export function patchNodeMaterialSetup(material: any, batchedMesh: any) {
                 const savedAlphaMap = makeTextureNode(tslNodes["alphaMap"], "alphaMap");
                 if (savedAlphaMap && opacityU) {
                     material.opacityNode = clamp(
-                        savedAlphaMap.a.mul(varying(opacityU)),
+                        savedAlphaMap.g.mul(varying(opacityU)),
                         float(0.0),
                         float(1.0),
                     );
                 } else if (savedAlphaMap) {
-                    material.opacityNode = clamp(savedAlphaMap.a, float(0.0), float(1.0));
+                    material.opacityNode = clamp(savedAlphaMap.g, float(0.0), float(1.0));
                 } else if (opacityU) {
                     material.opacityNode = varying(clamp(opacityU, float(0.0), float(1.0)));
                 }
 
                 const emissiveU = getIf("emissive", 3, "vec3");
                 const savedEmissiveMap = makeTextureNode(tslNodes["emissiveMap"], "emissiveMap");
+                let composedEmissiveNode: any = null;
                 if (savedEmissiveMap && emissiveU) {
-                    material.emissiveNode = savedEmissiveMap.rgb.mul(varying(emissiveU));
+                    composedEmissiveNode = savedEmissiveMap.rgb.mul(varying(emissiveU));
                 } else if (savedEmissiveMap) {
-                    material.emissiveNode = savedEmissiveMap.rgb;
+                    composedEmissiveNode = savedEmissiveMap.rgb;
                 } else if (emissiveU) {
-                    material.emissiveNode = varying(emissiveU);
+                    composedEmissiveNode = varying(emissiveU);
                 }
 
                 const emissiveIntensityNode = getIf("emissiveIntensity", 1, "float");
-                if (emissiveIntensityNode) {
-                    material.emissiveIntensityNode = varying(emissiveIntensityNode);
+                if (composedEmissiveNode && emissiveIntensityNode) {
+                    composedEmissiveNode = composedEmissiveNode.mul(varying(emissiveIntensityNode));
+                }
+                if (composedEmissiveNode) {
+                    material.emissiveNode = composedEmissiveNode;
                 }
 
                 // Per-instance receiveShadow: mix shadow with 1.0 (no shadow) based on uniform

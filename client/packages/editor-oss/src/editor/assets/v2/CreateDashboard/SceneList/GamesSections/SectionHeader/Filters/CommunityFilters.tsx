@@ -4,8 +4,8 @@ import {useOnClickOutside} from "usehooks-ts";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {ActiveFilterOption, FilterOption} from "./CommunityFilters.style";
 import filterIcon from "./filter-icon.svg";
-import {FilterButton, FiltersList} from "./Filters.style";
-import {useHomepageContext} from "@stem/editor-oss/context";
+import {FilterButton, FilterControl, FiltersList} from "./Filters.style";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import {CommunityFilterType} from "../../../../CreateDashboard";
 
 const COMMUNITY_FILTER_OPTIONS: {label: string; value: CommunityFilterType}[] = [
@@ -27,22 +27,29 @@ export const CommunityFilters = () => {
     }
 
     return (
-        <FilterButton
-            className="reset-css"
-            onClick={() => setFiltersOpen(true)}
-        >
-            <img
-                src={filterIcon}
-                alt="filters"
-            />
+        <FilterControl ref={ref}>
+            <FilterButton
+                type="button"
+                aria-label="Sort community projects"
+                aria-expanded={filtersOpen}
+                $active={filtersOpen}
+                onClick={() => setFiltersOpen(open => !open)}
+            >
+                <img
+                    src={filterIcon}
+                    alt=""
+                    aria-hidden="true"
+                />
+            </FilterButton>
             {filtersOpen && (
-                <FiltersList ref={ref}>
+                <FiltersList role="menu">
                     {COMMUNITY_FILTER_OPTIONS.map(({label, value}) => {
                         const isActive = communityFilter === value;
                         const Component = isActive ? ActiveFilterOption : FilterOption;
                         return (
                             <Component
                                 key={value}
+                                role="menuitem"
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     setCommunityFilter(value);
@@ -55,6 +62,6 @@ export const CommunityFilters = () => {
                     })}
                 </FiltersList>
             )}
-        </FilterButton>
+        </FilterControl>
     );
 };

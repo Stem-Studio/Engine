@@ -20,7 +20,7 @@ export const TAGS = [
 
 /**
  * Community / social channel URLs. The previous hardcoded values pointed
- * at the Erth.AI community; in OSS / fork deployments these don't apply.
+ * at the Erth.AI community; in this repository or fork deployments these don't apply.
  * Configure via env vars so each deployment can wire its own channels (or
  * omit them entirely — consumers should check for empty strings before
  * rendering a button).

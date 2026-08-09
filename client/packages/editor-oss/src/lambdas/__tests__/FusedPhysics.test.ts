@@ -6,6 +6,7 @@ import type { LambdaConfig } from "../Lambda";
 import { LambdaBase } from "../LambdaBase";
 import { LambdaManager } from "../LambdaManager";
 import FusedPhysicsLambda from "../packs/fusedPhysics/FusedPhysicsLambda";
+import { runPhysicsKernel } from "../packs/fusedPhysics/FusedPhysicsKernel";
 
 // --- Standalone FusedPhysicsLambda tests ---
 
@@ -115,6 +116,82 @@ describe("FusedPhysicsLambda", () => {
 
         expect(obj1.position.x).toBeGreaterThan(0);
         expect(obj2.position.x).toBeLessThan(0);
+    });
+
+    it("reuses and clears kernel delta buffers", () => {
+        const dpx = new Float32Array([99, 99]);
+        const dpy = new Float32Array([99, 99]);
+        const dpz = new Float32Array([99, 99]);
+        const drx = new Float32Array([99, 99]);
+        const dry = new Float32Array([99, 99]);
+        const drz = new Float32Array([99, 99]);
+
+        const result = runPhysicsKernel({
+            count: 2,
+            deltaTime: 1,
+            gravity: 0,
+            vx: new Float32Array([2, 3]),
+            vy: new Float32Array(2),
+            vz: new Float32Array(2),
+            avx: new Float32Array(2),
+            avy: new Float32Array(2),
+            avz: new Float32Array(2),
+            drag: new Float32Array(2),
+            angularDrag: new Float32Array(2),
+            gravityScale: new Float32Array(2),
+            damping: new Float32Array(2),
+            maxSpeed: new Float32Array([100, 100]),
+            useGravity: new Uint8Array(2),
+            isKinematic: new Uint8Array([0, 1]),
+            freezePositionX: new Uint8Array(2),
+            freezePositionY: new Uint8Array(2),
+            freezePositionZ: new Uint8Array(2),
+            freezeRotationX: new Uint8Array(2),
+            freezeRotationY: new Uint8Array(2),
+            freezeRotationZ: new Uint8Array(2),
+            visibilityMask: null,
+            dpx,
+            dpy,
+            dpz,
+            drx,
+            dry,
+            drz,
+        });
+
+        expect(result.dpx).toBe(dpx);
+        expect(Array.from(result.dpx)).toEqual([2, 0]);
+        expect(Array.from(result.dpy)).toEqual([0, 0]);
+        expect(Array.from(result.drz)).toEqual([0, 0]);
+    });
+
+    it("uses a byte-sized visibility mask in the shared physics kernel", () => {
+        const result = runPhysicsKernel({
+            count: 2,
+            deltaTime: 1,
+            gravity: 0,
+            vx: new Float32Array([2, 2]),
+            vy: new Float32Array(2),
+            vz: new Float32Array(2),
+            avx: new Float32Array(2),
+            avy: new Float32Array(2),
+            avz: new Float32Array(2),
+            drag: new Float32Array(2),
+            angularDrag: new Float32Array(2),
+            gravityScale: new Float32Array(2),
+            damping: new Float32Array(2),
+            maxSpeed: new Float32Array([100, 100]),
+            useGravity: new Uint8Array(2),
+            isKinematic: new Uint8Array(2),
+            freezePositionX: new Uint8Array(2),
+            freezePositionY: new Uint8Array(2),
+            freezePositionZ: new Uint8Array(2),
+            freezeRotationX: new Uint8Array(2),
+            freezeRotationY: new Uint8Array(2),
+            freezeRotationZ: new Uint8Array(2),
+            visibilityMask: new Uint8Array([0, 2]),
+        });
+
+        expect(Array.from(result.dpx)).toEqual([0, 4]);
     });
 });
 

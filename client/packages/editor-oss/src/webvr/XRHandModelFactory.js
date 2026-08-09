@@ -1,10 +1,9 @@
-import * as THREE from "three";
-
+import {Object3D} from "three";
 import {XRHandOculusMeshModel} from "./XRHandOculusMeshModel.js";
 import {XRHandPrimitiveModel} from "./XRHandPrimitiveModel.js";
 
 
-class XRHandModel extends THREE.Object3D {
+class XRHandModel extends Object3D {
     constructor(controller) {
         super();
 

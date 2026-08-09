@@ -8,7 +8,6 @@ export class PhysicsQualityModule implements IQualityModule {
     public readonly name = 'PhysicsQuality';
 
     private physics: IPhysics | null = null;
-    private settings: IQualitySettings | null = null;
     private pendingSettings: IQualitySettings | null = null;
 
     public setPhysics(physics: IPhysics): void {
@@ -26,7 +25,6 @@ export class PhysicsQualityModule implements IQualityModule {
     }
 
     public async initialize(settings: IQualitySettings): Promise<void> {
-        this.settings = settings;
         await this.applySettings(settings);
     }
 
@@ -36,14 +34,26 @@ export class PhysicsQualityModule implements IQualityModule {
             throw new Error('PhysicsQualityModule: Settings cannot be null');
         }
 
-        this.settings = settings;
-
         if (!this.physics) {
             // Store settings to apply later when physics is available
             this.pendingSettings = settings;
             console.log('PhysicsQualityModule: Physics system not ready, deferring settings application');
             return;
         }
+
+        // PlayerPhysics2 owns the fixed-step accumulator and exposes this
+        // optional adapter hook. Keeping the call here makes quality preset
+        // changes effective even when they arrive after the Play session has
+        // created physics. Lower-level Ammo/Rapier implementations that do not
+        // own scheduling simply omit the hook.
+        this.physics.configureQuality?.(
+            settings.physics.updateRate,
+            settings.physics.substeps,
+            settings.physics.maxStepsPerFrame,
+            true,
+            true,
+            settings.physics.solverIterations,
+        );
     }
 
     public getMetrics(): Partial<IPerformanceMetrics> {
@@ -52,6 +62,5 @@ export class PhysicsQualityModule implements IQualityModule {
 
     public dispose(): void {
         this.physics = null;
-        this.settings = null;
     }
 }

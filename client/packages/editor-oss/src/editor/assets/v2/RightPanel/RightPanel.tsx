@@ -40,6 +40,10 @@ import Text3D from "../../../../object/geometry/Text3D";
 import {findTopVFXParent, isVFXParent} from "@stem/editor-oss/services";
 import {EDITOR_TOP_NAV_HALF_HEIGHT, PANEL_FULL_HEIGHT} from "@stem/editor-oss/types/editor";
 import {isDirectionalLight} from "@stem/editor-oss/utils/LightUtils";
+import {
+    containsPlanCadSelectionMetadata,
+    hasPlanCadSelectionMetadata,
+} from "@stem/editor-oss/utils/PlanCadSelectionMetadata";
 import {isChildOfScene} from "@stem/editor-oss/utils/SceneUtil";
 import {ResizableWrapper} from "../common/ResizableWrapper/ResizableWrapper";
 import {StyledButton} from "../common/StyledButton";
@@ -66,6 +70,8 @@ type Props = {
      * so the two don't overlap. 0 means the copilot is closed or absent.
      */
     aiCopilotOffsetRight?: number;
+    drawerMode?: boolean;
+    onRequestClose?: () => void;
 };
 
 type TextureJSON = ReturnType<THREE.Texture["toJSON"]>;
@@ -78,21 +84,7 @@ export interface IBehaviorUISettings {
     justPosition?: boolean;
 }
 
-function hasPlanCadMetadata(object?: THREE.Object3D | null) {
-    let current = object;
-    while (current) {
-        if (
-            typeof current.userData?.planNodeId === "string" ||
-            current.userData?.planCad
-        ) {
-            return true;
-        }
-        current = current.parent;
-    }
-    return false;
-}
-
-const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibilityChange, pinnedCodeEditorWidth = 0, aiCopilotOffsetRight = 0}: Props) => {
+const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibilityChange, pinnedCodeEditorWidth = 0, aiCopilotOffsetRight = 0, drawerMode = false, onRequestClose}: Props) => {
     const {activeRightPanel, setActiveRightPanel} = useAppGlobalContext();
     const isGameSettingsPanelOpen = activeRightPanel === RIGHT_PANEL_VERSIONS.GameSettings;
     const isCameraSettingsPanelOpen = activeRightPanel === RIGHT_PANEL_VERSIONS.CameraSettings;
@@ -114,16 +106,26 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
     const [showCollision, setShowCollision] = useState(false);
     const [hideAll, setHideAll] = useState(false);
     const [showTexture, setShowTexture] = useState(false);
+    const [isPhoneSheet, setIsPhoneSheet] = useState(() =>
+        typeof window !== "undefined" && window.matchMedia("(max-width: 600px)").matches,
+    );
     const [texture, setTexture] = useState<TextureType>(null);
     const [color, setColor] = useState<string | null>(null);
     const {selected, selectionVersion, app} = useEditorSelection("RightPanel");
     const selectedObj = useMemo(() => app?.editor?.getSelectedObject(), [selectionVersion]);
-    const shouldRenderPlanCadProperties = useMemo(
-        () => hasPlanCadMetadata(selectedObj),
-        [selectedObj, selectionVersion],
-    );
+    const shouldRenderPlanCadProperties =
+        hasPlanCadSelectionMetadata(selectedObj) ||
+        containsPlanCadSelectionMetadata(selectedObj);
     const activeRightPanelRef = useRef(activeRightPanel);
     const keepMaterialPanelOpenRef = useRef(false);
+
+    useEffect(() => {
+        const query = window.matchMedia("(max-width: 600px)");
+        const update = (event: MediaQueryListEvent | MediaQueryList) => setIsPhoneSheet(event.matches);
+        query.addEventListener("change", update);
+        update(query);
+        return () => query.removeEventListener("change", update);
+    }, []);
 
     useEffect(() => {
         activeRightPanelRef.current = activeRightPanel;
@@ -473,6 +475,19 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
     // Memoized style for ResizableWrapper — shifts left when the pinned code
     // editor or the AI copilot is visible on the right edge.
     const wrapperStyle = useMemo(() => {
+        if (drawerMode) {
+            return {
+                position: "fixed" as const,
+                zIndex: 100,
+                right: 0,
+                top: "calc(48px + env(safe-area-inset-top, 0px))",
+                bottom: 0,
+                transform: "none",
+                width: isPhoneSheet ? "100vw" : "min(380px, 90vw)",
+                height: "auto",
+                maxHeight: "none",
+            };
+        }
         let right: string;
         if (pinnedCodeEditorWidth) {
             right = `calc(${pinnedCodeEditorWidth}% + 12px)`;
@@ -491,7 +506,7 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
             height: PANEL_FULL_HEIGHT,
             maxHeight: PANEL_FULL_HEIGHT,
         };
-    }, [pinnedCodeEditorWidth, aiCopilotOffsetRight]);
+    }, [pinnedCodeEditorWidth, aiCopilotOffsetRight, drawerMode, isPhoneSheet]);
 
     const basicTabs = useMemo(() => {
         const isTextEditorPanelOpen = selectedObj instanceof Text3D;
@@ -582,9 +597,21 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
             maxWidth={() => window.innerWidth * (pinnedCodeEditorWidth ? (1 - pinnedCodeEditorWidth / 100) * 0.4 : 0.3)}
             storageKey="right_panel_width"
             style={wrapperStyle}
+            className={drawerMode ? "right-panel-drawer" : undefined}
             onResize={onResize}
         >
-            <Container>
+            <Container as="aside"
+                aria-label="Inspector"
+            >
+                {drawerMode && (
+                    <button className="panel-close"
+                        type="button"
+                        aria-label="Close inspector"
+                        onClick={onRequestClose}
+                    >
+                        ×
+                    </button>
+                )}
                 {shouldRenderTabs() && (
                     <BorderedWrapper height="48px">
                         {isScene && (
@@ -657,6 +684,7 @@ const RightPanel = ({showModelAnimationCombiner, openUIPanel, onResize, onVisibi
                                                 : undefined
                                         }
                                     />
+
                                     {selectedObj && shouldRenderPlanCadProperties && (
                                         <PlanCadPropertiesSection selectedObject={selectedObj} />
                                     )}

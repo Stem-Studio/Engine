@@ -471,6 +471,7 @@ export const Tooltip = ({
                 onTouchEnd={handleTouchEnd}
                 onTouchCancel={handleTouchCancel}
                 aria-describedby={visible ? tooltipId : undefined}
+                aria-label={typeof text === "string" ? text : undefined}
                 role="button"
                 tabIndex={0}
                 onFocus={handleMouseEnter}

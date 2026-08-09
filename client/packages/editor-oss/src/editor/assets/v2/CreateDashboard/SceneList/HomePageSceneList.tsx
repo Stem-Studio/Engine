@@ -2,7 +2,7 @@ import {useMediaQuery} from "usehooks-ts";
 
 import {StyledSceneList} from "./SceneList.style";
 import {SceneListItem} from "./SceneListItem";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {LoadMore} from "../../../../../v2/common/LoadMore/LoadMore";
 import {FileData} from "../../types/file";
 

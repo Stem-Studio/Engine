@@ -1,5 +1,7 @@
 import * as THREE from "three";
 
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+
 /**
  * BIM Plan core model and generated geometry helpers.
  *
@@ -153,9 +155,19 @@ export interface PlanItemSource {
     type: "procedural" | "model";
     presetId?: string;
     modelKind?: PlanItemModelKind;
+    provider?: string;
+    providerAssetId?: string;
     assetId?: string;
     url?: string;
     format?: "glb" | "gltf" | "ifc" | "obj";
+    thumbnailUrl?: string;
+    attribution?: string;
+    license?: string;
+    transform?: {
+        offset?: PlanSize3;
+        rotation?: PlanSize3;
+        scale?: PlanSize3;
+    };
 }
 
 export interface PlanItemNode extends PlanBaseNode {
@@ -476,68 +488,68 @@ export class PlanSceneRegistry {
 
 function disposeObjectChildren(object: THREE.Object3D) {
     for (const child of [...object.children]) {
-        child.traverse(node => {
+        traverseObjectDepthFirst(child, node => {
             const mesh = node as THREE.Mesh;
             if (!mesh.isMesh) return;
             mesh.geometry?.dispose();
             const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-            for (const material of materials) disposePlanMaterial(material);
+            for (const material of materials) {
+                if (material.userData?.isPlanCadSharedMaterial) continue;
+                material.dispose();
+            }
         });
         object.remove(child);
     }
 }
 
-type PlanTextureKind = "wall" | "slab" | "wood" | "fabric" | "metal" | "ceramic";
+const planMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
+const planModelProxyMaterialCache = new Map<string, THREE.MeshBasicMaterial>();
 
-const PLAN_TEXTURE_URLS: Record<PlanTextureKind, string> = {
-    wall: "/assets/textures/bim/prepared-drywall.webp",
-    slab: "/assets/textures/bim/concrete-plate.webp",
-    wood: "/assets/textures/bim/wood-fine.webp",
-    fabric: "/assets/textures/bim/blue-cotton.webp",
-    metal: "/assets/textures/bim/stainless-steel.webp",
-    ceramic: "/assets/textures/bim/white-stucco.webp",
-};
-
-function canLoadPlanTextures() {
-    if (typeof window === "undefined" || typeof document === "undefined" || typeof Image === "undefined") return false;
-    return !window.navigator?.userAgent?.toLowerCase().includes("jsdom");
-}
-
-function createPlanTexture(kind: PlanTextureKind, repeat = {x: 1, y: 1}) {
-    if (!canLoadPlanTextures()) return null;
-    const texture = new THREE.TextureLoader().load(PLAN_TEXTURE_URLS[kind]);
-    texture.name = `BIM ${kind} texture`;
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(Math.max(0.25, repeat.x), Math.max(0.25, repeat.y));
-    texture.anisotropy = 4;
-    return texture;
-}
-
-function disposePlanMaterial(material: THREE.Material) {
-    const texturedMaterial = material as THREE.MeshStandardMaterial;
-    texturedMaterial.map?.dispose();
-    material.dispose();
-}
-
-function makePlanMaterial(
-    color: number,
-    transparent = false,
-    opacity = 1,
-    textureKind?: PlanTextureKind,
-    textureRepeat = {x: 1, y: 1},
-) {
-    const map = textureKind ? createPlanTexture(textureKind, textureRepeat) : null;
+function makePlanMaterial(color: number, transparent = false, opacity = 1) {
+    const key = `${color}:${transparent ? 1 : 0}:${opacity}`;
+    const cached = planMaterialCache.get(key);
+    if (cached) return cached;
     const material = new THREE.MeshStandardMaterial({
-        color: map ? 0xffffff : color,
-        roughness: textureKind === "metal" ? 0.42 : 0.88,
-        metalness: textureKind === "metal" ? 0.35 : 0,
+        color,
+        roughness: 0.88,
+        metalness: 0,
         transparent,
         opacity,
-        map: map ?? undefined,
+        emissive: color,
+        emissiveIntensity: 0.14,
     });
+    material.userData.isPlanCadSharedMaterial = true;
+    planMaterialCache.set(key, material);
     return material;
+}
+
+function makePlanModelProxyMaterial(color: number, opacity = 0.55) {
+    const key = `${color}:${opacity}`;
+    const cached = planModelProxyMaterialCache.get(key);
+    if (cached) return cached;
+    const material = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        wireframe: true,
+        depthWrite: false,
+    });
+    material.userData.isPlanCadSharedMaterial = true;
+    material.userData.isPlanCadModelProxyMaterial = true;
+    planModelProxyMaterialCache.set(key, material);
+    return material;
+}
+
+function applyGeneratedPlanChildMetadata(object: THREE.Object3D, owner: PlanNode) {
+    object.userData.isRuntimeOnly = true;
+    object.userData.isBatchable = false;
+    object.userData.isPlanCadGeneratedChild = true;
+    object.userData.managedBy = "BIM Plan";
+    object.userData.sceneTreeBadge = "BIM";
+    object.userData.planCadOwnerNodeId = owner.id;
+    object.userData.planCadOwnerNodeType = owner.type;
+    object.userData.editorVisibility = owner.visible;
+    object.userData.gameVisibility = false;
 }
 
 function wallLength(wall: PlanWallNode) {
@@ -592,15 +604,13 @@ function addWallSegment(group: THREE.Group, wall: PlanWallNode, startT: number, 
 
     const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(segmentLength, height, wall.thickness),
-        makePlanMaterial(0xd8d1c3, false, 1, "wall", {
-            x: Math.max(1, segmentLength / 1.5),
-            y: Math.max(1, height / 1.5),
-        }),
+        makePlanMaterial(0xd8d1c3),
     );
     mesh.position.set(center.x, wall.elevation + y + height / 2, center.z);
     mesh.rotation.y = -angle;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    applyGeneratedPlanChildMetadata(mesh, wall);
     group.add(mesh);
 }
 
@@ -642,20 +652,11 @@ function createFlatShapeGeometry(points: PlanPoint2[], thickness = 0.08) {
     return new THREE.ExtrudeGeometry(shape, {depth: thickness, bevelEnabled: false});
 }
 
-function updatePolygonObject(
-    object: THREE.Object3D,
-    points: PlanPoint2[],
-    elevation: number,
-    thickness: number,
-    color: number,
-    textureKind?: PlanTextureKind,
-) {
+function updatePolygonObject(object: THREE.Object3D, points: PlanPoint2[], elevation: number, thickness: number, color: number) {
     const mesh = object as THREE.Mesh;
     mesh.geometry?.dispose();
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const material of materials) disposePlanMaterial(material);
     mesh.geometry = createFlatShapeGeometry(points, thickness);
-    mesh.material = makePlanMaterial(color, false, 1, textureKind, {x: 2, y: 2});
+    mesh.material = makePlanMaterial(color);
     mesh.rotation.x = Math.PI / 2;
     mesh.position.y = elevation;
     mesh.receiveShadow = true;
@@ -671,6 +672,9 @@ export function updatePlanItemObject(object: THREE.Object3D, item: PlanItemNode)
         placement: item.placement,
         dimensions: item.dimensions,
     };
+    if (item.source?.type !== "model") {
+        delete object.userData.planCadModel;
+    }
 
     const modelKind = item.source?.modelKind ?? "box";
     const materialName = item.material ?? "default";
@@ -680,16 +684,16 @@ export function updatePlanItemObject(object: THREE.Object3D, item: PlanItemNode)
         position: PlanSize3,
         color = 0x8ea5b5,
         opacity = 1,
-        textureKind?: PlanTextureKind,
     ) => {
         const mesh = new THREE.Mesh(
             new THREE.BoxGeometry(size.x, size.y, size.z),
-            makePlanMaterial(color, opacity < 1, opacity, textureKind),
+            makePlanMaterial(color, opacity < 1, opacity),
         );
         mesh.name = name;
         mesh.position.set(position.x, position.y, position.z);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
+        applyGeneratedPlanChildMetadata(mesh, item);
         object.add(mesh);
         return mesh;
     };
@@ -709,6 +713,7 @@ export function updatePlanItemObject(object: THREE.Object3D, item: PlanItemNode)
         mesh.position.set(position.x, position.y, position.z);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
+        applyGeneratedPlanChildMetadata(mesh, item);
         object.add(mesh);
         return mesh;
     };
@@ -721,73 +726,84 @@ export function updatePlanItemObject(object: THREE.Object3D, item: PlanItemNode)
     const ceramic = materialName === "ceramic" ? 0xf3f4f6 : 0x8ea5b5;
     const metal = materialName === "metal" ? 0x9ca3af : 0x8ea5b5;
     const stone = materialName === "stone" ? 0xb8b0a4 : 0x8ea5b5;
-    const woodTexture: PlanTextureKind | undefined = materialName === "wood" ? "wood" : undefined;
-    const fabricTexture: PlanTextureKind | undefined = materialName === "fabric" ? "fabric" : undefined;
-    const ceramicTexture: PlanTextureKind | undefined = materialName === "ceramic" ? "ceramic" : undefined;
-    const metalTexture: PlanTextureKind | undefined = materialName === "metal" ? "metal" : undefined;
-    const stoneTexture: PlanTextureKind | undefined = materialName === "stone" ? "slab" : undefined;
+
+    if (item.source?.type === "model") {
+        object.userData.planCadModel = {
+            status: "placeholder",
+            source: item.source,
+        };
+        const proxy = new THREE.Mesh(
+            new THREE.BoxGeometry(dims.x, dims.y, dims.z),
+            makePlanModelProxyMaterial(0x8ba3b4),
+        );
+        proxy.name = "model proxy";
+        proxy.position.set(0, halfY, 0);
+        proxy.userData.isPlanCadModelProxy = true;
+        applyGeneratedPlanChildMetadata(proxy, item);
+        object.add(proxy);
+        return;
+    }
 
     switch (modelKind) {
         case "desk":
         case "dining_table": {
-            addBox("top", {x: dims.x, y: dims.y * 0.08, z: dims.z}, {x: 0, y: dims.y * 0.92, z: 0}, wood, 1, woodTexture);
+            addBox("top", {x: dims.x, y: dims.y * 0.08, z: dims.z}, {x: 0, y: dims.y * 0.92, z: 0}, wood);
             const legSize = Math.min(dims.x, dims.z) * 0.08;
             for (const x of [-halfX + legSize, halfX - legSize]) {
                 for (const z of [-halfZ + legSize, halfZ - legSize]) {
-                    addBox("leg", {x: legSize, y: dims.y * 0.86, z: legSize}, {x, y: dims.y * 0.43, z}, wood, 1, woodTexture);
+                    addBox("leg", {x: legSize, y: dims.y * 0.86, z: legSize}, {x, y: dims.y * 0.43, z}, wood);
                 }
             }
             break;
         }
         case "sofa": {
-            addBox("seat", {x: dims.x, y: dims.y * 0.38, z: dims.z * 0.78}, {x: 0, y: dims.y * 0.2, z: dims.z * 0.08}, fabric, 1, fabricTexture);
-            addBox("back", {x: dims.x, y: dims.y * 0.72, z: dims.z * 0.16}, {x: 0, y: dims.y * 0.48, z: -halfZ + dims.z * 0.08}, fabric, 1, fabricTexture);
-            addBox("left arm", {x: dims.x * 0.08, y: dims.y * 0.55, z: dims.z}, {x: -halfX + dims.x * 0.04, y: dims.y * 0.34, z: 0}, fabric, 1, fabricTexture);
-            addBox("right arm", {x: dims.x * 0.08, y: dims.y * 0.55, z: dims.z}, {x: halfX - dims.x * 0.04, y: dims.y * 0.34, z: 0}, fabric, 1, fabricTexture);
+            addBox("seat", {x: dims.x, y: dims.y * 0.38, z: dims.z * 0.78}, {x: 0, y: dims.y * 0.2, z: dims.z * 0.08}, fabric);
+            addBox("back", {x: dims.x, y: dims.y * 0.72, z: dims.z * 0.16}, {x: 0, y: dims.y * 0.48, z: -halfZ + dims.z * 0.08}, fabric);
+            addBox("left arm", {x: dims.x * 0.08, y: dims.y * 0.55, z: dims.z}, {x: -halfX + dims.x * 0.04, y: dims.y * 0.34, z: 0}, fabric);
+            addBox("right arm", {x: dims.x * 0.08, y: dims.y * 0.55, z: dims.z}, {x: halfX - dims.x * 0.04, y: dims.y * 0.34, z: 0}, fabric);
             break;
         }
         case "single_bed": {
-            addBox("frame", {x: dims.x, y: dims.y * 0.22, z: dims.z}, {x: 0, y: dims.y * 0.11, z: 0}, wood, 1, woodTexture);
-            addBox("mattress", {x: dims.x * 0.94, y: dims.y * 0.32, z: dims.z * 0.9}, {x: 0, y: dims.y * 0.36, z: 0}, 0xded6cb, 1, "fabric");
+            addBox("frame", {x: dims.x, y: dims.y * 0.22, z: dims.z}, {x: 0, y: dims.y * 0.11, z: 0}, wood);
+            addBox("mattress", {x: dims.x * 0.94, y: dims.y * 0.32, z: dims.z * 0.9}, {x: 0, y: dims.y * 0.36, z: 0}, 0xded6cb);
             addBox("pillow", {x: dims.x * 0.28, y: dims.y * 0.14, z: dims.z * 0.72}, {x: -halfX + dims.x * 0.18, y: dims.y * 0.62, z: 0}, 0xf8fafc);
             break;
         }
         case "cabinet":
         case "base_cabinet":
         case "island": {
-            const caseTexture = modelKind === "island" ? stoneTexture : woodTexture;
-            addBox("case", dims, {x: 0, y: halfY, z: 0}, modelKind === "island" ? stone : wood, 1, caseTexture);
-            addBox("front left", {x: dims.x * 0.44, y: dims.y * 0.82, z: 0.02}, {x: -dims.x * 0.23, y: halfY, z: halfZ + 0.012}, 0x6f4e37, 1, woodTexture);
-            addBox("front right", {x: dims.x * 0.44, y: dims.y * 0.82, z: 0.02}, {x: dims.x * 0.23, y: halfY, z: halfZ + 0.012}, 0x6f4e37, 1, woodTexture);
+            addBox("case", dims, {x: 0, y: halfY, z: 0}, modelKind === "island" ? stone : wood);
+            addBox("front left", {x: dims.x * 0.44, y: dims.y * 0.82, z: 0.02}, {x: -dims.x * 0.23, y: halfY, z: halfZ + 0.012}, 0x6f4e37);
+            addBox("front right", {x: dims.x * 0.44, y: dims.y * 0.82, z: 0.02}, {x: dims.x * 0.23, y: halfY, z: halfZ + 0.012}, 0x6f4e37);
             break;
         }
         case "toilet": {
-            addBox("tank", {x: dims.x * 0.78, y: dims.y * 0.38, z: dims.z * 0.22}, {x: 0, y: dims.y * 0.72, z: -halfZ + dims.z * 0.11}, ceramic, 1, ceramicTexture);
+            addBox("tank", {x: dims.x * 0.78, y: dims.y * 0.38, z: dims.z * 0.22}, {x: 0, y: dims.y * 0.72, z: -halfZ + dims.z * 0.11}, ceramic);
             const bowl = addCylinder("bowl", Math.min(dims.x, dims.z) * 0.28, dims.y * 0.34, {x: 0, y: dims.y * 0.34, z: dims.z * 0.08}, ceramic);
             bowl.scale.z = 1.25;
             break;
         }
         case "sink": {
-            addBox("vanity", {x: dims.x, y: dims.y * 0.72, z: dims.z}, {x: 0, y: dims.y * 0.36, z: 0}, wood, 1, woodTexture);
+            addBox("vanity", {x: dims.x, y: dims.y * 0.72, z: dims.z}, {x: 0, y: dims.y * 0.36, z: 0}, wood);
             const basin = addCylinder("basin", Math.min(dims.x, dims.z) * 0.28, dims.y * 0.12, {x: 0, y: dims.y * 0.84, z: 0}, ceramic);
             basin.scale.z = 0.72;
             break;
         }
         case "shower": {
-            addBox("base", {x: dims.x, y: dims.y * 0.05, z: dims.z}, {x: 0, y: dims.y * 0.025, z: 0}, ceramic, 1, ceramicTexture);
+            addBox("base", {x: dims.x, y: dims.y * 0.05, z: dims.z}, {x: 0, y: dims.y * 0.025, z: 0}, ceramic);
             addBox("back glass", {x: dims.x, y: dims.y * 0.86, z: 0.025}, {x: 0, y: dims.y * 0.48, z: -halfZ}, 0x96c9e8, 0.42);
             addBox("side glass", {x: 0.025, y: dims.y * 0.86, z: dims.z}, {x: -halfX, y: dims.y * 0.48, z: 0}, 0x96c9e8, 0.42);
             break;
         }
         case "electrical_panel": {
-            addBox("panel", dims, {x: 0, y: halfY, z: 0}, metal, 1, metalTexture);
-            addBox("door seam", {x: dims.x * 0.02, y: dims.y * 0.86, z: dims.z * 1.08}, {x: 0, y: halfY, z: dims.z * 0.04}, 0x4b5563, 1, metalTexture);
+            addBox("panel", dims, {x: 0, y: halfY, z: 0}, metal);
+            addBox("door seam", {x: dims.x * 0.02, y: dims.y * 0.86, z: dims.z * 1.08}, {x: 0, y: halfY, z: dims.z * 0.04}, 0x4b5563);
             break;
         }
         case "hvac_unit": {
-            addBox("unit", dims, {x: 0, y: halfY, z: 0}, metal, 1, metalTexture);
+            addBox("unit", dims, {x: 0, y: halfY, z: 0}, metal);
             for (const x of [-0.22, 0, 0.22]) {
-                addBox("vent", {x: dims.x * 0.08, y: dims.y * 1.04, z: dims.z * 0.04}, {x: x * dims.x, y: halfY, z: halfZ + dims.z * 0.03}, 0x4b5563, 1, metalTexture);
+                addBox("vent", {x: dims.x * 0.08, y: dims.y * 1.04, z: dims.z * 0.04}, {x: x * dims.x, y: halfY, z: halfZ + dims.z * 0.03}, 0x4b5563);
             }
             break;
         }
@@ -819,8 +835,8 @@ export function processDirtyPlanNodes(state: PlanSceneState, registry: PlanScene
             updatePlanWallObject(object, node);
             object.userData.planCad.miterJoints = getPlanWallMiterJoints(state, node.id);
         }
-        if (node.type === "slab") updatePolygonObject(object, node.points, node.elevation, node.thickness, 0xb9b09d, "slab");
-        if (node.type === "ceiling") updatePolygonObject(object, node.points, node.elevation, node.thickness, 0xe5e7eb, "wall");
+        if (node.type === "slab") updatePolygonObject(object, node.points, node.elevation, node.thickness, 0xb9b09d);
+        if (node.type === "ceiling") updatePolygonObject(object, node.points, node.elevation, node.thickness, 0xe5e7eb);
         if (node.type === "roof") updatePolygonObject(object, node.points, node.elevation, node.thickness, 0x8f4d3d);
         if (node.type === "zone") updatePolygonObject(object, node.points, node.elevation + 0.01, 0.02, 0x69a297);
         if (node.type === "item") updatePlanItemObject(object, node);

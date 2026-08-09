@@ -9,6 +9,7 @@ import {useHUDContext} from "@stem/editor-oss/context";
 import EngineRuntime, {GLOBAL_BEHAVIOR_HOST, MOBILE_TOUCH_CONTROLS_BEHAVIOR_ID} from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
 import {BEHAVIOR_UI_CONTAINER_ID} from "@stem/editor-oss/types/editor";
+import {findObjectByNameDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {Container} from "../HUDPopup/HUDPopup.style";
 
 export const MobileGameControlsHUD = () => {
@@ -37,7 +38,7 @@ export const MobileGameControlsHUD = () => {
             return console.error("No scene available");
         }
 
-        const globalHost = scene.getObjectByName(GLOBAL_BEHAVIOR_HOST);
+        const globalHost = findObjectByNameDepthFirst(scene, GLOBAL_BEHAVIOR_HOST);
         if (!globalHost || !Array.isArray(globalHost.userData.behaviors)) {
             console.warn("Global Behaviors Host not found or has no behaviors");
             return;

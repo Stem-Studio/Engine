@@ -1,4 +1,4 @@
-import React, {ReactNode} from "react";
+import {ReactNode} from "react";
 import {AiFillFileText} from "react-icons/ai";
 import {FcFolder, FcOpenedFolder, FcPicture, FcFile} from "react-icons/fc";
 import {SiHtml5, SiCss, SiJavascript, SiTypescript, SiJson} from "react-icons/si";

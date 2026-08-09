@@ -6,11 +6,19 @@ import {
     LineBasicMaterial,
     Object3D,
     DynamicDrawUsage,
+    type QuaternionLike,
+    type Vector3Like,
 } from "three";
-import { QuaternionLike, Vector3Like } from "three/webgpu";
 
 import MathUtils from '../common/math';
 import { ShapeCache } from '../common/ShapeCache';
+import {
+    DEFAULT_SOLVER_ITERATIONS,
+    isConcaveHullBodyTypeSupported,
+    normalizeSolverIterations,
+} from '../common/physicsConfig';
+import {normalizeHeightfieldShape} from '../common/heightfield';
+import {createRapierHeightfieldShape} from './rapierHeightfield';
 import {
     CollisionShape,
     BodyShapeType,
@@ -23,6 +31,7 @@ import {
     VehicleData,
     VehicleInput,
     VehicleOptions,
+    PhysicsDebugRenderData,
 } from "../common/types";
 import {
     CollisionCallback,
@@ -34,20 +43,20 @@ import {
     DEFAULT_RIGID_BODY_ANGULAR_DAMPING,
     DEFAULT_RIGID_BODY_COLLISION_GROUP,
     DEFAULT_RIGID_BODY_COLLISION_MASK,
+    DEFAULT_RIGID_BODY_CCD_MOTION_THRESHOLD,
+    DEFAULT_RIGID_BODY_CCD_SWEPT_SPHERE_RADIUS,
     DEFAULT_RIGID_BODY_FRICTION,
     DEFAULT_RIGID_BODY_LINEAR_DAMPING,
     DEFAULT_RIGID_BODY_MASS,
     DEFAULT_RIGID_BODY_RESTITUTION,
     DEFAULT_STEP_DURATION,
-    JointPhysics,
     PhysicsEngine,
     RigidBodyOptions,
     RigidBodyType,
-    VehiclePhysics,
 } from '../PhysicsEngine';
-
 const DEFAULT_CHARACTER_CONTROLLER_OFFSET = 0.01;
 const DEFAULT_DEBUG_VERTEX_COUNT = 1000;
+const MAX_MULTI_ITERATION_STEP_DURATION = 1 / 30;
 
 /**
  * Threshold for snapping linear velocity of a character controller to zero when
@@ -112,7 +121,7 @@ interface SharedShape {
 /**
  * An implementation of {@link PhysicsEngine} that uses Rapier.
  */
-export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPhysics {
+export class RapierPhysicsEngine implements PhysicsEngine {
     stepDuration = DEFAULT_STEP_DURATION;
 
     private readonly rigidBodies = new Map<string, Rapier.RigidBody>();
@@ -130,6 +139,8 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
     private readonly rigidBodyScales = new Map<string, { x: number; y: number; z: number }>();
 
     private controllerCollisions = new Map<string, ControllerCollision>();
+    private nextControllerCollisions = new Map<string, ControllerCollision>();
+    private collisionEventQueue: Rapier.EventQueue | null = null;
 
     private readonly shapeCache = new ShapeCache<SharedShape>((shape) => {
         shape.shape = null;
@@ -140,14 +151,23 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
     private debugGeometry: BufferGeometry | null = null;
     private debugMaterial: LineBasicMaterial | null = null;
     private debugMesh: LineSegments | null = null;
+    private debugEnabled = false;
+    private debugVertices: Float32Array | null = null;
+    private debugColors: Float32Array | null = null;
 
     private started = false;
+    private solverIterations: number;
 
-    constructor(private readonly gravity: number) {
+    constructor(
+        private readonly gravity: number,
+        solverIterations: number = DEFAULT_SOLVER_ITERATIONS,
+    ) {
         this.world = new Rapier.World({ x: 0, y: gravity, z: 0 });
-        // We perform fixed duration substeps, so only perform 1 solver
-        // iteration per substep.
-        this.world.integrationParameters.numSolverIterations = 1;
+        // Fixed-duration substeps still benefit from multiple constraint
+        // iterations: one iteration leaves stacks and joints visibly soft,
+        // while an unbounded caller-provided value can dominate frame time.
+        this.solverIterations = normalizeSolverIterations(solverIterations);
+        this.world.integrationParameters.numSolverIterations = this.solverIterations;
         this.started = true;
     }
 
@@ -160,15 +180,19 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         this.debugMaterial = null;
         this.debugMesh?.removeFromParent();
         this.debugMesh = null;
+        this.debugEnabled = false;
+        this.debugVertices = null;
+        this.debugColors = null;
+        this.collisionEventQueue?.free();
+        this.collisionEventQueue = null;
 
         for (const uuid of this.vehicles.keys()) {
             this.removeVehicle(uuid);
         }
 
-        for (const joint of this.jointMap.values()) {
-            this.world.removeImpulseJoint(joint, true);
+        for (const key of this.jointMap.keys()) {
+            this.removeJointByKey(key);
         }
-        this.jointMap.clear();
 
         for (const uuid of this.rigidBodies.keys()) {
             this.removeRigidBody(uuid);
@@ -189,14 +213,26 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         return this.gravity;
     }
 
+    setSolverIterations(solverIterations: number): void {
+        this.solverIterations = normalizeSolverIterations(solverIterations);
+        this.world.integrationParameters.numSolverIterations = this.solverIterations;
+    }
+
     simulate(onCollision?: CollisionCallback): void {
         if (!this.started) {
             return;
         }
 
-        const eventQueue = onCollision ? new Rapier.EventQueue(true) : undefined;
-        const currentControllerCollisions = onCollision ? new Map<string, ControllerCollision>() : undefined;
+        const eventQueue = onCollision ? this.getCollisionEventQueue() : undefined;
+        const currentControllerCollisions = onCollision ? this.nextControllerCollisions : undefined;
+        currentControllerCollisions?.clear();
         this.world.timestep = this.stepDuration;
+        // Large manually-selected timesteps (used by legacy callers and
+        // conformance tests) are intentionally solved once to preserve the
+        // backend's historical integration semantics. Normal fixed steps at
+        // 30–60 Hz receive the configured multi-iteration quality pass.
+        this.world.integrationParameters.numSolverIterations =
+            this.stepDuration <= MAX_MULTI_ITERATION_STEP_DURATION ? this.solverIterations : 1;
         this.world.step(eventQueue);
 
         for (const vehicle of this.vehicles.values()) {
@@ -214,7 +250,7 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         }
 
         if (onCollision && currentControllerCollisions) {
-            for (const [key, collision] of currentControllerCollisions || []) {
+            for (const [key, collision] of currentControllerCollisions) {
                 if (this.controllerCollisions.has(key)) {
                     continue;
                 }
@@ -231,19 +267,25 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             }
 
             this.controllerCollisions.clear();
+            this.nextControllerCollisions = this.controllerCollisions;
             this.controllerCollisions = currentControllerCollisions;
         }
 
-        if (this.debugGeometry) {
+        if (this.debugEnabled) {
             const buffers = this.world.debugRender();
-            this.debugGeometry.setAttribute(
-                "position",
-                new BufferAttribute(buffers.vertices, 3),
-            );
-            this.debugGeometry.setAttribute(
-                "color",
-                new BufferAttribute(buffers.colors, 4),
-            );
+            this.debugVertices = buffers.vertices;
+            this.debugColors = buffers.colors;
+            if (this.debugGeometry) {
+                this.debugGeometry.setAttribute(
+                    "position",
+                    new BufferAttribute(buffers.vertices, 3),
+                );
+                this.debugGeometry.setAttribute(
+                    "color",
+                    new BufferAttribute(buffers.colors, 4),
+                );
+                this.debugGeometry.setDrawRange(0, buffers.vertices.length / 3);
+            }
         }
     }
 
@@ -253,6 +295,22 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
 
     resume(): void {
         this.started = true;
+    }
+
+    getDebugRenderData(): PhysicsDebugRenderData | null {
+        if (!this.debugEnabled || !this.debugVertices || !this.debugColors) return null;
+        return {
+            vertices: this.debugVertices.slice(),
+            colors: this.debugColors.slice(),
+            drawCount: this.debugVertices.length / 3,
+        };
+    }
+
+    private getCollisionEventQueue(): Rapier.EventQueue {
+        if (!this.collisionEventQueue) {
+            this.collisionEventQueue = new Rapier.EventQueue(true);
+        }
+        return this.collisionEventQueue;
     }
 
     addRigidBody(
@@ -272,6 +330,14 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             return;
         }
 
+        if (!isConcaveHullBodyTypeSupported(sharedShape.type, type)) {
+            console.warn(
+                `RapierPhysicsEngine.addRigidBody: rejected ${type} body "${uuid}" with concave hull/static-mesh shape "${shapeUuid}". ` +
+                "Ammo/Rapier support concave and heightfield shapes only for Static bodies; use a static collider, ConvexHull, or compound primitive colliders.",
+            );
+            return;
+        }
+
         const {
             friction = DEFAULT_RIGID_BODY_FRICTION,
             mass = DEFAULT_RIGID_BODY_MASS,
@@ -283,11 +349,33 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             position,
             quaternion,
         } = options;
+        // Static and kinematic bodies are non-dynamic by contract. Keep the
+        // native collider mass at zero even when authored data contains a
+        // stale or overly large mass value from an older scene schema.
+        const effectiveMass = type === RigidBodyType.Dynamic ? mass : 0;
+
+        const ccdEnabled = options.ccd === true && type === RigidBodyType.Dynamic;
+        const ccdMotionThreshold = Number.isFinite(options.ccdMotionThreshold)
+            ? Math.max(0, options.ccdMotionThreshold as number)
+            : DEFAULT_RIGID_BODY_CCD_MOTION_THRESHOLD;
+        const ccdSweptSphereRadius = Number.isFinite(options.ccdSweptSphereRadius)
+            ? Math.max(0, options.ccdSweptSphereRadius as number)
+            : DEFAULT_RIGID_BODY_CCD_SWEPT_SPHERE_RADIUS;
 
         const rigidBodyType = RIGID_BODY_TYPE_MAP[type];
         const rigidBodyDescriptor = Rapier.RigidBodyDesc[rigidBodyType]()
             .setLinearDamping(linearDamping)
-            .setAngularDamping(angularDamping);
+            .setAngularDamping(angularDamping)
+            .setCanSleep(type === RigidBodyType.Dynamic && options.allowSleep !== false);
+
+        if (ccdEnabled) {
+            // Rapier's hard CCD is the cross-backend equivalent of Bullet's
+            // swept test. Its soft prediction distance is the closest native
+            // equivalent for Bullet's motion-threshold/radius tuning knobs.
+            rigidBodyDescriptor
+                .setCcdEnabled(true)
+                .setSoftCcdPrediction(Math.max(ccdMotionThreshold, ccdSweptSphereRadius));
+        }
 
         if (position) {
             rigidBodyDescriptor.setTranslation(position.x, position.y, position.z);
@@ -300,7 +388,7 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
 
         if (sharedShape.shape) {
             const colliderDescriptor = new Rapier.ColliderDesc(sharedShape.shape)
-                .setMass(mass)
+                .setMass(effectiveMass)
                 .setFriction(friction)
                 .setRestitution(restitution)
                 .setActiveEvents(Rapier.ActiveEvents.COLLISION_EVENTS)
@@ -321,6 +409,12 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             console.warn("RapierPhysicsEngine.remove: rigid body not found", uuid);
             return;
         }
+
+        // Rapier removes constraints attached to a body as part of the native
+        // body teardown, but the JS wrapper does not clean our ownership map.
+        // Remove them first so later replacement/disposal cannot address a
+        // freed impulse-joint handle.
+        this.removeJointsForBody(uuid);
 
         const colliderCount = body.numColliders();
         for (let i = 0; i < colliderCount; i++) {
@@ -677,7 +771,20 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         }
 
         const newSharedShape = this.shapeCache.get(newShapeUuid);
-        if (!newSharedShape?.shape) {
+        if (!newSharedShape) {
+            console.warn("RapierPhysicsEngine.setRigidBodyShape: shape not found", newShapeUuid);
+            return;
+        }
+
+        if (!isConcaveHullBodyTypeSupported(newSharedShape.type, this.getRigidBodyType(uuid))) {
+            console.warn(
+                `RapierPhysicsEngine.setRigidBodyShape: rejected concave hull/static-mesh shape "${newShapeUuid}" for ${this.getRigidBodyType(uuid)} body "${uuid}". ` +
+                "Ammo/Rapier support concave and heightfield shapes only for Static bodies; use a ConvexHull or compound primitive colliders.",
+            );
+            return;
+        }
+
+        if (!newSharedShape.shape) {
             console.warn("RapierPhysicsEngine.setRigidBodyShape: shape not found", newShapeUuid);
             return;
         }
@@ -762,6 +869,14 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         const sharedShape = this.shapeCache.get(shapeUuid);
         if (!sharedShape) {
             console.warn("RapierPhysicsEngine.addCharacterController: shape not found", shapeUuid);
+            return;
+        }
+
+        if (!isConcaveHullBodyTypeSupported(sharedShape.type, RigidBodyType.Kinematic)) {
+            console.warn(
+                `RapierPhysicsEngine.addCharacterController: rejected concave hull shape "${shapeUuid}" for controller "${uuid}". ` +
+                "Ammo/Rapier support concave hulls only for Static colliders; use a capsule, convex hull, or primitive collider.",
+            );
             return;
         }
 
@@ -999,6 +1114,8 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             return;
         }
 
+        this.replaceJoint(uuidA, uuidB);
+
         const data = Rapier.JointData.fixed(
             { x: 0, y: 0, z: 0 },
             { x: 0, y: 0, z: 0, w: 1 },
@@ -1023,6 +1140,8 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             console.warn("RapierPhysicsEngine.addHingeJoint: rigid body not found", uuidA, uuidB);
             return;
         }
+
+        this.replaceJoint(uuidA, uuidB);
 
         // Rapier's revolute joint takes anchors in each body's local
         // frame plus a single hinge axis in A's local frame; it derives
@@ -1061,6 +1180,8 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
             return;
         }
 
+        this.replaceJoint(uuidA, uuidB);
+
         const data = Rapier.JointData.spherical(pivotA, pivotB);
         const joint = this.world.createImpulseJoint(data, bodyA, bodyB, true);
         joint.setContactsEnabled(collisionEnabled);
@@ -1068,11 +1189,39 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
     }
 
     removeJoint(uuidA: string, uuidB: string): void {
-        const key = this.getJointKey(uuidA, uuidB);
+        this.removeJointByKey(this.getJointKey(uuidA, uuidB));
+    }
+
+    /** Remove a single owned joint, tolerating an already-removed handle. */
+    private removeJointByKey(key: string): void {
         const joint = this.jointMap.get(key);
         if (!joint) return;
-        this.world.removeImpulseJoint(joint, true);
+
         this.jointMap.delete(key);
+        try {
+            this.world.removeImpulseJoint(joint, true);
+        } catch (error) {
+            // Body teardown can make Rapier invalidate a native handle before
+            // a caller reaches this cleanup path. Ownership is already gone;
+            // keep disposal idempotent and surface only a debug diagnostic.
+            console.debug("RapierPhysicsEngine: joint handle was already removed", key, error);
+        }
+    }
+
+    private replaceJoint(uuidA: string, uuidB: string): void {
+        this.removeJointByKey(this.getJointKey(uuidA, uuidB));
+    }
+
+    private removeJointsForBody(uuid: string): void {
+        for (const key of this.jointMap.keys()) {
+            const separator = key.indexOf(":");
+            if (separator === -1) continue;
+            const keyA = key.slice(0, separator);
+            const keyB = key.slice(separator + 1);
+            if (keyA === uuid || keyB === uuid) {
+                this.removeJointByKey(key);
+            }
+        }
     }
 
     private getJointKey(uuidA: string, uuidB: string): string {
@@ -1097,7 +1246,8 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
         // Create chassis rigid body
         const rigidBodyDesc = Rapier.RigidBodyDesc.dynamic()
             .setTranslation(initialTransform.position.x, initialTransform.position.y, initialTransform.position.z)
-            .setRotation(initialTransform.quaternion);
+            .setRotation(initialTransform.quaternion)
+            .setCanSleep(false);
         const chassisBody = this.world.createRigidBody(rigidBodyDesc);
         chassisBody.setBodyType(Rapier.RigidBodyType.Dynamic, true);
 
@@ -1318,6 +1468,7 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
     }
 
     initDebug(): Object3D {
+        this.debugEnabled = true;
         const debugVertices = new Float32Array(3 * DEFAULT_DEBUG_VERTEX_COUNT);
         const debugColors = new Float32Array(4 * DEFAULT_DEBUG_VERTEX_COUNT);
 
@@ -1407,6 +1558,14 @@ export class RapierPhysicsEngine implements PhysicsEngine, VehiclePhysics, Joint
                     type: BodyShapeType.CONCAVE_HULL,
                     shape: this.createConcaveHullShape(collisionShape),
                 };
+
+            case BodyShapeType.HEIGHTFIELD: {
+                const heightfield = normalizeHeightfieldShape(collisionShape);
+                return {
+                    type: BodyShapeType.HEIGHTFIELD,
+                    shape: createRapierHeightfieldShape(heightfield),
+                };
+            }
         }
         throw new Error(`RapierPhysicsEngine.createSharedShape: unhandled collision shape type ${(collisionShape as {type: string}).type}`);
     }

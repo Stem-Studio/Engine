@@ -196,6 +196,32 @@ describe("Attribute Change Request System", () => {
             await expect(promise).resolves.toMatchObject({ accepted: true, value: 60 });
             expect(b.getAttribute("health")).toBe(60);
         });
+
+        it("keeps hook-enqueued changes in the same drain without shifting the queue", async () => {
+            const obj = new THREE.Object3D();
+            const b = createBehavior(manager, game, "test", obj, { health: 100, score: 0 });
+            let hookPromise: Promise<AttributeChangeResult> | undefined;
+
+            b.onAttributeChanged = (key: string) => {
+                if (key === "health") {
+                    hookPromise = manager.requestAttributeChange(b, "score", 10, null) as Promise<AttributeChangeResult>;
+                }
+            };
+
+            const promise = manager.requestAttributeChange(b, "health", 75, null) as Promise<AttributeChangeResult>;
+            const queue = (manager as any).attributeChangeQueue as Array<unknown>;
+            const shiftSpy = vi.spyOn(queue, "shift");
+
+            manager.update(0.016);
+
+            await expect(promise).resolves.toMatchObject({ accepted: true, value: 75 });
+            expect(hookPromise).toBeDefined();
+            await expect(hookPromise!).resolves.toMatchObject({ accepted: true, value: 10 });
+            expect(shiftSpy).not.toHaveBeenCalled();
+            expect(queue).toHaveLength(0);
+            expect(b.getAttribute("health")).toBe(75);
+            expect(b.getAttribute("score")).toBe(10);
+        });
     });
 
     describe("command queue flushing", () => {
@@ -218,7 +244,127 @@ describe("Attribute Change Request System", () => {
     });
 
     describe("fresh-frame scheduling", () => {
-        it("runs hot behaviors before the rotating tail when the sliced deadline is exhausted", () => {
+        it("rate-limits repeated behavior update errors", () => {
+            const behavior = createBehavior(manager, game, "noisy-behavior", new THREE.Object3D());
+            const error = new Error("generic behavior update failure");
+            behavior.update = vi.fn(() => {
+                throw error;
+            });
+
+            (manager as any).behaviors = [behavior];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+            const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+            try {
+                manager.update(0.016, createFrameContext({ frameCount: 1 }));
+                manager.update(0.016, createFrameContext({ frameCount: 2 }));
+                manager.update(0.016, createFrameContext({ frameCount: 3 }));
+
+                expect(consoleError).toHaveBeenCalledTimes(1);
+
+                manager.update(0.016, createFrameContext({ frameCount: 121 }));
+
+                expect(consoleError).toHaveBeenCalledTimes(2);
+                expect(behavior.update).toHaveBeenCalledTimes(3);
+                expect(consoleError.mock.calls[1]?.[0]).toContain("2 repeated error(s) suppressed");
+            } finally {
+                consoleError.mockRestore();
+            }
+        });
+
+        it("suppresses transient UIKit fullscreen camera update errors", () => {
+            const behavior = createBehavior(manager, game, "hud-behavior", new THREE.Object3D());
+            const error = new Error("fullscreen can only be added to a camera");
+            behavior.update = vi.fn(() => {
+                throw error;
+            });
+
+            (manager as any).behaviors = [behavior];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+            const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+            try {
+                manager.update(0.016, createFrameContext({ frameCount: 1 }));
+                manager.update(0.016, createFrameContext({ frameCount: 121 }));
+
+                expect(consoleError).not.toHaveBeenCalled();
+            } finally {
+                consoleError.mockRestore();
+            }
+        });
+
+        it("runs fixedUpdate-only behaviors from update() when fixed-rate updates are disabled", () => {
+            const behavior = createBehavior(manager, game, "fixed-only", new THREE.Object3D());
+            const fixedUpdate = vi.fn();
+            behavior.fixedUpdate = fixedUpdate;
+
+            (manager as any).behaviors = [behavior];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+
+            manager.update(0.016, createFrameContext({ fixedUpdatesEnabled: false }));
+
+            expect(fixedUpdate).toHaveBeenCalledWith(0.016);
+        });
+
+        it("accumulates delta for unprocessed tail behaviors when update() hits the deadline", () => {
+            const tails = Array.from({ length: 10 }, (_, i) => {
+                const behavior = createBehavior(manager, game, `tail-${i}`, new THREE.Object3D());
+                behavior.update = vi.fn();
+                return behavior;
+            });
+
+            (manager as any).behaviors = tails;
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+
+            const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
+
+            manager.update(0.016, createFrameContext({ frameDeadline: 5 }));
+
+            expect(tails.slice(0, 8).every(behavior => (behavior.update as any).mock.calls.length === 1)).toBe(true);
+            expect(tails[8]!._accumulatedDelta).toBeCloseTo(0.016);
+            expect(tails[9]!._accumulatedDelta).toBeCloseTo(0.016);
+
+            nowSpy.mockRestore();
+        });
+
+        it("does not reclassify every tail behavior when there are no hot behaviors", () => {
+            const tails = Array.from({ length: 4 }, (_, i) => {
+                const behavior = createBehavior(manager, game, `tail-${i}`, new THREE.Object3D());
+                behavior.update = vi.fn();
+                return behavior;
+            });
+
+            (manager as any).behaviors = tails;
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+            const isHotSpy = vi.spyOn(manager as any, "isHotBehavior");
+
+            manager.update(0.016, createFrameContext());
+
+            expect(isHotSpy).toHaveBeenCalledTimes(tails.length);
+            expect(tails.every(behavior => (behavior.update as any).mock.calls.length === 1)).toBe(true);
+        });
+
+        it("runs hot behaviors before the tail when the deadline is exhausted", () => {
             const player = new THREE.Object3D();
             game.player = player;
 
@@ -253,7 +399,7 @@ describe("Attribute Change Request System", () => {
             });
 
             const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
-            Array.from(manager.updateSliced(0.016, createFrameContext({ frameDeadline: 5 })));
+            manager.update(0.016, createFrameContext({ frameDeadline: 5 }));
 
             expect(callOrder).toEqual([
                 "hot-player",
@@ -271,7 +417,157 @@ describe("Attribute Change Request System", () => {
             nowSpy.mockRestore();
         });
 
-        it("restarts the rotating tail from the beginning after a sliced budget bailout", () => {
+        it("runs hot behaviors before the tail without retaining frame scratch arrays", () => {
+            const player = new THREE.Object3D();
+            game.player = player;
+
+            const hotPlayer = createBehavior(manager, game, "hot-player", player);
+            const tailA = createBehavior(manager, game, "tail-a", new THREE.Object3D());
+            const hotConsistent = createBehavior(manager, game, "hot-consistent", new THREE.Object3D());
+            hotConsistent.throttleConfig = {
+                ...hotConsistent.throttleConfig,
+                requiresConsistentUpdates: true,
+            };
+            const tailB = createBehavior(manager, game, "tail-b", new THREE.Object3D());
+            const behaviors = [tailA, hotPlayer, tailB, hotConsistent];
+            const callOrder: string[] = [];
+            behaviors.forEach((behavior) => {
+                behavior.update = vi.fn(() => callOrder.push(behavior.id));
+            });
+
+            (manager as any).behaviors = behaviors;
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+            const isHotSpy = vi.spyOn(manager as any, "isHotBehavior");
+
+            manager.update(0.016, createFrameContext());
+
+            expect(callOrder).toEqual(["hot-player", "hot-consistent", "tail-a", "tail-b"]);
+            expect(isHotSpy.mock.calls.filter(([behavior]) => (behavior as BehaviorBase).id === "tail-a")).toHaveLength(1);
+            expect((manager as any).hotBehaviorFrameScratch).toBeUndefined();
+            expect((manager as any).tailBehaviorFrameScratch).toBeUndefined();
+        });
+
+        it("reuses hot behavior classification storage across frames", () => {
+            const player = new THREE.Object3D();
+            game.player = player;
+
+            const hotPlayer = createBehavior(manager, game, "hot-player", player);
+            const tail = createBehavior(manager, game, "tail", new THREE.Object3D());
+            hotPlayer.update = vi.fn();
+            tail.update = vi.fn();
+
+            (manager as any).behaviors = [hotPlayer, tail];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+
+            manager.update(0.016, createFrameContext());
+            const firstFlags = (manager as any).hotBehaviorFlags;
+            const firstIndexes = (manager as any).hotBehaviorIndexes;
+
+            manager.update(0.016, createFrameContext({ frameCount: 2 }));
+
+            expect((manager as any).hotBehaviorFlags).toBe(firstFlags);
+            expect((manager as any).hotBehaviorIndexes).toBe(firstIndexes);
+            expect((manager as any).hotBehaviorIndexes).toEqual([0]);
+        });
+
+        it("clears stale hot flags when a hot behavior becomes a tail behavior", () => {
+            const hotThenTail = createBehavior(manager, game, "hot-then-tail", new THREE.Object3D());
+            hotThenTail.throttleConfig = {
+                ...hotThenTail.throttleConfig,
+                requiresConsistentUpdates: true,
+            };
+            const tails = Array.from({ length: 10 }, (_, i) => {
+                const behavior = createBehavior(manager, game, `tail-${i}`, new THREE.Object3D());
+                behavior.update = vi.fn();
+                return behavior;
+            });
+            (manager as any).behaviors = [hotThenTail, ...tails];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+
+            manager.update(0.016, createFrameContext());
+
+            expect((manager as any).hotBehaviorFlags[0]).toBe(true);
+
+            hotThenTail.throttleConfig = {
+                ...hotThenTail.throttleConfig,
+                requiresConsistentUpdates: false,
+            };
+            hotThenTail.update = vi.fn();
+            const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
+
+            manager.update(0.016, createFrameContext({ frameDeadline: 5, frameCount: 2 }));
+
+            expect((manager as any).hotBehaviorIndexes).toEqual([]);
+            expect((manager as any).hotBehaviorFlags[0]).toBe(false);
+            expect(hotThenTail._accumulatedDelta ?? 0).toBe(0);
+            expect(tails[7]!._accumulatedDelta).toBeCloseTo(0.016);
+            nowSpy.mockRestore();
+        });
+
+        it("does not accumulate skipped tail delta onto hot behaviors after deadline bailout", () => {
+            const tails = Array.from({ length: 10 }, (_, i) => {
+                const behavior = createBehavior(manager, game, `tail-${i}`, new THREE.Object3D());
+                behavior.update = vi.fn();
+                return behavior;
+            });
+            const hotLate = createBehavior(manager, game, "hot-late", new THREE.Object3D());
+            hotLate.throttleConfig = {
+                ...hotLate.throttleConfig,
+                requiresConsistentUpdates: true,
+            };
+
+            const callOrder: string[] = [];
+            hotLate.update = vi.fn(() => callOrder.push(hotLate.id));
+            tails.forEach((tail) => {
+                tail.update = vi.fn(() => callOrder.push(tail.id));
+            });
+
+            (manager as any).behaviors = [
+                ...tails.slice(0, 8),
+                hotLate,
+                tails[8]!,
+                tails[9]!,
+            ];
+            (manager as any).throttler = {
+                beginFrame: vi.fn(),
+                setSpatialGrid: vi.fn(),
+                shouldUpdateBehavior: vi.fn(() => ({ shouldUpdate: true })),
+            };
+
+            const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
+            manager.update(0.016, createFrameContext({ frameDeadline: 5 }));
+
+            expect(callOrder).toEqual([
+                "hot-late",
+                "tail-0",
+                "tail-1",
+                "tail-2",
+                "tail-3",
+                "tail-4",
+                "tail-5",
+                "tail-6",
+                "tail-7",
+            ]);
+            expect(hotLate._accumulatedDelta ?? 0).toBe(0);
+            expect(tails[8]!._accumulatedDelta).toBeCloseTo(0.016);
+            expect(tails[9]!._accumulatedDelta).toBeCloseTo(0.016);
+
+            nowSpy.mockRestore();
+        });
+
+        it("resumes the tail from skipped behaviors after a budget bailout", () => {
             const tails = Array.from({ length: 10 }, (_, i) => {
                 const behavior = createBehavior(manager, game, `tail-${i}`, new THREE.Object3D());
                 behavior.update = vi.fn();
@@ -287,20 +583,20 @@ describe("Attribute Change Request System", () => {
 
             const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
 
-            Array.from(manager.updateSliced(0.016, createFrameContext({ frameDeadline: 5 })));
+            manager.update(0.016, createFrameContext({ frameDeadline: 5 }));
 
             const secondPassOrder: string[] = [];
             tails.forEach((tail) => {
                 tail.update = vi.fn(() => secondPassOrder.push(tail.id));
             });
 
-            Array.from(manager.updateSliced(0.016, createFrameContext({ frameDeadline: 5, frameCount: 2 })));
+            manager.update(0.016, createFrameContext({ frameDeadline: 5, frameCount: 2 }));
 
             expect(secondPassOrder.slice(0, 4)).toEqual([
+                "tail-8",
+                "tail-9",
                 "tail-0",
                 "tail-1",
-                "tail-2",
-                "tail-3",
             ]);
 
             nowSpy.mockRestore();
@@ -547,6 +843,93 @@ describe("Attribute Change Request System", () => {
             const result = foreign!.requestAttributeChange("hp", 50, {sync: true}) as AttributeChangeResult;
             expect(result.accepted).toBe(true);
             expect(owner.getAttribute("hp")).toBe(50);
+        });
+    });
+
+    // -- behavior lookup indexes ----------------------------------------------
+
+    describe("behavior lookup indexes", () => {
+        it("tracks behavior id and uuid lookups across start and stop", async () => {
+            const obj = new THREE.Object3D();
+            const otherObj = new THREE.Object3D();
+            const first = createBehavior(manager, game, "enemy", obj, {});
+            const second = createBehavior(manager, game, "enemy", otherObj, {});
+
+            await (manager as any).startBehavior(first);
+            await (manager as any).startBehavior(second);
+
+            expect(manager.getBehaviorsById("enemy")).toEqual([first, second]);
+            expect(manager.getTargetBehaviors(obj)).toEqual([first]);
+            expect(manager.getTargetBehaviorsById(obj, "enemy")).toEqual([first]);
+            expect(manager.getBehaviorByUUID(second.uuid)).toBe(second);
+
+            first.target = otherObj;
+
+            expect(manager.getTargetBehaviors(obj)).toEqual([]);
+            expect(manager.getTargetBehaviors(otherObj)).toEqual([first, second]);
+            expect(manager.getTargetBehaviorsById(otherObj, "enemy")).toEqual([first, second]);
+
+            (manager as any).stopBehavior(first);
+
+            expect(manager.getBehaviorsById("enemy")).toEqual([second]);
+            expect(manager.getTargetBehaviorsById(obj, "enemy")).toEqual([]);
+            expect(manager.getBehaviorByUUID(first.uuid)).toBeNull();
+        });
+
+        it("rebuilds indexes when the behavior array is replaced or mutated directly", () => {
+            const obj = new THREE.Object3D();
+            const first = createBehavior(manager, game, "enemy", obj, {});
+            const second = createBehavior(manager, game, "enemy", obj, {});
+
+            (manager as any).behaviors = [first, second];
+
+            expect(manager.getBehaviorsById("enemy")).toEqual([first, second]);
+            expect(manager.getTargetBehaviors(obj)).toEqual([first, second]);
+            expect(manager.getBehaviorByUUID(first.uuid)).toBe(first);
+
+            (manager as any).behaviors.pop();
+
+            expect(manager.getBehaviorsById("enemy")).toEqual([first]);
+            expect(manager.getTargetBehaviors(obj)).toEqual([first]);
+            expect(manager.getBehaviorByUUID(second.uuid)).toBeNull();
+        });
+
+        it("skips duplicate behavior instances through the membership index", async () => {
+            const obj = new THREE.Object3D();
+            const first = createBehavior(manager, game, "enemy", obj, {});
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+            await (manager as any).startBehavior(first);
+            const includesSpy = vi.fn(() => {
+                throw new Error("startup should not scan behaviors with Array.includes");
+            });
+            (manager as any).behaviors.includes = includesSpy;
+
+            await (manager as any).startBehavior(first);
+
+            expect(includesSpy).not.toHaveBeenCalled();
+            expect(manager.getBehaviorsById("enemy")).toEqual([first]);
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("already exists"));
+        });
+
+        it("dispatches events to target behaviors while honoring excluded ids", async () => {
+            const obj = new THREE.Object3D();
+            const receiver = createBehavior(manager, game, "receiver", obj, {});
+            const skipped = createBehavior(manager, game, "skipped", obj, {});
+            const otherTarget = createBehavior(manager, game, "receiver", new THREE.Object3D(), {});
+            receiver.onEvent = vi.fn();
+            skipped.onEvent = vi.fn();
+            otherTarget.onEvent = vi.fn();
+
+            await (manager as any).startBehavior(receiver);
+            await (manager as any).startBehavior(skipped);
+            await (manager as any).startBehavior(otherTarget);
+
+            manager.sendEventToObjectBehaviors(obj, "activate", {power: 2}, ["skipped"]);
+
+            expect(receiver.onEvent).toHaveBeenCalledWith("activate", {power: 2});
+            expect(skipped.onEvent).not.toHaveBeenCalled();
+            expect(otherTarget.onEvent).not.toHaveBeenCalled();
         });
     });
 

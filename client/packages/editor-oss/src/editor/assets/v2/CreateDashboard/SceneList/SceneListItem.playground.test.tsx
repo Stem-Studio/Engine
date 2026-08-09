@@ -19,7 +19,7 @@ vi.mock("@web-shared/playgroundMode", () => ({
     isPlaygroundMode: () => mocks.isPlayground,
 }));
 
-vi.mock("@stem/editor-oss/context", () => ({
+vi.mock("@stem/editor-oss/context/AuthorizationContext", () => ({
     useAuthorizationContext: () => ({
         dbUser: {id: "user-1", username: "Designer"},
         isAuthorized: true,
@@ -49,7 +49,7 @@ vi.mock("@stem/editor-oss/utils/productAnalytics", () => ({
     trackProductEvent: (...args: unknown[]) => mocks.trackProductEvent(...args),
 }));
 
-vi.mock("@stem/network/api/scene/v2", () => ({
+vi.mock("@stem/network/api/scene/actions", () => ({
     forkScene: vi.fn(),
 }));
 
@@ -58,6 +58,8 @@ vi.mock("../../../../../v2/pages/editorHandoff", () => ({
 }));
 
 vi.mock("../../../../../v2/pages/links", () => ({
+    generatePlaygroundSceneLink: (id: string, name: string, mode: "edit" | "play") =>
+        `/create/project/${id}/${mode}?mode=playground&scene=${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
     generateProjectLink: (id: string) => `/project/${id}`,
     getGameUrl: (id: string) => `/play/${id}`,
 }));
@@ -120,6 +122,9 @@ describe("SceneListItem playground actions", () => {
 
         fireEvent.click(screen.getByTestId("game-card-play"));
 
-        expect(window.open).toHaveBeenCalledWith("/play/scene-1", "_blank");
+        expect(window.open).toHaveBeenCalledWith(
+            "/create/project/scene-1/play?mode=playground&scene=crystal-dash",
+            "_blank",
+        );
     });
 });

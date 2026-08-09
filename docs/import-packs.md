@@ -268,11 +268,13 @@ All of these land as Script assets through `useCreateScript()`, which scans for
 Script imports can import other Script imports with the same directive. Cycles
 are rejected at load time so a helper graph cannot deadlock the runtime.
 
-The dashboard's **Import stemscript folder** feature is a larger sibling: it
-stages a whole exported folder via `sessionStorage`, navigates to a fresh
-project, and runs the `exec` flow to materialize an entire saved project
-(scenes, assets, scripts) at once. Import packs are the single-module version
-of the same idea.
+In Chromium browsers with the File System Access API, the dashboard's
+**Import project folder** feature supports two larger flows.
+For an exported `.stemscript.json` project plus its matching asset directory,
+it validates and copies the bundle directly into the local project store. For
+an executable `.stemscript` folder, it stages the folder, navigates to a fresh
+project, and runs the `exec` flow to materialize the scene and assets. Import
+packs are the single-module version of the executable-script path.
 
 ---
 
@@ -376,8 +378,8 @@ the import names, dependency graph, and generated helper code needed by the
 behavior/lambda it produced. Rename or edit those imports only if you are also
 updating every `@import` reference that depends on them.
 
-In the OSS playground, script import edits are latest-only: each asset resolves
-to the single current local version. In a server-backed install, script imports
+In local playground mode, script import edits are latest-only: each asset resolves
+to the single current local version. In a self-hosted server-backed install, script imports
 participate in the full asset revision system; the history icon on script cards
 opens revision history and the scene pins the active revision just like it does
 for behavior and lambda assets.
@@ -402,7 +404,7 @@ file in — no code changes:
 
 ## Verification
 
-The packs picker feeds the script-tool import pipeline, which the OSS smokes
+The packs picker feeds the script-tool import pipeline, which the local smokes
 cover:
 
 ```bash

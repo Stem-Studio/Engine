@@ -31,7 +31,7 @@ const validateModelHasGeometry = (model: Object3D): void => {
     let meshCount = 0;
     let vertexCount = 0;
 
-    model.traverse((child) => {
+    traverseObjectDepthFirst(model, child => {
         if (child instanceof Mesh && child.geometry) {
             const positionAttr = child.geometry.getAttribute('position');
             if (positionAttr && positionAttr.count > 0) {
@@ -69,6 +69,7 @@ import {
     TextureOverrides,
     TextureDetectionResult,
 } from '../texture/TextureMapping';
+import {traverseObjectDepthFirst} from '../utils/SceneTraverser';
 
 type LoadModelFromFileResult = {
     originalFile: File;
@@ -85,7 +86,8 @@ export const loadModelFromFile = async (
     file: File,
     abortSignal: AbortSignal,
     companionFiles?: File[],
-    overriddenFileType: string = ""
+    overriddenFileType: string = "",
+    sourceBuffer?: ArrayBuffer,
 ): Promise<LoadModelFromFileResult> => {
     abortSignal.throwIfAborted();
 
@@ -168,7 +170,15 @@ export const loadModelFromFile = async (
     }
 
     // Load the model
-    const model = await loadModel(rootFile, format, fileBlobMap, rootPath, atlasData, textureOverrides);
+    const model = await loadModel(
+        rootFile,
+        format,
+        fileBlobMap,
+        rootPath,
+        atlasData,
+        textureOverrides,
+        rootFile === file ? sourceBuffer : undefined,
+    );
     abortSignal.throwIfAborted();
 
     if (!model) {
@@ -233,16 +243,28 @@ const loadModel = async (
     rootPath: string | undefined,
     atlasData: LoadedAtlas | undefined,
     textureOverrides: TextureOverrides | undefined,
+    sourceBuffer?: ArrayBuffer,
 ) => {
     const isGlbOrGltf = format === ModelFormat.Gltf || format === ModelFormat.Glb;
-    const objectUrl = URL.createObjectURL(file);
 
     if (isGlbOrGltf) {
         const loader = new GLTFLoaderExtended();
+        if (
+            format === ModelFormat.Glb &&
+            sourceBuffer &&
+            fileBlobMap.size === 0 &&
+            !atlasData &&
+            !textureOverrides
+        ) {
+            return loader.parseGlb(sourceBuffer);
+        }
+        const objectUrl = URL.createObjectURL(file);
         return loader.load(objectUrl, rootPath || "", fileBlobMap, atlasData, textureOverrides).finally(() => {
             URL.revokeObjectURL(objectUrl);
         });
     }
+
+    const objectUrl = URL.createObjectURL(file);
 
     // For other formats (including PLY), pass fileBlobMap, rootPath, atlasData, and textureOverrides in options
     const forceGaussianSplatPly = format === ModelFormat.Ply

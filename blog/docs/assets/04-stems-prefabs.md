@@ -122,15 +122,15 @@ The stem's objects, behaviors, and configuration are reconstructed in your scene
 
 > **Important:** Stem instances are independent copies. Modifying one instance does not affect other instances or the original stem definition. If you want to update all instances, you need to update the stem and re-add it.
 
-## Publishing Stems To The Community
+## Publishing Stems To The Community (Not Available In Playground)
 
-You can share your stems with other StemStudio creators by publishing them to the community library.
+The current Playground has no hosted community library or publishing service.
+The controls below describe the intended remote/API-backed product flow and
+may remain in historical screenshots, but they are hidden in Playground.
 
-### How To Publish
-
-1. Create and test your stem in your own scene.
-2. Make sure it works correctly -- add it to a fresh scene and test it there.
-3. Use the **publish** action on the stem to make it available to the community.
+There is no supported Playground publishing procedure. Create and test stems
+locally, then use a supported file import/export flow if that surface is
+available outside Playground.
 
 ![Publish stem dialog with name and description fields](images/publish%20stem.PNG)
 
@@ -246,9 +246,10 @@ Create small, simple stems that combine:
 ## What To Avoid
 
 - Do not create stems for objects that are truly one-off -- it adds unnecessary overhead.
-- Do not publish stems that depend on unpublished behaviors -- the publish process will flag an error.
+- Do not assume a community publish service exists in Playground.
 - Do not assume modifying a stem instance updates other instances -- each instance is an independent copy.
-- Do not forget to test stems in a clean scene before publishing -- dependencies that exist in your development scene may be missing elsewhere.
+- Test reusable stems in a clean local scene; dependencies from the original
+  scene may be missing elsewhere.
 
 ## Next Steps
 

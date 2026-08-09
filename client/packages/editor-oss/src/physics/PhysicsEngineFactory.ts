@@ -2,9 +2,15 @@ import { PHYSICS_EVENTS } from './common/events';
 import { IDispatcher, IPhysics, PhysicsEngineType } from './common/types';
 import { LegacyPhysicsAdapter } from './LegacyPhysicsAdapter';
 import { DEFAULT_GRAVITY, PhysicsEngine } from './PhysicsEngine';
+import { DEFAULT_SOLVER_ITERATIONS } from './common/physicsConfig';
 
-interface PhysicsEngineOptions {
+export interface PhysicsEngineOptions {
     gravity?: number;
+    /**
+     * Constraint solver iterations per fixed substep for both Ammo and
+     * Rapier. Each backend clamps the value to its safe operating range.
+     */
+    solverIterations?: number;
 }
 
 /**
@@ -18,16 +24,51 @@ export interface PreloadedPhysicsWorker {
     isReady: () => boolean;
     /** Invoke `cb` immediately if already ready, otherwise on the next READY. */
     onReady: (cb: () => void) => void;
+    /** Resolves once the worker dispatches READY. */
+    ready: Promise<void>;
 }
 
 interface WorkerCacheEntry {
     type: PhysicsEngineType;
+    gravity: number;
+    solverIterations: number;
     promise: Promise<PreloadedPhysicsWorker>;
 }
 
+interface PhysicsEngineFactoryState {
+    activeEngineType: PhysicsEngineType | null;
+    workerCache: WorkerCacheEntry | null;
+}
+
+const PHYSICS_ENGINE_FACTORY_STATE_KEY = Symbol.for("stem.physicsEngineFactoryState");
+
+type PhysicsFactoryGlobal = typeof globalThis & Record<symbol, PhysicsEngineFactoryState | undefined>;
+
+function getPhysicsEngineFactoryState(): PhysicsEngineFactoryState {
+    const target = globalThis as PhysicsFactoryGlobal;
+    target[PHYSICS_ENGINE_FACTORY_STATE_KEY] ??= {
+        activeEngineType: null,
+        workerCache: null,
+    };
+    return target[PHYSICS_ENGINE_FACTORY_STATE_KEY];
+}
+
 export class PhysicsEngineFactory {
-    private static activeEngineType: PhysicsEngineType | null = null;
-    private static workerCache: WorkerCacheEntry | null = null;
+    private static get activeEngineType(): PhysicsEngineType | null {
+        return getPhysicsEngineFactoryState().activeEngineType;
+    }
+
+    private static set activeEngineType(type: PhysicsEngineType | null) {
+        getPhysicsEngineFactoryState().activeEngineType = type;
+    }
+
+    private static get workerCache(): WorkerCacheEntry | null {
+        return getPhysicsEngineFactoryState().workerCache;
+    }
+
+    private static set workerCache(cache: WorkerCacheEntry | null) {
+        getPhysicsEngineFactoryState().workerCache = cache;
+    }
 
     /**
      * Tears down the cached WASM module for a previously loaded engine,
@@ -50,16 +91,6 @@ export class PhysicsEngineFactory {
                 teardownAmmo();
                 break;
             }
-            case PhysicsEngineType.Jolt: {
-                const { teardownJolt } = await import('./jolt/jolt');
-                teardownJolt();
-                break;
-            }
-            case PhysicsEngineType.PhysX: {
-                const { teardownPhysX } = await import('./physx/physx');
-                teardownPhysX();
-                break;
-            }
             case PhysicsEngineType.Rapier: {
                 const { teardownRapier } = await import('./rapier/rapier');
                 teardownRapier();
@@ -80,16 +111,22 @@ export class PhysicsEngineFactory {
     private static async spawnWorker(
         type: PhysicsEngineType,
         gravity: number,
+        solverIterations: number = DEFAULT_SOLVER_ITERATIONS,
     ): Promise<PreloadedPhysicsWorker> {
         const { default: PhysicsWorker } = await import('./worker/PhysicsWorker.ts?worker');
         const worker = new PhysicsWorker();
 
         let ready = false;
         const callbacks: Array<() => void> = [];
+        let resolveReady: () => void = () => {};
+        const readyPromise = new Promise<void>(resolve => {
+            resolveReady = resolve;
+        });
         const listener = (msg: MessageEvent<{ event?: string }>) => {
             if (msg.data?.event !== PHYSICS_EVENTS.READY) return;
             ready = true;
             worker.removeEventListener('message', listener);
+            resolveReady();
             for (const cb of callbacks.splice(0)) cb();
         };
         worker.addEventListener('message', listener);
@@ -97,7 +134,7 @@ export class PhysicsEngineFactory {
         worker.postMessage({
             event: PHYSICS_EVENTS.START,
             engineType: type,
-            options: { gravity },
+            options: { gravity, solverIterations },
         });
 
         return {
@@ -107,6 +144,7 @@ export class PhysicsEngineFactory {
                 if (ready) cb();
                 else callbacks.push(cb);
             },
+            ready: readyPromise,
         };
     }
 
@@ -120,18 +158,29 @@ export class PhysicsEngineFactory {
      * @param type which engine the worker should bring up
      * @param gravity gravity to feed the worker's `START` message
      */
-    static preloadWorker(type: PhysicsEngineType, gravity: number): void {
-        if (PhysicsEngineFactory.workerCache?.type === type) return;
+    static preloadWorker(
+        type: PhysicsEngineType,
+        gravity: number,
+        solverIterations: number = DEFAULT_SOLVER_ITERATIONS,
+    ): Promise<PreloadedPhysicsWorker> {
+        if (
+            PhysicsEngineFactory.workerCache?.type === type &&
+            PhysicsEngineFactory.workerCache.gravity === gravity &&
+            PhysicsEngineFactory.workerCache.solverIterations === solverIterations
+        ) {
+            return PhysicsEngineFactory.workerCache.promise;
+        }
         if (PhysicsEngineFactory.workerCache) {
             const stale = PhysicsEngineFactory.workerCache;
             PhysicsEngineFactory.workerCache = null;
             stale.promise.then((handle) => handle.worker.terminate()).catch(() => {});
         }
-        const promise = PhysicsEngineFactory.spawnWorker(type, gravity).catch((err) => {
+        const promise = PhysicsEngineFactory.spawnWorker(type, gravity, solverIterations).catch((err) => {
             console.warn('PhysicsEngineFactory.preloadWorker: spawn failed', err);
             throw err;
         });
-        PhysicsEngineFactory.workerCache = { type, promise };
+        PhysicsEngineFactory.workerCache = { type, gravity, solverIterations, promise };
+        return promise;
     }
 
     /**
@@ -147,9 +196,9 @@ export class PhysicsEngineFactory {
     static takeWorker(
         type: PhysicsEngineType,
         gravity: number,
+        solverIterations: number = DEFAULT_SOLVER_ITERATIONS,
     ): Promise<PreloadedPhysicsWorker> {
-        PhysicsEngineFactory.preloadWorker(type, gravity);
-        const promise = PhysicsEngineFactory.workerCache!.promise;
+        const promise = PhysicsEngineFactory.preloadWorker(type, gravity, solverIterations);
         PhysicsEngineFactory.workerCache = null;
         return promise;
     }
@@ -171,16 +220,6 @@ export class PhysicsEngineFactory {
                 initRapier().catch(() => {});
                 break;
             }
-            case PhysicsEngineType.Jolt: {
-                const { initJolt } = await import('./jolt/jolt');
-                initJolt().catch(() => {});
-                break;
-            }
-            case PhysicsEngineType.PhysX: {
-                const { initPhysX } = await import('./physx/physx');
-                initPhysX().catch(() => {});
-                break;
-            }
         }
     }
 
@@ -196,10 +235,6 @@ export class PhysicsEngineFactory {
                 return PhysicsEngineFactory.createAmmoPhysicsEngine(options);
             case PhysicsEngineType.Rapier:
                 return PhysicsEngineFactory.createRapierPhysicsEngine(options);
-            case PhysicsEngineType.Jolt:
-                return PhysicsEngineFactory.createJoltPhysicsEngine(options);
-            case PhysicsEngineType.PhysX:
-                return PhysicsEngineFactory.createPhysXPhysicsEngine(options);
         }
     }
 
@@ -213,34 +248,25 @@ export class PhysicsEngineFactory {
     }
 
     private static async createAmmoPhysicsEngine(options?: PhysicsEngineOptions): Promise<PhysicsEngine> {
-        const { gravity = DEFAULT_GRAVITY } = options || {};
+        const {
+            gravity = DEFAULT_GRAVITY,
+            solverIterations = DEFAULT_SOLVER_ITERATIONS,
+        } = options || {};
         const { initAmmo } = await import('./ammo/ammo');
         const { AmmoPhysicsEngine } = await import('./ammo/AmmoPhysicsEngine');
         const ammo = await initAmmo();
-        return new AmmoPhysicsEngine(ammo, gravity);
+        return new AmmoPhysicsEngine(ammo, gravity, solverIterations);
     }
 
     private static async createRapierPhysicsEngine(options?: PhysicsEngineOptions): Promise<PhysicsEngine> {
-        const { gravity = DEFAULT_GRAVITY } = options || {};
+        const {
+            gravity = DEFAULT_GRAVITY,
+            solverIterations = DEFAULT_SOLVER_ITERATIONS,
+        } = options || {};
         const { initRapier } = await import('./rapier/rapier');
         const { RapierPhysicsEngine } = await import('./rapier/RapierPhysicsEngine');
         await initRapier();
-        return new RapierPhysicsEngine(gravity);
+        return new RapierPhysicsEngine(gravity, solverIterations);
     }
 
-    private static async createJoltPhysicsEngine(options?: PhysicsEngineOptions): Promise<PhysicsEngine> {
-        const { gravity = DEFAULT_GRAVITY } = options || {};
-        const { initJolt } = await import('./jolt/jolt');
-        const { JoltPhysicsEngine } = await import('./jolt/JoltPhysicsEngine');
-        const jolt = await initJolt();
-        return new JoltPhysicsEngine(jolt, gravity);
-    }
-
-    private static async createPhysXPhysicsEngine(options?: PhysicsEngineOptions): Promise<PhysicsEngine> {
-        const { gravity = DEFAULT_GRAVITY } = options || {};
-        const { initPhysX } = await import('./physx/physx');
-        const { PhysXPhysicsEngine } = await import('./physx/PhysXPhysicsEngine');
-        const physx = await initPhysX();
-        return new PhysXPhysicsEngine(physx, gravity);
-    }
 }

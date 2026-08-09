@@ -14,11 +14,9 @@ import {
 } from "./Footer.style";
 import {ROUTES} from "@web-shared/routes";
 import discord from "../assets/discord-grey.svg";
-import logo from "../assets/logo-white.svg";
 import stemStudioLogo from "../../editor/assets/v2/HUD/HUDView/FloatingNav/AppVersion/stem-studio-alpha.png";
 import {Shadow} from "../common/Shadow/Shadow.style";
-import {ABOUT_LINK, BLOG_LINK, DISCORD_LINK, FORUM_LINK} from "../pages/constants";
-import {IS_OSS} from "../../mode/buildMode";
+import {BLOG_LINK, DISCORD_LINK, FORUM_LINK} from "../pages/constants";
 
 const COPYRIGHT_HOLDER = "StemStudio";
 
@@ -37,8 +35,7 @@ export const Footer = () => {
 
     const playColumn: IColumns = {
         label: t("Play"),
-        // OSS has no public game library to explore.
-        options: IS_OSS ? [] : [{text: t("Explore"), href: ROUTES.BROWSE}],
+        options: [],
     };
     const createColumn: IColumns = {label: t("Create"), options: [{text: t("Studio"), href: ROUTES.HOME}]};
     const communityColumn: IColumns = {
@@ -48,26 +45,13 @@ export const Footer = () => {
             FORUM_LINK ? {text: t("Forum"), href: FORUM_LINK, target: "_blank"} : null,
         ].filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     };
-    // OSS has no hosted operator, so About/Contact/ToS/Privacy don't
-    // apply. Open-source licenses still ship and stay visible.
     const companyColumn: IColumns = {
         label: t("Company"),
-        options: IS_OSS
-            ? []
-            : [
-                {text: t("About"), href: ABOUT_LINK || ROUTES.ABOUT, target: ABOUT_LINK ? "_blank" : undefined},
-                {text: t("Contact"), href: ROUTES.CONTACT_US},
-            ],
+        options: [],
     };
     const legalColumn: IColumns = {
         label: t("Legal"),
-        options: IS_OSS
-            ? [{text: t("Open Source Licenses"), href: ROUTES.THIRD_PARTY_ATTRIBUTIONS}]
-            : [
-                {text: t("Terms of Service"), href: ROUTES.TERMS_OF_SERVICE},
-                {text: t("Privacy Policy"), href: ROUTES.PRIVACY_POLICY},
-                {text: t("Open Source Licenses"), href: ROUTES.THIRD_PARTY_ATTRIBUTIONS},
-            ],
+        options: [{text: t("Open Source Licenses"), href: ROUTES.THIRD_PARTY_ATTRIBUTIONS}],
     };
 
     const INSIDE_COLUMNS: IColumns[] = [
@@ -108,9 +92,9 @@ export const Footer = () => {
             {isMobile ?
                 <>
                     <MobileRow>
-                        <img src={IS_OSS ? stemStudioLogo : logo}
+                        <img src={stemStudioLogo}
                             alt="StemStudio"
-                            style={IS_OSS ? {height: 28} : undefined}
+                            style={{height: 28}}
                         />
                         <DiscordButton />
                     </MobileRow>
@@ -129,9 +113,9 @@ export const Footer = () => {
              :
                 <>
                     <LeftColumn>
-                        <img src={IS_OSS ? stemStudioLogo : logo}
+                        <img src={stemStudioLogo}
                             alt="StemStudio"
-                            style={IS_OSS ? {height: 28} : undefined}
+                            style={{height: 28}}
                         />
                         <span className="copyright">© {new Date().getFullYear()} {COPYRIGHT_HOLDER}</span>
                     </LeftColumn>

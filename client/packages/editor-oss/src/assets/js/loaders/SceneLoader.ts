@@ -4,6 +4,7 @@ import global from "../../../global";
 import Converter from "../../../serialization/Converter";
 import Ajax from "../../../utils/Ajax";
 import {THREE_GetGifTexture} from "../../../utils/GifTexture";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 
 
 interface TextureWithGif extends Texture {
@@ -22,6 +23,23 @@ class SceneLoader {
         if (materialWithMap.map && this.hasGifUrl(materialWithMap.map) && materialWithMap.map.gifUrl) {
             materialWithMap.map = await THREE_GetGifTexture(materialWithMap.map.gifUrl);
         }
+    }
+
+    private async processSceneGifTextures(root: Object3D): Promise<void> {
+        const materials = new Set<Material>();
+        traverseObjectDepthFirst(root, object => {
+            const material = (object as Mesh).material;
+            if (Array.isArray(material)) {
+                for (let i = 0; i < material.length; i++) {
+                    const entry = material[i];
+                    if (entry) materials.add(entry);
+                }
+            } else if (material) {
+                materials.add(material);
+            }
+        });
+
+        await Promise.all(Array.from(materials, material => this.processGifTexture(material)));
     }
 
     async fetchScene(url: string): Promise<unknown> {
@@ -51,16 +69,7 @@ class SceneLoader {
                 domHeight: global.app?.editor?.renderer.domElement.height ?? 600,
             });
 
-            obj.scene.traverse(async (n: Object3D) => {
-                const mesh = n as Mesh;
-                if (mesh.material instanceof Array) {
-                    mesh.material.forEach(async (m: Material) => {
-                        await this.processGifTexture(m);
-                    });
-                } else if (mesh.material) {
-                    await this.processGifTexture(mesh.material);
-                }
-            });
+            await this.processSceneGifTextures(obj.scene);
 
             if (callback) {
                 callback(obj.scene);

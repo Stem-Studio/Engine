@@ -1,26 +1,51 @@
-import * as THREE from "three";
-
+import {Box3, BoxGeometry, Camera, EdgesGeometry, Group, LineBasicMaterial, LineSegments, MathUtils, Matrix4, Object3D, Quaternion, Vector3} from "three";
+import type {ColorRepresentation, Object3DJSON} from "three";
 import {computeOrientedBox, createOrientedBoxResult, OrientedBoxResult} from "./orientedBox";
 import {SizeLabelSprite} from "./SizeLabelSprite";
 
-const _center = new THREE.Vector3();
-const _size = new THREE.Vector3();
-const _qIdent = new THREE.Quaternion();
-const _camPos = new THREE.Vector3();
-const _tmpPos = new THREE.Vector3();
+const _center = new Vector3();
+const _size = new Vector3();
+const _qIdent = new Quaternion();
+const _camPos = new Vector3();
+const _tmpPos = new Vector3();
 
 const MIN_AXIS = 1e-6;
 
-const clampSize = (size: THREE.Vector3): void => {
+const clampSize = (size: Vector3): void => {
     if (size.x < MIN_AXIS) size.x = MIN_AXIS;
     if (size.y < MIN_AXIS) size.y = MIN_AXIS;
     if (size.z < MIN_AXIS) size.z = MIN_AXIS;
 };
 
 interface OrientedBoxHelperOptions {
-    color?: THREE.ColorRepresentation;
+    color?: ColorRepresentation;
     showLabels?: boolean;
 }
+
+interface LabelRect {
+    label: SizeLabelSprite | null;
+    cx: number;
+    cy: number;
+    hx: number;
+    hy: number;
+    z: number;
+    ok: boolean;
+}
+
+const createLabelRect = (): LabelRect => ({
+    label: null,
+    cx: 0,
+    cy: 0,
+    hx: 0,
+    hy: 0,
+    z: 0,
+    ok: false,
+});
+
+const rectsOverlap = (a: LabelRect, b: LabelRect): boolean =>
+    a.ok && b.ok &&
+    Math.abs(a.cx - b.cx) <= a.hx + b.hx &&
+    Math.abs(a.cy - b.cy) <= a.hy + b.hy;
 
 /**
  * Wireframe helper that visualizes an oriented bounding box (OBB) around
@@ -28,39 +53,51 @@ interface OrientedBoxHelperOptions {
  * rotation; the inner LineSegments carries the size scale. Optional
  * sprite labels show the X/Y/Z size of the box in world units.
  */
-export class OrientedBoxHelper extends THREE.Group {
-    public readonly box: THREE.LineSegments;
+export class OrientedBoxHelper extends Group {
+    public readonly box: LineSegments;
     public readonly labelX: SizeLabelSprite | null;
     public readonly labelY: SizeLabelSprite | null;
     public readonly labelZ: SizeLabelSprite | null;
 
     private readonly _result: OrientedBoxResult = createOrientedBoxResult();
-    private readonly _boxMaterial: THREE.LineBasicMaterial;
+    private readonly _boxMaterial: LineBasicMaterial;
+    private readonly _labelList: SizeLabelSprite[];
+    private readonly _labelRects: LabelRect[] = [
+        createLabelRect(),
+        createLabelRect(),
+        createLabelRect(),
+    ];
+    private readonly _labelOverlaps: boolean[] = [false, false, false];
 
     constructor({color = 0xffff00, showLabels = true}: OrientedBoxHelperOptions = {}) {
         super();
         Object.defineProperty(this, "type", {value: "OrientedBoxHelper"});
         this.matrixAutoUpdate = false;
 
-        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-        const edges = new THREE.EdgesGeometry(boxGeo);
+        const boxGeo = new BoxGeometry(1, 1, 1);
+        const edges = new EdgesGeometry(boxGeo);
         boxGeo.dispose();
-        this._boxMaterial = new THREE.LineBasicMaterial({color, toneMapped: false});
-        this.box = new THREE.LineSegments(edges, this._boxMaterial);
+        this._boxMaterial = new LineBasicMaterial({color, toneMapped: false});
+        this.box = new LineSegments(edges, this._boxMaterial);
         this.box.matrixAutoUpdate = false;
         this.box.frustumCulled = false;
         this.box.renderOrder = 9999;
         this.add(this.box);
 
         if (showLabels) {
-            this.labelX = new SizeLabelSprite({axis: "x"});
-            this.labelY = new SizeLabelSprite({axis: "y"});
-            this.labelZ = new SizeLabelSprite({axis: "z"});
-            this.add(this.labelX, this.labelY, this.labelZ);
+            const labelX = new SizeLabelSprite({axis: "x"});
+            const labelY = new SizeLabelSprite({axis: "y"});
+            const labelZ = new SizeLabelSprite({axis: "z"});
+            this.labelX = labelX;
+            this.labelY = labelY;
+            this.labelZ = labelZ;
+            this._labelList = [labelX, labelY, labelZ];
+            this.add(labelX, labelY, labelZ);
         } else {
             this.labelX = null;
             this.labelY = null;
             this.labelZ = null;
+            this._labelList = [];
         }
     }
 
@@ -71,11 +108,11 @@ export class OrientedBoxHelper extends THREE.Group {
      *
      * @returns
      */
-    get material(): THREE.LineBasicMaterial {
+    get material(): LineBasicMaterial {
         return this._boxMaterial;
     }
 
-    setFromObject(object: THREE.Object3D): boolean {
+    setFromObject(object: Object3D): boolean {
         computeOrientedBox(object, this._result);
         return this.setFromOrientedBox(this._result);
     }
@@ -95,7 +132,7 @@ export class OrientedBoxHelper extends THREE.Group {
         return true;
     }
 
-    setFromWorldBox(box: THREE.Box3): void {
+    setFromWorldBox(box: Box3): void {
         box.getCenter(_center);
         box.getSize(_size);
         clampSize(_size);
@@ -107,7 +144,7 @@ export class OrientedBoxHelper extends THREE.Group {
         this._updateLabelText(_size);
     }
 
-    setColor(color: THREE.ColorRepresentation): void {
+    setColor(color: ColorRepresentation): void {
         this._boxMaterial.color.set(color);
     }
 
@@ -120,49 +157,47 @@ export class OrientedBoxHelper extends THREE.Group {
     /**
      * Per-frame label update: distance-scaled size + overlap fading.
      * Call after the helper's matrices are up to date.
-        *
-        * @param camera
      */
-    updateLabelPresentation(camera: THREE.Camera): void {
-        const labels = [this.labelX, this.labelY, this.labelZ].filter(Boolean) as SizeLabelSprite[];
-        if (!labels.length) return;
+    updateLabelPresentation(camera: Camera): void {
+        const labels = this._labelList;
+        const labelCount = labels.length;
+        if (labelCount === 0) return;
 
         this.updateMatrixWorld(true);
 
         // 1) Distance-based pixel height with clamp.
         const camPos = _camPos.setFromMatrixPosition(camera.matrixWorld);
-        for (const label of labels) {
+        for (let i = 0; i < labelCount; i++) {
+            const label = labels[i]!;
             const pos = _tmpPos.setFromMatrixPosition(label.matrixWorld);
             const d = Math.max(0.001, pos.distanceTo(camPos));
             // Keep labels readable but prevent oversized near-camera text.
-            const h = THREE.MathUtils.clamp(0.115 / d, 0.015, 0.025);
+            const h = MathUtils.clamp(0.115 / d, 0.015, 0.025);
             label.setPixelHeight(h);
         }
 
         // 2) Overlap-based fading. Gather rects first.
-        const rects: Array<{label: SizeLabelSprite; cx: number; cy: number; hx: number; hy: number; z: number; ok: boolean}> = [];
-        for (const label of labels) {
-            const r = {cx: 0, cy: 0, hx: 0, hy: 0, z: 0};
-            const ok = label.getNDCRect(camera, r);
-            rects.push({label, ...r, ok});
+        const rects = this._labelRects;
+        for (let i = 0; i < labelCount; i++) {
+            const label = labels[i]!;
+            const rect = rects[i]!;
+            rect.label = label;
+            rect.ok = label.getNDCRect(camera, rect);
         }
 
-        const overlaps = (a: typeof rects[number], b: typeof rects[number]): boolean =>
-            a.ok && b.ok &&
-            Math.abs(a.cx - b.cx) <= a.hx + b.hx &&
-            Math.abs(a.cy - b.cy) <= a.hy + b.hy;
-
         let pairOverlapCount = 0;
-        const overlapped: boolean[] = rects.map(() => false);
-        for (let i = 0; i < rects.length; i++) {
-            const rectA = rects[i];
-            if (!rectA) continue;
+        const overlapped = this._labelOverlaps;
+        for (let i = 0; i < labelCount; i++) {
+            overlapped[i] = false;
+        }
 
-            for (let j = i + 1; j < rects.length; j++) {
-                const rectB = rects[j];
-                if (!rectB) continue;
+        for (let i = 0; i < labelCount; i++) {
+            const rectA = rects[i]!;
 
-                if (overlaps(rectA, rectB)) {
+            for (let j = i + 1; j < labelCount; j++) {
+                const rectB = rects[j]!;
+
+                if (rectsOverlap(rectA, rectB)) {
                     pairOverlapCount++;
                     // Fade whichever is farther from camera (higher NDC z).
                     if (rectA.z > rectB.z) overlapped[i] = true;
@@ -171,13 +206,13 @@ export class OrientedBoxHelper extends THREE.Group {
             }
         }
 
-        const allOverlap = rects.length >= 3 && pairOverlapCount >= 3;
+        const allOverlap = labelCount >= 3 && pairOverlapCount >= 3;
 
-        for (let i = 0; i < rects.length; i++) {
-            const rect = rects[i];
-            if (!rect) continue;
-
+        for (let i = 0; i < labelCount; i++) {
+            const rect = rects[i]!;
             const label = rect.label;
+            if (!label) continue;
+
             let target: number;
             if (!rect.ok) target = 0;
             else if (allOverlap) target = 0;
@@ -199,7 +234,7 @@ export class OrientedBoxHelper extends THREE.Group {
         this.labelZ?.dispose();
     }
 
-    toJSON(): THREE.Object3DJSON {
+    toJSON(): Object3DJSON {
         this.updateMatrix();
 
         return {
@@ -221,7 +256,7 @@ export class OrientedBoxHelper extends THREE.Group {
         };
     }
 
-    private _apply(basis: THREE.Matrix4, center: THREE.Vector3, size: THREE.Vector3): void {
+    private _apply(basis: Matrix4, center: Vector3, size: Vector3): void {
         this.matrix.copy(basis);
         this.matrixWorldNeedsUpdate = true;
         this.box.matrix.compose(center, _qIdent.identity(), size);
@@ -230,7 +265,7 @@ export class OrientedBoxHelper extends THREE.Group {
         this._updateLabelText(size);
     }
 
-    private _positionLabels(center: THREE.Vector3, size: THREE.Vector3): void {
+    private _positionLabels(center: Vector3, size: Vector3): void {
         // Place each axis label at the midpoint of an edge along that axis,
         // anchored at one corner so labels don't overlap each other.
         if (this.labelX) {
@@ -244,7 +279,7 @@ export class OrientedBoxHelper extends THREE.Group {
         }
     }
 
-    private _updateLabelText(size: THREE.Vector3): void {
+    private _updateLabelText(size: Vector3): void {
         if (this.labelX) this.labelX.setSizeValue(size.x);
         if (this.labelY) this.labelY.setSizeValue(size.y);
         if (this.labelZ) this.labelZ.setSizeValue(size.z);

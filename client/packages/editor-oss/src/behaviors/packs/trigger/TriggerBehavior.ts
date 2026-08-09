@@ -9,6 +9,11 @@ import { setManagedTimeout, clearManagedTimeout } from "@stem/editor-oss/utils/M
 import { BehaviorBase } from "../../Behavior";
 import RangeDetector from "../../range/RangeDetector";
 
+const isPromiseLike = <T = unknown>(value: unknown): value is PromiseLike<T> =>
+    !!value &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as {then?: unknown}).then === "function";
+
 interface IfCondition {
     conditionType: TRIGGER_ACTIVATION_TYPES;
     objectUUID?: string; // only set when object_touches is selected
@@ -101,8 +106,14 @@ class TriggerBehavior extends BehaviorBase {
     private elapsedTimeSec: number = 0;
     private currentPlayerInside: boolean = false;
     private previousPlayerInside: boolean = false;
+    private hasInteractRangeDetector: boolean = false;
     private lastTriggeredAtMs: number = 0;
     private raycaster: THREE.Raycaster = new THREE.Raycaster();
+    private raycastHits: THREE.Intersection[] = [];
+    private scratchPositionA: THREE.Vector3 = new THREE.Vector3();
+    private scratchPositionB: THREE.Vector3 = new THREE.Vector3();
+    private scratchDirection: THREE.Vector3 = new THREE.Vector3();
+    private scratchForward: THREE.Vector3 = new THREE.Vector3();
     private collisionStateByObject: Map<string, boolean> = new Map();
 
     init(gameManager: GameManager): void {
@@ -153,7 +164,9 @@ class TriggerBehavior extends BehaviorBase {
             return;
         }
 
-        this.rangeDetector!.update();
+        if (this.hasInteractRangeDetector) {
+            this.rangeDetector!.update();
+        }
         this.elapsedTimeSec += delta;
         this.currentPlayerInside = this.isPlayerTouching();
         const conditionsMet = this.checkConditions(this.attributes.if_condition);
@@ -171,7 +184,7 @@ class TriggerBehavior extends BehaviorBase {
 
         this.previousPlayerInside = this.currentPlayerInside;
     }
-    
+
     onReset(): void {
         this.previousCondResult = CONDITIONS_RESULT.NONE;
         this.elapsedTimeSec = 0;
@@ -202,6 +215,7 @@ class TriggerBehavior extends BehaviorBase {
         }
 
         if (!found) {
+            this.hasInteractRangeDetector = false;
             return;
         }
 
@@ -209,6 +223,7 @@ class TriggerBehavior extends BehaviorBase {
         this.rangeDetector?.setTarget(this.target);
         this.rangeDetector?.setKeyText('E');
         this.rangeDetector?.setText(interactionText);
+        this.hasInteractRangeDetector = true;
     }
 
     private checkConditions(conditions: IfCondition[]): CONDITIONS_RESULT {
@@ -217,136 +232,94 @@ class TriggerBehavior extends BehaviorBase {
         }
 
         const ifOperator = this.attributes.if_operator === "or" ? "or" : "and";
-        let result = CONDITIONS_RESULT.NONE;
-
         let conditionsMet = 0;
-        for (const condition of conditions) {
-            switch (condition.conditionType) {
-                case TRIGGER_ACTIVATION_TYPES.PLAYER_TOUCHES:
-                case TRIGGER_ACTIVATION_TYPES.WHILE_INSIDE:
-                    if (this.currentPlayerInside) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.OBJECT_TOUCHES: {
-                    const object = this.getObjectByUUID(condition.objectUUID!);
-                    if (object && this.isCollide(object)) {
-                        conditionsMet++;
-                    }
-                    break;
+        for (let index = 0; index < conditions.length; index++) {
+            const conditionMet = this.isConditionMet(conditions[index]!);
+            if (conditionMet) {
+                conditionsMet++;
+                if (ifOperator === "or") {
+                    this.evaluateRemainingStatefulConditions(conditions, index + 1);
+                    return CONDITIONS_RESULT.ALL;
                 }
-                case TRIGGER_ACTIVATION_TYPES.PRESS_E:
-                    if (this.currentPlayerInside && this.isEPressed()) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.PRESS_F:
-                    if (this.currentPlayerInside && this.isFPressed()) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.ON_ENTER:
-                    if (!this.previousPlayerInside && this.currentPlayerInside) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.ON_EXIT:
-                    if (this.previousPlayerInside && !this.currentPlayerInside) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.KEY_BUTTON_PRESSED:
-                    if (this.currentPlayerInside && this.isInputPressed(condition.inputKey)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.TIMER_ELAPSED:
-                    if (this.elapsedTimeSec >= Math.max(0, Number(condition.timerSeconds) || 0)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.DISTANCE_COMPARE:
-                    if (this.isDistanceConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.HAS_TAG_TEAM_FACTION:
-                    if (this.isMetadataConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.VARIABLE_COMPARE:
-                    if (this.isVariableCompareConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.BEHAVIOR_STATE:
-                    if (this.isBehaviorStateConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.ANIMATION_EVENT_REACHED:
-                    if (this.isAnimationEventConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.LINE_OF_SIGHT:
-                    if (this.hasLineOfSight(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.RANDOM_CHANCE:
-                    if (this.isRandomChanceMet(condition.chancePercent)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.COOLDOWN_READY:
-                    if (this.isCooldownReady(condition.cooldownSeconds)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.ON_INTERACT:
-                    if (this.isOnInteractConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.OBJECT_STATE_COMPARE:
-                    if (this.isObjectStateCompareMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.TIME_WINDOW:
-                    if (this.isTimeWindowConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.MULTIPLAYER_ROLE:
-                    if (this.isMultiplayerRoleConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.PHYSICS_COLLISION_EVENT:
-                    if (this.isPhysicsCollisionEventMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                case TRIGGER_ACTIVATION_TYPES.AI_PROXIMITY:
-                    if (this.isAiProximityConditionMet(condition)) {
-                        conditionsMet++;
-                    }
-                    break;
-                default:
-                    break;
+            } else if (ifOperator === "and") {
+                this.evaluateRemainingStatefulConditions(conditions, index + 1);
+                return CONDITIONS_RESULT.NONE;
             }
         }
 
-        if (ifOperator === "or" && conditionsMet > 0) {
-            result = CONDITIONS_RESULT.ALL;
-        } else if (ifOperator === "and" && conditionsMet === conditions.length) {
-            result = CONDITIONS_RESULT.ALL;
-        }
+        return ifOperator === "and" && conditionsMet === conditions.length
+            ? CONDITIONS_RESULT.ALL
+            : CONDITIONS_RESULT.NONE;
+    }
 
-        return result;
+    private evaluateRemainingStatefulConditions(conditions: IfCondition[], startIndex: number): void {
+        for (let index = startIndex; index < conditions.length; index++) {
+            const condition = conditions[index]!;
+            if (this.isStatefulCondition(condition)) {
+                this.isConditionMet(condition);
+            }
+        }
+    }
+
+    private isStatefulCondition(condition: IfCondition): boolean {
+        return (
+            condition.conditionType === TRIGGER_ACTIVATION_TYPES.PHYSICS_COLLISION_EVENT ||
+            condition.conditionType === TRIGGER_ACTIVATION_TYPES.RANDOM_CHANCE
+        );
+    }
+
+    private isConditionMet(condition: IfCondition): boolean {
+        switch (condition.conditionType) {
+            case TRIGGER_ACTIVATION_TYPES.PLAYER_TOUCHES:
+            case TRIGGER_ACTIVATION_TYPES.WHILE_INSIDE:
+                return this.currentPlayerInside;
+            case TRIGGER_ACTIVATION_TYPES.OBJECT_TOUCHES: {
+                const object = this.getObjectByUUID(condition.objectUUID!);
+                return !!object && this.isCollide(object);
+            }
+            case TRIGGER_ACTIVATION_TYPES.PRESS_E:
+                return this.currentPlayerInside && this.isEPressed();
+            case TRIGGER_ACTIVATION_TYPES.PRESS_F:
+                return this.currentPlayerInside && this.isFPressed();
+            case TRIGGER_ACTIVATION_TYPES.ON_ENTER:
+                return !this.previousPlayerInside && this.currentPlayerInside;
+            case TRIGGER_ACTIVATION_TYPES.ON_EXIT:
+                return this.previousPlayerInside && !this.currentPlayerInside;
+            case TRIGGER_ACTIVATION_TYPES.KEY_BUTTON_PRESSED:
+                return this.currentPlayerInside && this.isInputPressed(condition.inputKey);
+            case TRIGGER_ACTIVATION_TYPES.TIMER_ELAPSED:
+                return this.elapsedTimeSec >= Math.max(0, Number(condition.timerSeconds) || 0);
+            case TRIGGER_ACTIVATION_TYPES.DISTANCE_COMPARE:
+                return this.isDistanceConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.HAS_TAG_TEAM_FACTION:
+                return this.isMetadataConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.VARIABLE_COMPARE:
+                return this.isVariableCompareConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.BEHAVIOR_STATE:
+                return this.isBehaviorStateConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.ANIMATION_EVENT_REACHED:
+                return this.isAnimationEventConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.LINE_OF_SIGHT:
+                return this.hasLineOfSight(condition);
+            case TRIGGER_ACTIVATION_TYPES.RANDOM_CHANCE:
+                return this.isRandomChanceMet(condition.chancePercent);
+            case TRIGGER_ACTIVATION_TYPES.COOLDOWN_READY:
+                return this.isCooldownReady(condition.cooldownSeconds);
+            case TRIGGER_ACTIVATION_TYPES.ON_INTERACT:
+                return this.isOnInteractConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.OBJECT_STATE_COMPARE:
+                return this.isObjectStateCompareMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.TIME_WINDOW:
+                return this.isTimeWindowConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.MULTIPLAYER_ROLE:
+                return this.isMultiplayerRoleConditionMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.PHYSICS_COLLISION_EVENT:
+                return this.isPhysicsCollisionEventMet(condition);
+            case TRIGGER_ACTIVATION_TYPES.AI_PROXIMITY:
+                return this.isAiProximityConditionMet(condition);
+            default:
+                return false;
+        }
     }
 
     private triggerAction(): void {
@@ -468,13 +441,12 @@ class TriggerBehavior extends BehaviorBase {
     }
 
     private applyActionToBehaviors(behaviorTargets: ObjectBehaviors, actionType: ACTION_TYPE): void {
-        const scene = this.game?.scene;
-        if (!scene) {
+        if (!this.game) {
             return;
         }
 
         const targetObject = behaviorTargets.object
-            ? scene.getObjectByProperty("uuid", behaviorTargets.object)
+            ? this.game.getObjectByUUID(behaviorTargets.object)
             : this.target;
         if (!targetObject) {
             return;
@@ -494,8 +466,8 @@ class TriggerBehavior extends BehaviorBase {
                 actionType,
                 trigger: this,
             });
-            if (result instanceof Promise) {
-                void result.catch(error => {
+            if (isPromiseLike(result)) {
+                void Promise.resolve(result).catch(error => {
                     console.error(`[TriggerBehavior] Error during behavior onEvent for "${behavior.id}":`, error);
                 });
             }
@@ -673,8 +645,8 @@ class TriggerBehavior extends BehaviorBase {
                 continue;
             }
             const result: any = instance.onEvent(eventName, payload);
-            if (result instanceof Promise) {
-                void result.catch(error => {
+            if (isPromiseLike(result)) {
+                void Promise.resolve(result).catch(error => {
                     console.error(`[TriggerBehavior] Error during lambda onEvent for "${instanceId}":`, error);
                 });
             }
@@ -682,14 +654,13 @@ class TriggerBehavior extends BehaviorBase {
     }
 
     private applyActionToLambdas(lambdaTargets: ObjectBehaviors, step: ThenStep): void {
-        const scene = this.game?.scene;
         const lambdaManager = this.game?.lambdaManager;
-        if (!scene || !lambdaManager) {
+        if (!this.game || !lambdaManager) {
             return;
         }
 
         const targetObject = lambdaTargets.object
-            ? scene.getObjectByProperty("uuid", lambdaTargets.object)
+            ? this.game.getObjectByUUID(lambdaTargets.object)
             : this.target;
 
         if (!targetObject) {
@@ -840,14 +811,36 @@ class TriggerBehavior extends BehaviorBase {
     }
 
     private getObjectByUUID(uuid: string): Object3D | null {
-        const object = this.game?.scene?.getObjectByProperty("uuid", uuid);
+        if (!uuid) {
+            return null;
+        }
+        const object = this.game?.getObjectByUUID(uuid);
         if (!object) {
             console.warn(`Object with UUID ${uuid} not found`);
             return null;
         }
         return object;
     }
-    
+
+    private isSameOrDescendantOf(object: Object3D | null | undefined, ancestor: Object3D | null | undefined): boolean {
+        if (!object || !ancestor) {
+            return false;
+        }
+
+        let current: Object3D | null = object;
+        while (current) {
+            if (current === ancestor) {
+                return true;
+            }
+            current = current.parent;
+        }
+        return false;
+    }
+
+    private isObjectInScene(object: Object3D): boolean {
+        return this.isSameOrDescendantOf(object, this.game?.scene);
+    }
+
     private isCollide(object: Object3D): boolean {
         this.boundsAuxA.setFromObject(this.target);
         this.boundsAuxB.setFromObject(object);
@@ -884,14 +877,19 @@ class TriggerBehavior extends BehaviorBase {
             return false;
         }
 
-        const targetPos = this.target.getWorldPosition(new THREE.Vector3());
-        const objectPos = object.getWorldPosition(new THREE.Vector3());
-        const distance = targetPos.distanceTo(objectPos);
+        const targetPos = this.target.getWorldPosition(this.scratchPositionA);
+        const objectPos = object.getWorldPosition(this.scratchPositionB);
         const threshold = Number(condition.distanceValue) || 0;
+        if (threshold < 0) {
+            return condition.distanceOperator === "gt";
+        }
+
+        const distanceSq = targetPos.distanceToSquared(objectPos);
+        const thresholdSq = threshold * threshold;
 
         return condition.distanceOperator === "gt"
-            ? distance > threshold
-            : distance < threshold;
+            ? distanceSq > thresholdSq
+            : distanceSq < thresholdSq;
     }
 
     private getObjectByScope(scope: "self" | "player" | "object" | undefined, objectUUID?: string): Object3D | null {
@@ -915,17 +913,37 @@ class TriggerBehavior extends BehaviorBase {
         const userData = object.userData || {};
 
         if (key === "tag") {
-            const tags = userData.tags;
-            if (Array.isArray(tags)) {
-                return tags.map((el: unknown) => String(el)).includes(expected);
-            }
-            if (typeof tags === "string") {
-                return tags.split(",").map((el: string) => el.trim()).includes(expected);
+            return this.hasTagValue(userData.tags, expected);
+        }
+
+        return String(userData[key] || "") === expected;
+    }
+
+    private hasTagValue(tags: unknown, expected: string): boolean {
+        if (Array.isArray(tags)) {
+            for (const tag of tags) {
+                if (String(tag) === expected) {
+                    return true;
+                }
             }
             return false;
         }
 
-        return String(userData[key] || "") === expected;
+        if (typeof tags !== "string") {
+            return false;
+        }
+
+        let tokenStart = 0;
+        for (let index = 0; index <= tags.length; index++) {
+            if (index !== tags.length && tags.charCodeAt(index) !== 44) {
+                continue;
+            }
+            if (tags.slice(tokenStart, index).trim() === expected) {
+                return true;
+            }
+            tokenStart = index + 1;
+        }
+        return false;
     }
 
     private getStoreVariableValue(path?: string): any {
@@ -992,9 +1010,9 @@ class TriggerBehavior extends BehaviorBase {
             return false;
         }
 
-        const source = this.target.getWorldPosition(new THREE.Vector3());
-        const destination = object.getWorldPosition(new THREE.Vector3());
-        const direction = destination.clone().sub(source);
+        const source = this.target.getWorldPosition(this.scratchPositionA);
+        const destination = object.getWorldPosition(this.scratchPositionB);
+        const direction = this.scratchDirection.subVectors(destination, source);
         const distance = direction.length();
         if (distance <= 0) {
             return true;
@@ -1006,17 +1024,26 @@ class TriggerBehavior extends BehaviorBase {
         }
 
         this.raycaster.set(source, direction.normalize());
-        const hits = this.raycaster.intersectObjects(this.game.scene.children, true);
-        const firstHit = hits.find(hit => {
-            const hitObject = hit.object;
-            return !this.target.getObjectByProperty("uuid", hitObject.uuid);
-        });
+        this.raycaster.far = distance;
+        const hits = this.raycastHits;
+        hits.length = 0;
+        this.raycaster.intersectObjects(this.game.scene.children, true, hits);
+        let firstHit: THREE.Intersection | undefined;
+        for (const hit of hits) {
+            if (!this.isSameOrDescendantOf(hit.object, this.target)) {
+                firstHit = hit;
+                break;
+            }
+        }
 
         if (!firstHit) {
+            hits.length = 0;
             return true;
         }
 
-        return !!object.getObjectByProperty("uuid", firstHit.object.uuid);
+        const hasSight = this.isSameOrDescendantOf(firstHit.object, object);
+        hits.length = 0;
+        return hasSight;
     }
 
     private isRandomChanceMet(chancePercent?: number): boolean {
@@ -1050,23 +1077,33 @@ class TriggerBehavior extends BehaviorBase {
             return false;
         }
 
-        const origin = this.game.camera
-            ? this.game.camera.getWorldPosition(new THREE.Vector3())
-            : this.game.player?.getWorldPosition(new THREE.Vector3()) || this.target.getWorldPosition(new THREE.Vector3());
+        const origin = this.scratchPositionA;
+        if (this.game.camera) {
+            this.game.camera.getWorldPosition(origin);
+        } else if (this.game.player) {
+            this.game.player.getWorldPosition(origin);
+        } else {
+            this.target.getWorldPosition(origin);
+        }
         const direction = this.game.camera
-            ? this.game.camera.getWorldDirection(new THREE.Vector3())
-            : this.target.getWorldDirection(new THREE.Vector3());
+            ? this.game.camera.getWorldDirection(this.scratchDirection)
+            : this.target.getWorldDirection(this.scratchDirection);
 
         const maxDistance = Math.max(0.1, Number(condition.interactMaxDistance) || 5);
         this.raycaster.set(origin, direction.normalize());
         this.raycaster.far = maxDistance;
 
-        const hits = this.raycaster.intersectObjects(this.game.scene.children, true);
+        const hits = this.raycastHits;
+        hits.length = 0;
+        this.raycaster.intersectObjects(this.game.scene.children, true, hits);
         const firstHit = hits[0];
         if (!firstHit) {
+            hits.length = 0;
             return false;
         }
-        return !!targetObject.getObjectByProperty("uuid", firstHit.object.uuid);
+        const interacted = this.isSameOrDescendantOf(firstHit.object, targetObject);
+        hits.length = 0;
+        return interacted;
     }
 
     private isObjectStateCompareMet(condition: IfCondition): boolean {
@@ -1085,9 +1122,9 @@ class TriggerBehavior extends BehaviorBase {
         if (key === "visible") {
             actualValue = object.visible;
         } else if (key === "active") {
-            actualValue = !!this.game?.scene?.getObjectByProperty("uuid", object.uuid);
+            actualValue = this.isObjectInScene(object);
         } else if (key === "destroyed") {
-            actualValue = object.userData?.destroyed === true || !this.game?.scene?.getObjectByProperty("uuid", object.uuid);
+            actualValue = object.userData?.destroyed === true || !this.isObjectInScene(object);
         } else {
             actualValue = object.userData?.state;
         }
@@ -1192,21 +1229,21 @@ class TriggerBehavior extends BehaviorBase {
             return false;
         }
 
-        const sourcePos = this.target.getWorldPosition(new THREE.Vector3());
-        const targetPos = target.getWorldPosition(new THREE.Vector3());
-        const toTarget = targetPos.clone().sub(sourcePos);
-        const distance = toTarget.length();
+        const sourcePos = this.target.getWorldPosition(this.scratchPositionA);
+        const targetPos = target.getWorldPosition(this.scratchPositionB);
+        const toTarget = this.scratchDirection.subVectors(targetPos, sourcePos);
         const range = Math.max(0, Number(condition.aiRange) || 0);
-        if (distance > range) {
+        const distanceSq = toTarget.lengthSq();
+        if (distanceSq > range * range) {
             return false;
         }
 
         const fov = Math.max(0, Math.min(360, Number(condition.aiFovDegrees) || 360));
-        if (fov >= 359.9 || distance <= 0.0001) {
+        if (fov >= 359.9 || distanceSq <= 0.00000001) {
             return true;
         }
 
-        const forward = this.target.getWorldDirection(new THREE.Vector3()).normalize();
+        const forward = this.target.getWorldDirection(this.scratchForward).normalize();
         const angle = THREE.MathUtils.radToDeg(forward.angleTo(toTarget.normalize()));
         return angle <= fov / 2;
     }

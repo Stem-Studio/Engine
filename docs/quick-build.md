@@ -28,7 +28,7 @@ use `0` or mnemonic letters, and every tool tooltip shows its assigned key.
 
 ## Texture Packs
 
-Quick Build looks for texture-pack indexes at `/vendor/texture-packs/manifest.json`. The OSS build does not bundle AGPL texture payloads by default.
+Quick Build looks for texture-pack indexes at `/vendor/texture-packs/manifest.json`. This repository does not bundle AGPL texture payloads by default.
 
 To opt into Tiny World Builder textures for a local/deployment build:
 
@@ -38,7 +38,15 @@ ENABLE_TINY_WORLD_TEXTURES=1 node scripts/copy-tiny-world-builder-textures.mjs
 
 The script copies the upstream `LICENSE` and writes `NOTICE.md` beside the generated pack. Keep those files with redistributed copies.
 
-Texture preset UI surfaces each preset's license and attribution from the pack metadata. Tiny World Builder remains opt-in: generated payload files under `client/public/vendor/texture-packs/` are gitignored and are not part of the default OSS build.
+Texture preset UI surfaces each preset's license and attribution from the pack metadata. Tiny World Builder remains opt-in: generated payload files under `client/public/vendor/texture-packs/` are gitignored and are not part of the default repository contents.
+
+TODO: Some stamped wall/building surfaces can show broken/checkerboard texture
+output when optional texture packs are missing or mapped incorrectly. Reproduce
+the wall/building texture issue with a visual smoke, verify UV orientation and
+repeat/clamp settings, and add a regression assertion before changing defaults.
+Before using textures from `pascalorg/editor`, verify the asset license and
+attribution terms, then add only compatible assets through the runtime
+texture-pack manifest with bundled license/notice metadata.
 
 ## URL Params
 

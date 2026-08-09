@@ -155,12 +155,22 @@ describe("planCadInterchange", () => {
             "casework",
             "fixtures",
             "mep",
+            "pascal-furniture",
+            "pascal-kitchen",
+            "pascal-bath",
         ]);
-        expect(PLAN_CAD_PART_PRESETS.length).toBeGreaterThanOrEqual(12);
+        expect(PLAN_CAD_PART_PRESETS.length).toBeGreaterThanOrEqual(25);
         expect(PLAN_CAD_PART_PRESETS.some(preset => preset.id === "electrical_panel")).toBe(true);
         expect(PLAN_CAD_PART_PRESETS.some(preset => preset.id === "toilet")).toBe(true);
-        expect(PLAN_CAD_PART_PRESETS.every(preset => preset.source?.type === "procedural")).toBe(true);
-        expect(PLAN_CAD_PART_PRESETS.every(preset => preset.source?.presetId === preset.id)).toBe(true);
-        expect(PLAN_CAD_PART_PRESETS.every(preset => !!preset.source?.modelKind)).toBe(true);
+        expect(PLAN_CAD_PART_PRESETS.some(preset => preset.id === "pascal-sofa")).toBe(true);
+
+        const proceduralPresets = PLAN_CAD_PART_PRESETS.filter(preset => preset.source?.type === "procedural");
+        const modelPresets = PLAN_CAD_PART_PRESETS.filter(preset => preset.source?.type === "model");
+        expect(proceduralPresets.length).toBeGreaterThanOrEqual(12);
+        expect(modelPresets.length).toBeGreaterThanOrEqual(10);
+        expect(proceduralPresets.every(preset => preset.source?.presetId === preset.id)).toBe(true);
+        expect(proceduralPresets.every(preset => !!preset.source?.modelKind)).toBe(true);
+        expect(modelPresets.every(preset => preset.source?.provider === "pascal")).toBe(true);
+        expect(modelPresets.every(preset => preset.source?.format === "glb" && !!preset.source?.url)).toBe(true);
     });
 });

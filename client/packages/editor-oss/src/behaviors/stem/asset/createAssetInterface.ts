@@ -12,7 +12,7 @@ import { getScriptRevisionData } from '@stem/network/api/script';
 import EngineRuntime from '@stem/editor-oss/EngineRuntime';
 import { AssetRef } from '@stem/editor-oss/asset-management/AssetRef';
 import GameManager from '../../../behaviors/game/GameManager';
-import { parseScriptImports } from '../../../script-runtime/scriptImports';
+import { parseScriptImports } from '../../../script-runtime/scriptImportCore';
 import { createGameObject } from '../core/createGameObject';
 import { GameObject } from '../core/GameObject';
 

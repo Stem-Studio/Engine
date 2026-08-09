@@ -1,5 +1,7 @@
 import {Object3D, Scene} from "three";
 
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+
 /**
  * Returns all objects in the hierarchy that match the given predicate.
  *
@@ -9,7 +11,7 @@ import {Object3D, Scene} from "three";
  */
 export const findAllObjects = (object: Object3D, predicate: (obj: Object3D) => boolean): Object3D[] => {
     const results: Object3D[] = [];
-    object.traverse(obj => {
+    traverseObjectDepthFirst(object, obj => {
         if (predicate(obj)) {
             results.push(obj);
         }
@@ -26,12 +28,14 @@ export const findAllObjects = (object: Object3D, predicate: (obj: Object3D) => b
  */
 export const someObject = (object: Object3D, predicate: (obj: Object3D) => boolean): boolean => {
     const queue = [object];
-    while (queue.length > 0) {
-        const obj = queue.shift()!;
+    for (let index = 0; index < queue.length; index++) {
+        const obj = queue[index]!;
         if (predicate(obj)) {
             return true;
         }
-        queue.push(...obj.children);
+        for (let childIndex = 0; childIndex < obj.children.length; childIndex++) {
+            queue.push(obj.children[childIndex]!);
+        }
     }
     return false;
 };
@@ -78,11 +82,16 @@ export const isChildOfScene = (object: Object3D): boolean => {
  * @param callback - The callback function to call for each object
  */
 export const traverseSceneDepthFirst = (object: Object3D, callback: (obj: Object3D) => boolean) => {
-    const shouldContinue = callback(object);
-    if (shouldContinue) {
-        object.children.forEach(child => {
-            traverseSceneDepthFirst(child, callback);
-        });
+    const stack = [object];
+    while (stack.length > 0) {
+        const obj = stack.pop()!;
+        const shouldContinue = callback(obj);
+        if (!shouldContinue) {
+            continue;
+        }
+        for (let i = obj.children.length - 1; i >= 0; i--) {
+            stack.push(obj.children[i]!);
+        }
     }
 };
 

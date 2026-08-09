@@ -12,11 +12,10 @@ import global from "@stem/editor-oss/global";
 import {showToast} from "@stem/editor-oss/showToast";
 import {Checkbox} from "../../../../../ui/common/Checkbox";
 import {exportSceneToJson, exportSceneToSTL} from "@stem/editor-oss/utils/ExportUtils";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 import {Separator} from "../../RightPanel/common/Separator";
 
 export enum APP_MENU_ITEM {
-    EXPORT_SCENE = "Export Game",
+    EXPORT_SCENE_SOURCE = "Export Scene Source (.json)",
     EXPORT_STL = "Export to STL (3d print)",
     ADVANCED_MODE = "Advanced Mode",
     GAME_DEBUG = "Log View",
@@ -41,7 +40,7 @@ type AppMenuItemConfig = {
 };
 
 const MENU_ITEMS: AppMenuItemConfig[] = [
-    {title: APP_MENU_ITEM.EXPORT_SCENE},
+    {title: APP_MENU_ITEM.EXPORT_SCENE_SOURCE},
     {title: APP_MENU_ITEM.EXPORT_STL, divider: true},
     {title: APP_MENU_ITEM.ADVANCED_MODE, checkbox: true, divider: true},
     {title: APP_MENU_ITEM.GAME_DEBUG, divider: true},
@@ -79,7 +78,7 @@ export const AppMenu = ({close, userMenuButtonRef, rightSide}: Props) => {
 
     const handleMenuItemClick = async (item: APP_MENU_ITEM) => {
         switch (item) {
-            case APP_MENU_ITEM.EXPORT_SCENE:
+            case APP_MENU_ITEM.EXPORT_SCENE_SOURCE:
                 await exportSceneToJson();
                 break;
             case APP_MENU_ITEM.EXPORT_STL:
@@ -159,7 +158,6 @@ export const AppMenu = ({close, userMenuButtonRef, rightSide}: Props) => {
     };
 
     const handleSaveScene = async () => {
-        if (!IS_OSS && !isAdmin) return;
         if (!app?.editor?.sceneName) {
             showToast({type: "warning", title: "Scene name is required."});
             return;
@@ -187,13 +185,10 @@ export const AppMenu = ({close, userMenuButtonRef, rightSide}: Props) => {
         <Container ref={userMenuRef}
             $right={rightSide}
         >
-            {IS_OSS
-                ? <MenuItem onClick={handleSaveScene}>Save Project</MenuItem>
-                : (isAdmin && !isSandbox && app?.isPlaying && <MenuItem onClick={handleSaveScene}>Save</MenuItem>)
-            }
+            <MenuItem onClick={handleSaveScene}>Save Project</MenuItem>
             {MENU_ITEMS.map(({title, divider, disabled, shortcut, checkbox, ownerOnly}, index) => {
                 if (ownerOnly && !isProjectOwner && !isAdmin) return;
-                if (title === APP_MENU_ITEM.EXPORT_SCENE && !isAdmin && !isProjectOwner && !app.editor?.isCloneable)
+                if (title === APP_MENU_ITEM.EXPORT_SCENE_SOURCE && !isAdmin && !isProjectOwner && !app.editor?.isCloneable)
                     return;
                 let checkedValue;
                 let refProp;

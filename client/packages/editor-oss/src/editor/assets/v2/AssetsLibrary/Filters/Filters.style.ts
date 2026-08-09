@@ -10,6 +10,13 @@ export const Row = styled.div<{$isFullScreen: boolean}>`
     padding: 0 20px;
     margin-top: ${FILTER_MARGIN};
     padding-bottom: 10px;
+
+    @media (max-width: 960px) {
+        width: 100%;
+        min-height: 54px;
+        padding: 0 8px 10px;
+        gap: 8px;
+    }
 `;
 export const FlexWrapper = styled.div`
     display: flex;

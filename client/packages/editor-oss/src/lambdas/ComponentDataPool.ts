@@ -12,7 +12,7 @@ import { IdleWorkQueue } from "./IdleWorkQueue";
 export class ComponentDataPool {
     private static pools: Map<string, Array<Record<string, unknown>>> = new Map();
     private static poolSizes: Map<string, number> = new Map();
-    private static idleQueue = new IdleWorkQueue();
+    private static idleQueue: IdleWorkQueue | null = null;
 
     /**
      * Pre-allocate pooled objects to avoid cold-start allocation.
@@ -37,6 +37,11 @@ export class ComponentDataPool {
         const pool = this.getPool(lambdaId);
         if (pool.length > 0) {
             const obj = pool.pop()!;
+            for (const key in obj) {
+                if (!(key in defaults)) {
+                    delete obj[key];
+                }
+            }
             for (const key in defaults) {
                 obj[key] = defaults[key];
             }
@@ -65,7 +70,14 @@ export class ComponentDataPool {
      * @param count
      */
     static scheduleWarmUp(lambdaId: string, defaults: Record<string, unknown>, count: number = 50): void {
-        this.idleQueue.schedule(() => this.warmUp(lambdaId, defaults, count));
+        this.getIdleQueue().schedule(() => this.warmUp(lambdaId, defaults, count));
+    }
+
+    private static getIdleQueue(): IdleWorkQueue {
+        if (!this.idleQueue) {
+            this.idleQueue = new IdleWorkQueue();
+        }
+        return this.idleQueue;
     }
 
     private static getPool(lambdaId: string): Array<Record<string, unknown>> {
@@ -78,7 +90,8 @@ export class ComponentDataPool {
     }
 
     static dispose(): void {
-        this.idleQueue.dispose();
+        this.idleQueue?.dispose();
+        this.idleQueue = null;
         this.pools.clear();
         this.poolSizes.clear();
     }

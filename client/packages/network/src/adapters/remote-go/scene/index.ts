@@ -1,7 +1,5 @@
 import {PCFShadowMap, Vector2} from "three";
-import {RenderTarget, LinearFilter} from "three/webgpu";
 
-import {IS_OSS} from "../../../buildMode";
 import {createScene, createSceneRevision, publishScene, unpublishScene, updateScene} from "./v2";
 import {isAssetRef, type AssetRef} from "@web-shared/asset-management/AssetRef";
 import {emptyAssetResolutionContext, getAssetResolutionContext} from "@web-shared/asset-management/AssetResolutionContext";
@@ -9,19 +7,13 @@ import {
     getActiveCopilotPreviewPersistence,
     isCopilotPreviewSceneSaveBlocked,
 } from "@web-shared/agent/copilotPreviewPersistence";
-import {SceneAssetSource} from "@stem/editor-oss/editor/asset-management/AssetSource";
-import {emitScenePublishStateUpdated} from "@stem/editor-oss/editor/asset-management/hooks/publish";
-import {PLACEHOLDER_PREFIX} from "@stem/editor-oss/editor/assets/v2/CreateDashboard/GameOverview/placeholderThumbnails";
 import {FileData} from "@stem/editor-oss/editor/assets/v2/types/file";
 import type Editor from "@stem/editor-oss/editor/Editor";
-import {saveStemEditor} from "@stem/editor-oss/editor/stem-editor/saveStemEditor";
 import global from "@web-shared/global";
 import {OSS_LOCAL_USER_ID} from "@web-shared/ossUser";
-import Converter from "@web-shared/serialization/Converter";
 import {showToast} from "@web-shared/showToast";
 import type {HUDRendererMode, RenderingSettings} from "@web-shared/types/GameSettingsTypes";
 import Ajax from "@web-shared/utils/Ajax";
-import UtilsConverter from "@web-shared/utils/Converter";
 import {
     normalizeBackgroundGradient,
     normalizeGradientMode,
@@ -30,7 +22,10 @@ import {
 import TimeUtils from "@web-shared/utils/TimeUtils";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 import {isNoChangesError} from "../asset";
-import {REWARD_EVENT_TYPES, trackRewardEvent} from "../rewards";
+import {getSceneSaveHandler, setSceneSaveHandler, type SceneSaveHandler} from "./saveHandler";
+
+export {setSceneSaveHandler};
+export type {SceneSaveHandler};
 
 export interface RenderingSettingsAPI {
     ShadowMapType?: number;
@@ -227,20 +222,7 @@ export async function getSceneBatch(sceneIds: string[]): Promise<any> {
  * Retrieves stats for starters
  */
 export async function getStartersStats(): Promise<{blankProjectCount: number; sandboxStarterCount: number}> {
-    if (IS_OSS) return {blankProjectCount: 0, sandboxStarterCount: 0};
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/Starter/Stats`),
-            needAuthorization: false,
-        });
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg);
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to get scenes");
-    }
+    return {blankProjectCount: 0, sandboxStarterCount: 0};
 }
 
 /**
@@ -254,48 +236,9 @@ type StarterType = "BlankProject" | "SandboxStarter";
  * @param starterType
  */
 export async function updateStarterStats(starterType: StarterType): Promise<any> {
-    if (IS_OSS) return null;
-    try {
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/Scene/Starter/Remix`),
-            data: JSON.stringify({
-                starterType: starterType,
-            }),
-            msgBodyType: "json",
-        });
-        console.log("response increase", response);
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg);
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to get scenes");
-    }
+    void starterType;
+    return null;
 }
-
-/**
- * Optional handler that fully replaces the cloud save flow. Set by the OSS
- * bootstrap to route saves through `getProjectStore().save()` (IndexedDB or
- * File System Access). When set, `saveScene` calls the handler instead of
- * the cloud path. Integrated builds never set this.
- */
-export type SceneSaveHandler = (createThumbnail: boolean, shouldShowToast: boolean) => Promise<void>;
-let sceneSaveHandler: SceneSaveHandler | null = null;
-
-/**
- * Install a replacement handler for `saveScene`. Pass `null` to clear.
- * Idempotent — calling twice with the same handler is fine.
- *
- * The handler owns the entire save flow: serialization, persistence, UX
- * feedback, and event dispatch (`sceneSaveStart` / `sceneSaved` /
- * `sceneSaveFailed`). The cloud-flow guards in `saveScene` (read-only,
- * copilot preview block, stem editor redirect) are skipped — the handler
- * is responsible for any equivalents it needs.
- */
-export const setSceneSaveHandler = (handler: SceneSaveHandler | null): void => {
-    sceneSaveHandler = handler;
-};
 
 /**
  *
@@ -304,6 +247,7 @@ export const setSceneSaveHandler = (handler: SceneSaveHandler | null): void => {
  * @param shouldShowToast
  */
 export const saveScene = async (_createThumbnail: boolean = false, shouldShowToast: boolean = true): Promise<void> => {
+    const sceneSaveHandler = getSceneSaveHandler();
     if (sceneSaveHandler) {
         await sceneSaveHandler(_createThumbnail, shouldShowToast);
         return;
@@ -312,11 +256,9 @@ export const saveScene = async (_createThumbnail: boolean = false, shouldShowToa
     const app = global.app;
     const editor = app?.editor;
 
-    // OSS path: skip the integrated /api/Scene/Update call. Just assign a
-    // local UUID to editor.sceneID so callers can navigate to
-    // /create/project/<id>. Real persistence to IndexedDB / FS will land
-    // alongside the ProjectStore wiring.
-    if (IS_OSS && editor) {
+    // Assign a local UUID to editor.sceneID so callers can navigate to
+    // /create/project/<id>. Persistence is handled by the active ProjectStore.
+    if (editor) {
         if (!editor.sceneID) {
             const cryptoObj = (globalThis as { crypto?: {randomUUID?: () => string} }).crypto;
             editor.sceneID =
@@ -327,55 +269,8 @@ export const saveScene = async (_createThumbnail: boolean = false, shouldShowToa
         return;
     }
 
-    // DOT-7545 Gap #3: read-only inspection must never dispatch a save.
-    // Server-side enforces the same rule (handle_save.go rejects non-owner,
-    // non-collaborator), but short-circuiting here avoids console errors
-    // and stale-save toasts in the read-only UI.
-    if (editor?.isReadOnly) {
-        console.warn("saveScene: ignored — editor is in read-only inspection mode");
-        return;
-    }
-
-    if (isCopilotPreviewSceneSaveBlocked()) {
-        const preview = getActiveCopilotPreviewPersistence();
-        console.warn("saveScene: ignored — Copilot temporary preview is active", preview);
-        app?.call("copilotPreviewSaveBlocked", null, preview);
-        return;
-    }
-
-    // In stem editor mode, redirect to the stem-specific save flow
-    if (app?.scene?.userData?.stemEditor) {
-        await saveStemEditor();
-        return;
-    }
-
-    editor?.onSaveScene();
-
-    app?.call(`sceneSaveStart`);
-
-    // Non-blocking nudge: remind user to customize metadata if still using defaults.
-    const editorName = editor?.sceneName ?? "";
-    const editorDesc = editor?.description ?? "";
-    const editorTags = editor?.tags ?? [];
-    const editorThumb = editor?.sceneThumbnail ?? "";
-    const needsMetadata =
-        !editorName ||
-        editorName === "Game Title" ||
-        !editorDesc ||
-        editorTags.length === 0 ||
-        !editorThumb ||
-        editorThumb.startsWith(PLACEHOLDER_PREFIX);
-    if (needsMetadata) {
-        showToast({
-            type: "info",
-            title: "You should consider customizing the game metadata, to make sure your game is accessible when shared or published.",
-            duration: 6000,
-        });
-    }
-
-    // Thumbnail is now managed independently via uploadSceneThumbnail / updateSceneThumbnail.
-    // Pass empty string so commitSaveScene does not overwrite the MongoDB Thumbnail field.
-    await commitSaveScene("", {}, shouldShowToast);
+    app?.call(`sceneSaveFailed`);
+    showToast({type: "error", title: "Request failed."});
 };
 
 /**
@@ -534,6 +429,7 @@ export const commitSaveScene = async (
 
     app.scene.userData.lastSaveTime = TimeUtils.getServerUTCTime();
 
+    const {default: Converter} = await import("@web-shared/serialization/Converter");
     const experience = new (Converter as any)().toJSON({
         options: app.options,
         camera: app?.camera,
@@ -619,6 +515,7 @@ export const commitSaveScene = async (
             // dereferences undefined. Populate it here so downstream systems
             // can trust it after a successful save.
             if (!editor.assetSource) {
+                const {SceneAssetSource} = await import("@stem/editor-oss/editor/asset-management/AssetSource");
                 editor.assetSource = new SceneAssetSource(newSceneId);
             }
         }
@@ -733,6 +630,10 @@ export const publishCurrentScene = async (
             if (options.isPublic !== undefined) {
                 editor.isPublic = options.isPublic;
             }
+            const [{emitScenePublishStateUpdated}, {REWARD_EVENT_TYPES, trackRewardEvent}] = await Promise.all([
+                import("@stem/editor-oss/editor/asset-management/hooks/publish"),
+                import("../rewards"),
+            ]);
             // No direct assetId on Editor; the event payload still reaches
             // TopMenu / version modal subscribers.
             emitScenePublishStateUpdated(sceneId, undefined, result);
@@ -756,6 +657,10 @@ export const publishCurrentScene = async (
             editor.publishRevisionId = "";
             editor.isPublished = false;
             editor.isPublic = false;
+            const [{emitScenePublishStateUpdated}, {REWARD_EVENT_TYPES, trackRewardEvent}] = await Promise.all([
+                import("@stem/editor-oss/editor/asset-management/hooks/publish"),
+                import("../rewards"),
+            ]);
             // No direct assetId on Editor; the event payload still reaches
             // TopMenu / version modal subscribers.
             emitScenePublishStateUpdated(sceneId, undefined, result);
@@ -824,6 +729,10 @@ export async function createSceneScreenShot(): Promise<File | undefined> {
                         // CHECK: if we should use some standard size
                         const width = 1024;
                         const height = 1024;
+                        const [{RenderTarget, LinearFilter}, {default: UtilsConverter}] = await Promise.all([
+                            import("three/webgpu"),
+                            import("@web-shared/utils/Converter"),
+                        ]);
 
                         const renderTarget = new RenderTarget(width, height, {
                             minFilter: LinearFilter,
@@ -1152,20 +1061,8 @@ export function renderingEditorToApi(rendering: RenderingSettings | undefined): 
  * @param sceneId
  */
 export async function getSceneCollaborators(sceneId: string): Promise<string[]> {
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/Collaborators/Get?ID=${sceneId}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to get collaborators");
-        }
-
-        return response?.data.collaborators || [];
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to get collaborators");
-    }
+    void sceneId;
+    return [];
 }
 
 /**
@@ -1174,22 +1071,8 @@ export async function getSceneCollaborators(sceneId: string): Promise<string[]> 
  * @param email
  */
 export async function addSceneCollaborator(sceneId: string, email: string): Promise<void> {
-    try {
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/Scene/Collaborators/Add`),
-            data: {
-                ID: sceneId,
-                Email: email,
-            },
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to add collaborator");
-        }
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to add collaborator");
-    }
+    void sceneId;
+    void email;
 }
 
 /**
@@ -1198,22 +1081,8 @@ export async function addSceneCollaborator(sceneId: string, email: string): Prom
  * @param email
  */
 export async function removeSceneCollaborator(sceneId: string, email: string): Promise<void> {
-    try {
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/Scene/Collaborators/Delete`),
-            data: {
-                ID: sceneId,
-                Email: email,
-            },
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to remove collaborator");
-        }
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to remove collaborator");
-    }
+    void sceneId;
+    void email;
 }
 
 /**
@@ -1221,38 +1090,8 @@ export async function removeSceneCollaborator(sceneId: string, email: string): P
  * @param sceneId
  */
 export async function checkIsSceneCollaborator(sceneId: string): Promise<boolean> {
-    if (IS_OSS) return false;
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/Collaborators/Check?ID=${sceneId}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to check collaborator status");
-        }
-
-        return response?.data.Data?.isCollaborator || false;
-    } catch (error) {
-        throw new Error((error instanceof Error ? error.message : "") || "Failed to check collaborator status");
-    }
-}
-
-/**
- * Builds a query string from FetchScenesParams
- * @param params
- */
-function buildPaginationQuery(params?: FetchScenesParams): string {
-    const parts: string[] = [];
-    if (params?.page) parts.push(`page=${params.page}`);
-    if (params?.limit) parts.push(`limit=${params.limit}`);
-    if (params?.name) parts.push(`name=${encodeURIComponent(params.name)}`);
-    if (params?.tags) parts.push(`tags=${encodeURIComponent(params.tags)}`);
-    if (params?.includeCloneableForAdmin) parts.push("includeCloneable=true");
-    if (params?.cloneableOnly) parts.push("cloneableOnly=true");
-    if (params?.remixesOnly) parts.push("remixesOnly=true");
-    if (params?.sort) parts.push(`sort=${encodeURIComponent(params.sort)}`);
-    return parts.length > 0 ? `?${parts.join("&")}` : "";
+    void sceneId;
+    return false;
 }
 
 /**
@@ -1260,54 +1099,35 @@ function buildPaginationQuery(params?: FetchScenesParams): string {
  * @param params
  */
 export async function fetchMyScenes(params?: FetchScenesParams): Promise<PaginatedScenesResponse> {
-    if (IS_OSS) {
-        try {
-            const {getProjectStore, ensureProjectStoreRehydrated} = await import("@stem/editor-oss/persistence");
-            // Wait for the persistence backend to resolve. After a browser
-            // "back" reloads the dashboard, this query can otherwise race
-            // rehydration and read the empty IndexedDB fallback instead of
-            // the user's File System Access folder — so no games show.
-            await ensureProjectStoreRehydrated();
-            const result = await getProjectStore().list({
-                limit: params?.limit ?? 100,
-                cursor: params?.page && params.page > 1 ? String(params.page) : undefined,
-            } as never);
-            const projects = (result as {projects: Array<{id: string; name: string; updatedAt?: string; createdAt?: string; thumbnailUrl?: string}>}).projects ?? [];
-            return {
-                Scenes: projects.map(p => ({
-                    ID: p.id,
-                    Name: p.name,
-                    UpdateTime: p.updatedAt ?? p.createdAt ?? new Date().toISOString(),
-                    CreateTime: p.createdAt ?? new Date().toISOString(),
-                    Thumbnail: p.thumbnailUrl ?? "",
-                    UserID: OSS_LOCAL_USER_ID,
-                } as never)),
-                TotalCount: projects.length,
-                Page: params?.page ?? 1,
-                Limit: params?.limit ?? 100,
-                HasMore: false,
-            };
-        } catch (e) {
-            console.warn("[fetchMyScenes/OSS] failed to read ProjectStore", e);
-            return emptyPaginatedScenesResponse(params);
-        }
-    }
     try {
-        const query = buildPaginationQuery(params);
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/List${query}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch scenes");
-        }
-
-        const data = response?.data.Data as PaginatedScenesResponse;
-        return data;
-    } catch (error) {
-        console.error("Fetching scenes error:", error instanceof Error ? error.message : error);
-        throw error;
+        const {getProjectStore, ensureProjectStoreRehydrated} = await import("@stem/editor-oss/persistence");
+        // Wait for the persistence backend to resolve. After a browser
+        // "back" reloads the dashboard, this query can otherwise race
+        // rehydration and read the empty IndexedDB fallback instead of
+        // the user's File System Access folder, so no games show.
+        await ensureProjectStoreRehydrated();
+        const result = await getProjectStore().list({
+            limit: params?.limit ?? 100,
+            cursor: params?.page && params.page > 1 ? String(params.page) : undefined,
+        } as never);
+        const projects = (result as {projects: Array<{id: string; name: string; updatedAt?: string; createdAt?: string; thumbnailUrl?: string}>}).projects ?? [];
+        return {
+            Scenes: projects.map(p => ({
+                ID: p.id,
+                Name: p.name,
+                UpdateTime: p.updatedAt ?? p.createdAt ?? new Date().toISOString(),
+                CreateTime: p.createdAt ?? new Date().toISOString(),
+                Thumbnail: p.thumbnailUrl ?? "",
+                UserID: OSS_LOCAL_USER_ID,
+            } as never)),
+            TotalCount: projects.length,
+            Page: params?.page ?? 1,
+            Limit: params?.limit ?? 100,
+            HasMore: false,
+        };
+    } catch (e) {
+        console.warn("[fetchMyScenes] failed to read ProjectStore", e);
+        return emptyPaginatedScenesResponse(params);
     }
 }
 
@@ -1320,23 +1140,8 @@ export async function fetchRemixesOfScene(
     sceneId: string,
     params?: FetchScenesParams,
 ): Promise<PaginatedScenesResponse> {
-    try {
-        const query = buildPaginationQuery(params);
-        const separator = query ? "&" : "?";
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/List?remixedFrom=${sceneId}${query ? separator + query.slice(1) : ""}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch remixes");
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        console.error("Fetching remixes error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    void sceneId;
+    return emptyPaginatedScenesResponse(params);
 }
 
 /**
@@ -1344,24 +1149,7 @@ export async function fetchRemixesOfScene(
  * @param params
  */
 export async function fetchArchivedScenes(params?: FetchScenesParams): Promise<PaginatedScenesResponse> {
-    if (IS_OSS) return emptyPaginatedScenesResponse(params);
-    try {
-        const query = buildPaginationQuery(params);
-        const separator = query ? `&${query.slice(1)}` : "";
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/List?archived=true${separator}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch archived scenes");
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        console.error("Fetching archived scenes error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    return emptyPaginatedScenesResponse(params);
 }
 
 /**
@@ -1369,23 +1157,7 @@ export async function fetchArchivedScenes(params?: FetchScenesParams): Promise<P
  * @param params
  */
 export async function fetchCollaborativeScenes(params?: FetchScenesParams): Promise<PaginatedScenesResponse> {
-    if (IS_OSS) return emptyPaginatedScenesResponse(params);
-    try {
-        const query = buildPaginationQuery(params);
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/ListCollaborative${query}`),
-            needAuthorization: true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch collaborative scenes");
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        console.error("Fetching collaborative scenes error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    return emptyPaginatedScenesResponse(params);
 }
 
 /**
@@ -1393,65 +1165,18 @@ export async function fetchCollaborativeScenes(params?: FetchScenesParams): Prom
  * @param params
  */
 export async function fetchPublishedScenes(params?: FetchScenesParams): Promise<PaginatedScenesResponse> {
-    if (IS_OSS) return emptyPaginatedScenesResponse(params);
-    try {
-        const query = buildPaginationQuery(params);
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/ListPublished${query}`),
-            needAuthorization: params?.includeCloneableForAdmin === true,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch published scenes");
-        }
-
-        const data = response?.data.Data as PaginatedScenesResponse;
-        return data;
-    } catch (error) {
-        console.error("Fetching published scenes error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    return emptyPaginatedScenesResponse(params);
 }
 /**
  * Fetches list of top picks scenes (not paginated)
  */
 export async function fetchTopPicksScenes(): Promise<FileData[]> {
-    if (IS_OSS) return [];
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/ListTopPicks`),
-            needAuthorization: false,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch published scenes");
-        }
-
-        return response?.data.Data || [];
-    } catch (error) {
-        console.error("Fetching published scenes error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    return [];
 }
 /**
  * Fetches list of asset packs scenes for library
  * @param params
  */
 export async function fetchAssetPacks(params?: FetchScenesParams): Promise<PaginatedScenesResponse> {
-    try {
-        const query = buildPaginationQuery(params);
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Scene/ListAssetPack${query}`),
-            needAuthorization: false,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to fetch asset packs");
-        }
-
-        return response?.data.Data;
-    } catch (error) {
-        console.error("Fetching asset packs error:", error instanceof Error ? error.message : error);
-        throw error;
-    }
+    return emptyPaginatedScenesResponse(params);
 }

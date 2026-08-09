@@ -1,9 +1,10 @@
 import {useEffect, useMemo, useState} from "react";
 
 import {RemixTitleRow} from "./RemixDashboardView.style";
-import {fetchPublishedScenes, getSceneBatch, type FetchScenesParams} from "@stem/network/api/scene";
+import {getSceneBatch} from "@stem/network/api/scene/batch";
+import {fetchPublishedScenes, type FetchScenesParams} from "@stem/network/api/scene/list";
 import {useTemplateIds} from "@stem/network/api/templates/hooks";
-import {useHomepageContext} from "@stem/editor-oss/context";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import type {FileData} from "../../types/file";
 import {
     CreateDashboardWrapper,

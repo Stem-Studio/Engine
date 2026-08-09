@@ -50,7 +50,7 @@ case "$cmd" in
 
     build)
         echo "[render] running the same build command Render will run…"
-        BUILD_MODE=oss bun run build
+        bun run build
         echo "[render] output ready at build/public (Render publishes from ./build/public)."
         ;;
 

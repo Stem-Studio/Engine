@@ -1,6 +1,6 @@
 # Asset licensing
 
-This directory ships with the StemStudio OSS build. The engine code itself is
+This directory ships with StemStudio. The engine code itself is
 MIT-licensed (see `/LICENSE`), but the *content* bundled here comes from
 several sources with their own terms.
 
@@ -41,10 +41,6 @@ These are vendor-prebuilt WASM and decoder modules:
   [Apache 2.0](https://github.com/google/draco/blob/main/LICENSE).
 - `js/basis/` and `js/ktx2/` — Binomial's Basis Universal / KTX2 GPU texture
   decoders. [Apache 2.0](https://github.com/BinomialLLC/basis_universal/blob/master/LICENSE).
-- `js/mediapipe-pose/` — Google MediaPipe model files (not bundled with the
-  OSS build; AvatarCreator + MediaPipe are tree-shaken out and excluded by
-  the export script).
-
 Per-folder `README.md` files inside each vendor directory link to upstream.
 
 ## Other textures (`textures/`)
@@ -57,17 +53,16 @@ your own textures into a project, the project file references them by URL
 or by content hash — the textures themselves are not embedded in
 `.stemscript.json` exports.
 
-## Removed from OSS export
+## Assets intentionally absent
 
-The export script deliberately drops the following directories so the OSS
-tarball stays MIT-compatible:
+The repository should not ship assets whose terms are incompatible with
+open-source redistribution. These legacy/deployment-specific assets are
+intentionally absent:
 
 - `textures/lensflare/` — CC-BY-NC-SA 3.0 (NonCommercial), unused by code.
-- `ErthAI-logo.png` — proprietary branding.
-- `AvatarCreator/` and `mediapipe-pose/` — pulled out of the lazy chunk
-  graph so they're never even fetched in OSS builds.
-
-See `scripts/export-oss.ts` `DENY_PATH_FRAGMENTS` for the authoritative list.
+- `ErthAI-logo.png` — deployment-specific brand asset.
+- `AvatarCreator/` — hosted avatar creator assets are not part of this
+  repository; the TypeScript component is a no-op compatibility shim.
 
 ## Re-checking the bundle
 

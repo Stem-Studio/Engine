@@ -88,44 +88,10 @@ func Create(path string) error {
 	// create context Logger
 	Logger = helper.InitializeLogger(config)
 
-	// OSS mode runs without Firebase. The ai-server binary swaps the auth
-	// middleware out via server.SetAuthMiddleware, and the storage paths that
-	// touch Firestore are excluded from the OSS export entirely. Skipping
-	// InitializeFirebase here lets `bun run dev:oss` boot without a
-	// credentials file. Integrated mode still requires Firebase.
-	if os.Getenv("BUILD_MODE") == "oss" {
-		Logger.Infof("BUILD_MODE=oss — skipping Firebase initialization")
-	} else {
-		AuthClient, FirestoreClient, err = helper.InitializeFirebase(config)
-		if err != nil {
-			Logger.Errorf("Failed to init Firebase: %v", err)
-			return err
-		}
-	}
+	Logger.Infof("Open-source server: skipping Firebase initialization")
 	Mux.OptionsHandler = CorsHandler
 
-	// OSS mode runs without MongoDB. The ai-server doesn't need it (no
-	// scene storage, no API-mapping cache, no migrations), so skip both
-	// the api-mapping bootstrap and the migration/index passes. Integrated
-	// mode still hits MongoDB as before.
-	if os.Getenv("BUILD_MODE") == "oss" {
-		Logger.Infof("BUILD_MODE=oss — skipping MongoDB-backed initialization (api mappings, migrations, indexes)")
-	} else {
-		InitializeApiMappings()
-		Logger.Debugf("Server config: %#v", config)
-
-		// Run database migrations on startup
-		if err := runMigrations(); err != nil {
-			Logger.Errorf("Failed to run migrations: %v", err)
-			// Don't fail startup for migration errors, just log them
-		}
-
-		// Initialize database indexes on startup
-		if err := initializeIndexes(); err != nil {
-			Logger.Errorf("Failed to initialize indexes: %v", err)
-			// Don't fail startup for index errors, just log them
-		}
-	}
+	Logger.Infof("Open-source server: skipping MongoDB-backed startup work (api mappings, migrations, indexes)")
 
 	// Initialize async job scheduler
 	Scheduler = scheduler.New(scheduler.NewMemoryStore(), scheduler.DefaultConfig())

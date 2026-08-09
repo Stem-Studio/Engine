@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import {LUT3dlLoader} from "three/examples/jsm/loaders/LUT3dlLoader.js";
-import {LUTCubeLoader} from "three/examples/jsm/loaders/LUTCubeLoader.js";
+import {LUT3dlLoader} from "three/addons/loaders/LUT3dlLoader.js";
+import {LUTCubeLoader} from "three/addons/loaders/LUTCubeLoader.js";
 
 /**
  * The resolved LUT payload consumed by the TSL-based `lut3D` post node.

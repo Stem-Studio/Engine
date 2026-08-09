@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+    traverseObjectDepthFirst,
+    updateObjectMatrixWorldDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
 
 import {
     applyQuickBuildConnections,
@@ -108,7 +112,7 @@ function addMaterialIds(material: THREE.Material | THREE.Material[] | undefined,
 
 function countMeshes(object: THREE.Object3D) {
     let count = 0;
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         if (isMesh(child)) count++;
     });
     return count;
@@ -262,27 +266,48 @@ function getLineGridPoints(start: ReturnType<typeof getGridUnit>, end: ReturnTyp
 }
 
 export function collectQuickBuildObjects(root: THREE.Object3D | null | undefined): THREE.Object3D[] {
-    if (!root) return [];
-
-    const objects: THREE.Object3D[] = [];
-    root.traverse(object => {
-        if (getQuickBuildMetadata(object)) {
-            objects.push(object);
-        }
-    });
-    return objects;
+    return collectQuickBuildSceneInventory(root).quickBuildObjects;
 }
 
 export function collectQuickBuildBakeObjects(root: THREE.Object3D | null | undefined): THREE.Object3D[] {
-    if (!root) return [];
+    return collectQuickBuildSceneInventory(root).bakeObjects;
+}
 
-    const objects: THREE.Object3D[] = [];
-    root.traverse(object => {
-        if (object.userData?.isQuickBuildBake === true) {
-            objects.push(object);
-        }
+interface QuickBuildSceneInventory {
+    quickBuildObjects: THREE.Object3D[];
+    bakeObjects: THREE.Object3D[];
+    liveBatchObjects: THREE.Object3D[];
+}
+
+export interface QuickBuildSceneCounts {
+    stampCount: number;
+    bakedBatchCount: number;
+    liveBatchCount: number;
+}
+
+function collectQuickBuildSceneInventory(root: THREE.Object3D | null | undefined): QuickBuildSceneInventory {
+    const inventory: QuickBuildSceneInventory = {
+        quickBuildObjects: [],
+        bakeObjects: [],
+        liveBatchObjects: [],
+    };
+    if (!root) return inventory;
+
+    traverseObjectDepthFirst(root, object => {
+        if (getQuickBuildMetadata(object)) inventory.quickBuildObjects.push(object);
+        if (object.userData?.isQuickBuildBake === true) inventory.bakeObjects.push(object);
+        if (object.userData?.isQuickBuildLiveBatch === true) inventory.liveBatchObjects.push(object);
     });
-    return objects;
+    return inventory;
+}
+
+export function getQuickBuildSceneCounts(root: THREE.Object3D | null | undefined): QuickBuildSceneCounts {
+    const inventory = collectQuickBuildSceneInventory(root);
+    return {
+        stampCount: inventory.quickBuildObjects.length,
+        bakedBatchCount: inventory.bakeObjects.length,
+        liveBatchCount: inventory.liveBatchObjects.length,
+    };
 }
 
 export function getQuickBuildBrushPoints(
@@ -350,19 +375,23 @@ export function getQuickBuildFootprint(
     };
 }
 
-export function getQuickBuildOccupancy(root: THREE.Object3D | null | undefined, increment = 1) {
+function getQuickBuildOccupancyFromObjects(objects: THREE.Object3D[], increment = 1) {
     const occupancy = new Map<string, THREE.Object3D>();
-    for (const object of collectQuickBuildObjects(root)) {
+    const worldPosition = new THREE.Vector3();
+    for (const object of objects) {
         if (object.visible === false) continue;
         const metadata = getQuickBuildMetadata(object);
         if (!metadata) continue;
         if (!isQuickBuildCellExclusiveKind(metadata.kind)) continue;
         if (isQuickBuildFootprintExclusiveKind(metadata.kind)) continue;
-        const worldPosition = new THREE.Vector3();
         object.getWorldPosition(worldPosition);
         occupancy.set(placementKey(metadata.kind, worldPosition, increment), object);
     }
     return occupancy;
+}
+
+export function getQuickBuildOccupancy(root: THREE.Object3D | null | undefined, increment = 1) {
+    return getQuickBuildOccupancyFromObjects(collectQuickBuildObjects(root), increment);
 }
 
 export function findQuickBuildObjectAtPoint(
@@ -392,6 +421,7 @@ export function findAnyQuickBuildObjectAtPoint(
     increment = 1,
 ): THREE.Object3D | null {
     const objects = collectQuickBuildObjects(root).filter(object => object.visible !== false);
+    const worldPosition = new THREE.Vector3();
 
     for (let index = objects.length - 1; index >= 0; index--) {
         const object = objects[index];
@@ -407,7 +437,6 @@ export function findAnyQuickBuildObjectAtPoint(
         }
 
         const targetKey = pointKey(point, getQuickBuildPlacementSnap(metadata.kind, increment));
-        const worldPosition = new THREE.Vector3();
         object.getWorldPosition(worldPosition);
         if (pointKey(worldPosition, getQuickBuildPlacementSnap(metadata.kind, increment)) === targetKey) return object;
     }
@@ -424,12 +453,12 @@ export function findNearestQuickBuildObjectNearPoint(
     const maxDistanceSq = maxDistance * maxDistance;
     const objects = collectQuickBuildObjects(root).filter(object => object.visible !== false);
     let nearest: {object: THREE.Object3D; distanceSq: number} | null = null;
+    const worldPosition = new THREE.Vector3();
 
     for (let index = objects.length - 1; index >= 0; index--) {
         const object = objects[index];
         if (!object) continue;
 
-        const worldPosition = new THREE.Vector3();
         object.getWorldPosition(worldPosition);
         const distanceSq = ((worldPosition.x - point.x) ** 2) + ((worldPosition.z - point.z) ** 2);
         if (distanceSq > maxDistanceSq) continue;
@@ -448,14 +477,15 @@ export function getQuickBuildPlacementCandidates(
     increment = 1,
     rotationY = 0,
 ): QuickBuildPlacementCandidate[] {
-    const occupancy = getQuickBuildOccupancy(root, increment);
+    const existingObjects = collectQuickBuildObjects(root);
+    const occupancy = getQuickBuildOccupancyFromObjects(existingObjects, increment);
     const localSeen = new Set<string>();
     const localFootprints: QuickBuildFootprintRect[] = [];
     const enforceOccupancy = isQuickBuildCellExclusiveKind(kind);
     const snap = getQuickBuildPlacementSnap(kind, increment);
     const footprintExclusive = isQuickBuildFootprintExclusiveKind(kind);
     const existingFootprints = footprintExclusive
-        ? collectQuickBuildObjects(root)
+        ? existingObjects
             .filter(object => {
                 if (object.visible === false) return false;
                 const metadata = getQuickBuildMetadata(object);
@@ -505,12 +535,20 @@ export function findQuickBuildDuplicateGroups(
     root: THREE.Object3D | null | undefined,
     increment = 1,
 ): QuickBuildDuplicateGroup[] {
+    return findQuickBuildDuplicateGroupsInObjects(collectQuickBuildObjects(root), increment);
+}
+
+function findQuickBuildDuplicateGroupsInObjects(
+    sourceObjects: THREE.Object3D[],
+    increment = 1,
+): QuickBuildDuplicateGroup[] {
     const buckets = new Map<
         string,
         {kind: QuickBuildStampKind; position: {x: number; z: number}; objects: THREE.Object3D[]}
     >();
 
-    for (const object of collectQuickBuildObjects(root).filter(object => object.visible !== false)) {
+    for (const object of sourceObjects) {
+        if (object.visible === false) continue;
         const footprint = getQuickBuildFootprint(object, increment);
         if (!footprint) continue;
 
@@ -530,11 +568,12 @@ export function findQuickBuildDuplicateGroups(
     for (const [key, bucket] of buckets) {
         if (bucket.objects.length < 2) continue;
 
+        const meshCounts = new Map(bucket.objects.map(object => [object, countMeshes(object)]));
         const objects = [...bucket.objects].sort((a, b) => {
             const aLevel = getQuickBuildMetadata(a)?.level ?? 1;
             const bLevel = getQuickBuildMetadata(b)?.level ?? 1;
             if (aLevel !== bLevel) return bLevel - aLevel;
-            return countMeshes(b) - countMeshes(a);
+            return (meshCounts.get(b) ?? 0) - (meshCounts.get(a) ?? 0);
         });
         const keep = objects[0];
         if (!keep) continue;
@@ -562,10 +601,9 @@ export function getQuickBuildDuplicateRemovalTargets(
 export function collectQuickBuildStaticTargets(objects: THREE.Object3D[]): THREE.Object3D[] {
     const targets: THREE.Object3D[] = [];
     for (const object of objects) {
-        object.updateMatrixWorld(true);
-        object.traverse(child => {
+        updateObjectMatrixWorldDepthFirst(object, true);
+        traverseObjectDepthFirst(object, child => {
             if (child === object) return;
-            child.updateMatrix();
             if (child.matrixAutoUpdate !== false) {
                 targets.push(child);
             }
@@ -726,7 +764,7 @@ function disposeMaterial(material: THREE.Material | THREE.Material[] | undefined
 }
 
 function disposeInstancedGroup(group: THREE.Object3D) {
-    group.traverse(child => {
+    traverseObjectDepthFirst(group, child => {
         const mesh = child as THREE.Mesh;
         if (!mesh.isMesh) return;
         (mesh as unknown as {dispose?: () => void}).dispose?.();
@@ -753,16 +791,15 @@ function collectQuickBuildInstanceBuckets(root: THREE.Object3D | null | undefine
         const metadata = getQuickBuildMetadata(object);
         if (!metadata) continue;
 
-        object.updateMatrixWorld(true);
+        updateObjectMatrixWorldDepthFirst(object, true);
         kindCounts[metadata.kind] += 1;
         sourceUuids.push(object.uuid);
         let meshIndex = 0;
 
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             const mesh = child as THREE.Mesh;
             if (!mesh.isMesh || mesh.visible === false) return;
 
-            mesh.updateMatrixWorld(true);
             const part = typeof mesh.userData?.quickBuildPart === "string" ? mesh.userData.quickBuildPart : `mesh-${meshIndex}`;
             const key = `${metadata.kind}:${part}:${meshIndex}:${mesh.geometry?.uuid ?? "no-geometry"}:${materialBucketSignature(mesh.material)}`;
             let bucket = buckets.get(key);
@@ -845,15 +882,7 @@ export function createQuickBuildBakedBatch(root: THREE.Object3D | null | undefin
 }
 
 export function collectQuickBuildLiveBatchObjects(root: THREE.Object3D | null | undefined): THREE.Object3D[] {
-    if (!root) return [];
-
-    const objects: THREE.Object3D[] = [];
-    root.traverse(object => {
-        if (object.userData?.isQuickBuildLiveBatch === true) {
-            objects.push(object);
-        }
-    });
-    return objects;
+    return collectQuickBuildSceneInventory(root).liveBatchObjects;
 }
 
 function restoreQuickBuildSourceVisibility(root: THREE.Object3D | null | undefined) {
@@ -861,7 +890,7 @@ function restoreQuickBuildSourceVisibility(root: THREE.Object3D | null | undefin
 
     let restored = 0;
     for (const object of collectQuickBuildObjects(root)) {
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             const mesh = child as THREE.Mesh;
             if (!mesh.isMesh) return;
             if (!Object.prototype.hasOwnProperty.call(mesh.userData, QUICK_BUILD_LIVE_VISIBILITY_KEY)) return;
@@ -879,7 +908,7 @@ function hideQuickBuildSourceMeshes(root: THREE.Object3D | null | undefined) {
 
     let hidden = 0;
     for (const object of collectQuickBuildObjects(root)) {
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             const mesh = child as THREE.Mesh;
             if (!mesh.isMesh) return;
             if (!Object.prototype.hasOwnProperty.call(mesh.userData, QUICK_BUILD_LIVE_VISIBILITY_KEY)) {
@@ -922,7 +951,8 @@ export function analyzeQuickBuildScene(
     root: THREE.Object3D | null | undefined,
     increment = 1,
 ): QuickBuildSceneStats {
-    const quickBuildObjects = collectQuickBuildObjects(root).filter(object => object.visible !== false);
+    const inventory = collectQuickBuildSceneInventory(root);
+    const quickBuildObjects = inventory.quickBuildObjects.filter(object => object.visible !== false);
     const materialIds = new Set<string>();
     let meshCount = 0;
     let triangleCount = 0;
@@ -931,7 +961,7 @@ export function analyzeQuickBuildScene(
     for (const object of quickBuildObjects) {
         let hasDynamicTarget = false;
 
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             if (child === object) return;
             if (child.matrixAutoUpdate !== false) {
                 hasDynamicTarget = true;
@@ -946,7 +976,11 @@ export function analyzeQuickBuildScene(
         if (hasDynamicTarget) staticEligibleCount++;
     }
 
-    const duplicateGroups = findQuickBuildDuplicateGroups(root, increment);
+    const duplicateGroups = findQuickBuildDuplicateGroupsInObjects(quickBuildObjects, increment);
+    const liveInstanceCount = inventory.liveBatchObjects.reduce(
+        (count, batch) => count + (Number(batch.userData?.quickBuildLiveBatch?.instanceCount) || 0),
+        0,
+    );
 
     return {
         objectCount: quickBuildObjects.length,
@@ -957,11 +991,8 @@ export function analyzeQuickBuildScene(
         duplicateGroupCount: duplicateGroups.length,
         staticEligibleCount,
         staticObjectCount: quickBuildObjects.length - staticEligibleCount,
-        bakedBatchCount: collectQuickBuildBakeObjects(root).length,
-        liveBatchCount: collectQuickBuildLiveBatchObjects(root).length,
-        liveInstanceCount: collectQuickBuildLiveBatchObjects(root).reduce(
-            (count, batch) => count + (Number(batch.userData?.quickBuildLiveBatch?.instanceCount) || 0),
-            0,
-        ),
+        bakedBatchCount: inventory.bakeObjects.length,
+        liveBatchCount: inventory.liveBatchObjects.length,
+        liveInstanceCount,
     };
 }

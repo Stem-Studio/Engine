@@ -9,6 +9,17 @@ export const TabContainer = styled.div`
     position: relative;
     width: auto;
     column-gap: 8px;
+
+    @media (max-width: 960px) {
+        flex: 1 0 max-content;
+    }
+
+    @media (max-width: 600px) {
+        width: max-content;
+        min-width: 100%;
+        padding: 2px;
+        column-gap: 2px;
+    }
 `;
 
 export const TabButton = styled.button<{$active: boolean}>`
@@ -37,6 +48,18 @@ export const TabButton = styled.button<{$active: boolean}>`
         color: #ffffff4d;
         padding: 0;
     }
+
+    @media (max-width: 960px) {
+        height: 44px;
+        min-width: 60px;
+        padding: 8px 10px;
+    }
+
+    @media (max-width: 600px) {
+        height: 44px;
+        min-width: 64px;
+        padding: 8px 10px;
+    }
 `;
 
 /**
@@ -59,4 +82,14 @@ export const ActiveTab = styled.div`
     transition:
         left 0.32s cubic-bezier(0.32, 0.72, 0.28, 1),
         width 0.32s cubic-bezier(0.32, 0.72, 0.28, 1);
+
+    @media (max-width: 960px) {
+        height: 44px;
+    }
+
+    @media (max-width: 600px) {
+        top: 2px;
+        bottom: 2px;
+        height: 44px;
+    }
 `;

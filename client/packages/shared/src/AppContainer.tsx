@@ -2,10 +2,8 @@ import {QueryClientProvider} from "@tanstack/react-query";
 import React, {useEffect, useRef} from "react";
 import {toast, Toaster} from "toastywave";
 
-// Import for side-effect: this module runs every initIntegrated*() at
-// module load. Importing it before any context provider mounts ensures
-// AuthorizationContext et al. see the real Firebase-backed providers.
-import "./bootstrap/integrated";
+// Import for side effect: registers open-source browser integrations.
+import "./bootstrap/oss";
 
 import {AppRouter} from "./AppRouter";
 import AppGlobalContextProvider from "./context/AppGlobalContext";
@@ -22,8 +20,6 @@ import UIStateContextProvider from "./context/UIStateContext";
 import {SceneRevisionsModalRenderer} from "@stem/editor-oss/editor/assets/v2/SceneRevisionsModalRenderer/SceneRevisionsModalRenderer";
 import {queryClient} from "./queryClient";
 import {LoadingAnimation} from "./ui/progress/LoadingAnimation";
-import {IS_OSS} from "./buildMode";
-import {ensureProjectStoreRehydrated} from "./persistence";
 import {AppUpdateManager} from "./update/AppUpdateManager";
 import {OfflineIndicator} from "./update/OfflineIndicator";
 import CSPMetaTag, {customCSPPolicies} from "./utils/CSPMetaTag";
@@ -45,13 +41,13 @@ const LogLevelMismatchToast = () => {
 export const AppContainer = () => {
     const toastContainerRef = useRef<HTMLDivElement>(null);
 
-    // Register the local ProjectStore so the OSS save/load flow can persist
+    // Register the local ProjectStore so the save/load flow can persist
     // scenes to IndexedDB or the picked filesystem folder. setProjectStore()
     // also installs the saveScene handler that routes every save through the
-    // store instead of calling the integrated /api/scene/* endpoint.
+    // local store.
     useEffect(() => {
-        if (!IS_OSS) return;
-        void ensureProjectStoreRehydrated();
+        void import("@stem/editor-oss/persistence/bootstrap")
+            .then(({ensureProjectStoreRehydrated}) => ensureProjectStoreRehydrated());
     }, []);
 
     return (

@@ -1,17 +1,10 @@
 import {useEffect, useState} from "react";
 import styled from "styled-components";
 
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {useHomepageContext} from "@stem/editor-oss/context";
-import {
-    FileSystemProjectStore,
-    getOSSPersistenceMode,
-    getProjectStore,
-    isFileSystemAccessSupported,
-    saveHandle,
-    setOSSPersistenceMode,
-    setProjectStore,
-} from "@stem/editor-oss/persistence";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
+import {FileSystemProjectStore} from "@stem/editor-oss/persistence/FileSystemProjectStore";
+import {isFileSystemAccessSupported} from "@stem/editor-oss/persistence/fileSystemAccess";
+import {getOSSPersistenceMode, setOSSPersistenceMode} from "@stem/editor-oss/persistence/mode";
 
 const Panel = styled.div`
     display: flex;
@@ -113,7 +106,7 @@ const ErrorText = styled.span`
 
 /**
  * Dashboard banner that lets the user point StemStudio at a local folder for
- * project storage at any time. Always visible in OSS when File System Access
+ * project storage at any time. Always visible when File System Access
  * is supported; copy adapts to the current persistence mode so users can
  * either adopt folder storage for the first time or switch to a different
  * folder later. The reconnect banner sits on top of this one and handles
@@ -126,7 +119,7 @@ const ErrorText = styled.span`
  * and the page reloads so the project list refetches from disk.
  */
 export const OpenFolderBanner = () => {
-    const [supported] = useState<boolean>(() => IS_OSS && isFileSystemAccessSupported());
+    const [supported] = useState<boolean>(() => isFileSystemAccessSupported());
     const [activeKind, setActiveKind] = useState<"indexeddb" | "filesystem" | "remote" | "unknown">("unknown");
     const [folderName, setFolderName] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
@@ -135,29 +128,41 @@ export const OpenFolderBanner = () => {
     const {setShouldRefreshDashboard} = useHomepageContext();
 
     useEffect(() => {
-        if (!IS_OSS || !supported) return;
-        try {
-            const mode = getOSSPersistenceMode();
-            const store = getProjectStore();
-            const kind = store.kind;
-            // We treat "user picked filesystem AND the store is filesystem"
-            // as the only state where the banner advertises a *switch*; the
-            // reconnect banner covers the "picked filesystem, fell back to
-            // IDB" case so we don't compete with it.
-            setActiveKind(mode === "filesystem" && kind === "filesystem" ? "filesystem" : (kind as never));
-            // Surface the picked folder name when available so users can
-            // verify they connected the right directory without having to
-            // re-prompt the OS dialog.
-            const getName = (store as {getDirectoryName?: () => string}).getDirectoryName;
-            if (typeof getName === "function") {
-                try { setFolderName(getName.call(store)); } catch { setFolderName(null); }
-            }
-        } catch {
+        if (!supported) return;
+        const mode = getOSSPersistenceMode();
+        if (mode !== "filesystem") {
             setActiveKind("indexeddb");
+            return;
         }
+        let cancelled = false;
+        void import("@stem/editor-oss/persistence/projectStoreFactory")
+            .then(({getProjectStore}) => {
+                if (cancelled) return;
+                try {
+                    const store = getProjectStore();
+                    const kind = store.kind;
+                    // We treat "user picked filesystem AND the store is filesystem"
+                    // as the only state where the banner advertises a *switch*; the
+                    // reconnect banner covers the "picked filesystem, fell back to
+                    // IDB" case so we don't compete with it.
+                    setActiveKind(mode === "filesystem" && kind === "filesystem" ? "filesystem" : (kind as never));
+                    // Surface the picked folder name when available so users can
+                    // verify they connected the right directory without having to
+                    // re-prompt the OS dialog.
+                    const getName = (store as {getDirectoryName?: () => string}).getDirectoryName;
+                    if (typeof getName === "function") {
+                        try { setFolderName(getName.call(store)); } catch { setFolderName(null); }
+                    }
+                } catch {
+                    setActiveKind("indexeddb");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [supported]);
 
-    if (!IS_OSS || !supported) return null;
+    if (!supported) return null;
     const inFsMode = activeKind === "filesystem";
 
     const handleClick = async () => {
@@ -177,6 +182,10 @@ export const OpenFolderBanner = () => {
                 return;
             }
             const handle = (await picker({mode: "readwrite"})) as never;
+            const [{saveHandle}, {setProjectStore}] = await Promise.all([
+                import("@stem/editor-oss/persistence/fsHandleStore"),
+                import("@stem/editor-oss/persistence/projectStoreFactory"),
+            ]);
             setOSSPersistenceMode("filesystem");
             setProjectStore(new FileSystemProjectStore(handle));
             await saveHandle(handle);

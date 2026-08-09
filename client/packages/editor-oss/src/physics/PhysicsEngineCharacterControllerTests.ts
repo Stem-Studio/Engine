@@ -1,5 +1,6 @@
 import { BodyShapeType, CollisionBehavior } from './common/types';
 import { DEFAULT_CHARACTER_CONTROLLER_COLLISION_GROUP, DEFAULT_RIGID_BODY_COLLISION_GROUP, PhysicsEngine, RigidBodyType } from './PhysicsEngine';
+import { vi } from 'vitest';
 
 /**
  * Shared harness for the engine-facing character-controller API (the new
@@ -25,6 +26,26 @@ export const makeCharacterControllerTests = (
 
         afterEach(() => {
             physics.dispose();
+        });
+
+        it("rejects concave character-controller shapes", () => {
+            // Controllers are moving/kinematic collision objects. Keep the
+            // same static-only concave invariant as rigid bodies so a mesh
+            // cannot silently enter an expensive unsupported path.
+            const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+            try {
+                physics.addShape("concave-character-shape", {
+                    type: BodyShapeType.CONCAVE_HULL,
+                    vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                    indexes: [[0, 1, 2]],
+                });
+                physics.addCharacterController("concave-character", "concave-character-shape");
+
+                expect(physics.hasCharacterController("concave-character")).toBe(false);
+                expect(warn).toHaveBeenCalledWith(expect.stringContaining("concave hull"));
+            } finally {
+                warn.mockRestore();
+            }
         });
 
         it("applies gravity via setCharacterControllerGravity (character falls)", () => {
@@ -542,10 +563,9 @@ export const makeCharacterControllerTests = (
         });
 
         describe("rotation", () => {
-            // Rotation support is engine-specific. Ammo/Rapier/Jolt
-            // store per-character rotation; PhysX CCTs don't and the
-            // setter is a documented no-op returning identity. Tests
-            // accept either behavior so all four engines stay green.
+            // Rotation support is engine-specific. The setter may store the
+            // requested rotation or be a documented no-op returning identity,
+            // so the shared tests accept either behavior.
             const isIdentity = (q: { x: number; y: number; z: number; w: number }) =>
                 Math.abs(q.x) < 1e-3 && Math.abs(q.y) < 1e-3 && Math.abs(q.z) < 1e-3 && Math.abs(q.w - 1) < 1e-3;
 

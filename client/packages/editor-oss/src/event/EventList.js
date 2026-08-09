@@ -41,6 +41,7 @@ const EventList = [
 
     "editorStarted",
     "editorStopped",
+    "editSceneFirstFrameReady", // Restored Edit scene has completed its first render
 
     "gameUpdated",
     "gameCreated",
@@ -105,6 +106,7 @@ const EventList = [
     "sceneSaveStart", // Scene save started
     "sceneSaveFailed", // Scene save failed
     "sceneSaved", // Scene saved successfully
+    "editorDirtyStateChanged", // Local editor dirty watermark changed ({dirty})
     "scenePublished", // Scene published or unpublished ({sceneId, action: "publish"|"unpublish"})
     "select", // Select event
     "clear", // Clear scene

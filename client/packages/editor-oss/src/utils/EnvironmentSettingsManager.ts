@@ -11,7 +11,7 @@ import {
     FogExp2,
     Color,
     TextureLoader,
-    EquirectangularRefractionMapping,
+    EquirectangularReflectionMapping,
     SRGBColorSpace,
     CanvasTexture,
     Scene,
@@ -21,8 +21,8 @@ import {
     CubeTexture,
     MathUtils,
 } from "three";
-import {EXRLoader} from "three/examples/jsm/loaders/EXRLoader.js";
-import {HDRLoader} from "three/examples/jsm/loaders/HDRLoader.js";
+import {EXRLoader} from "three/addons/loaders/EXRLoader.js";
+import {HDRLoader} from "three/addons/loaders/HDRLoader.js";
 import {
     screenUV,
     equirectUV,
@@ -39,13 +39,15 @@ import {
     smoothstep,
     fog,
 } from "three/tsl";
-import {WebGPURenderer} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 
 import {normalizeBackgroundGradient, normalizeShadowMapType} from "./renderingSettingsNormalization";
+import {cloneJsonCompatible, jsonCompatibleEquals} from "./cloneJsonCompatible";
 import {AssetType, getSceneAssets} from "@stem/network/api/asset";
 import type {AssetRef} from "@stem/editor-oss/asset-management/AssetRef";
 import type Editor from "../editor/Editor";
 import {getOrCreateDynamicRoot} from "@stem/editor-oss/scene/dynamicRoots";
+import {findObjectByNameDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import type {RenderingSettings} from "../types/GameSettingsTypes";
 
 // Fallback types since they are not exported from three/tsl
@@ -96,10 +98,6 @@ export class EnvironmentSettingsManager {
     } | null = null;
 
     private cachedFogNodesByFalloff: Partial<Record<HeightFogFalloff, Node>> = {};
-    private cachedFogNode: Node | null = null;
-    private lastFogFalloffType: HeightFogFalloff | null = null;
-    private cachedBackgroundNode: Node | null = null;
-    private lastBackgroundType: string | null = null;
 
     constructor(editor: Editor) {
         this.editor = editor;
@@ -220,7 +218,7 @@ export class EnvironmentSettingsManager {
             return;
         }
 
-        // Scene JSON persists rendering under `scene.userData.rendering`. OSS
+        // Scene JSON persists rendering under `scene.userData.rendering`. Local storage
         // doesn't carry editor.rendering through the API metadata path, so
         // SceneConfig resets it to defaults on every load. Hydrate from the
         // scene's own userData before applying, otherwise saved background,
@@ -246,7 +244,7 @@ export class EnvironmentSettingsManager {
         if (!scene || !rendering) return;
         scene.userData = scene.userData || {};
         // Deep clone so later in-place mutations on either side don't alias.
-        scene.userData.rendering = JSON.parse(JSON.stringify(rendering));
+        scene.userData.rendering = cloneJsonCompatible(rendering);
     }
 
     private getDynamicGroup(scene: Scene) {
@@ -297,9 +295,7 @@ export class EnvironmentSettingsManager {
     }
 
     private clearHeightFogNodeCache(): void {
-        this.cachedFogNode = null;
         this.cachedFogNodesByFalloff = {};
-        this.lastFogFalloffType = null;
     }
 
     private getHexString(value: string): string {
@@ -317,12 +313,12 @@ export class EnvironmentSettingsManager {
 
         if (!shouldReload) return;
         this.currentAmbientSettings = {
-            config: JSON.parse(JSON.stringify(rendering.ambient)) as RenderingSettings["ambient"],
+            config: cloneJsonCompatible(rendering.ambient) as RenderingSettings["ambient"],
             scene,
         };
 
         const group = this.getDynamicGroup(scene);
-        let ambient = group.getObjectByName("AmbientLight") as AmbientLight | undefined;
+        let ambient = findObjectByNameDepthFirst(group, "AmbientLight") as AmbientLight | null;
 
         if (!ambient) {
             ambient = new AmbientLight(color, intensity);
@@ -350,12 +346,12 @@ export class EnvironmentSettingsManager {
 
         if (!shouldReload) return;
         this.currentHemisphereSettings = {
-            config: JSON.parse(JSON.stringify(rendering.hemisphere)) as RenderingSettings["hemisphere"],
+            config: cloneJsonCompatible(rendering.hemisphere) as RenderingSettings["hemisphere"],
             scene,
         };
 
         const group = this.getDynamicGroup(scene);
-        let hemisphere = group.getObjectByName("HemisphereLight") as HemisphereLight | undefined;
+        let hemisphere = findObjectByNameDepthFirst(group, "HemisphereLight") as HemisphereLight | null;
 
         if (!hemisphere) {
             hemisphere = new HemisphereLight(skyColor, groundColor, intensity);
@@ -393,7 +389,7 @@ export class EnvironmentSettingsManager {
 
         if (!shouldReload) return;
 
-        const appliedConfig = JSON.parse(JSON.stringify(fogSettings)) as NonNullable<RenderingSettings["fog"]>;
+        const appliedConfig = cloneJsonCompatible(fogSettings) as NonNullable<RenderingSettings["fog"]>;
 
         this.currentFogSettings = {
             config: appliedConfig,
@@ -440,13 +436,9 @@ export class EnvironmentSettingsManager {
 
             if (!sceneChanged && cachedFogNode) {
                 sceneWithNodes.fogNode = cachedFogNode;
-                this.cachedFogNode = cachedFogNode;
-                this.lastFogFalloffType = falloffType;
                 scene.fog = null;
                 return;
             }
-
-            this.lastFogFalloffType = falloffType;
 
             const heightFactor = smoothstep(fogUniforms.minHeight as any, fogUniforms.maxHeight as any, positionWorld.y);
             const heightDensity = heightFactor.oneMinus();
@@ -467,7 +459,6 @@ export class EnvironmentSettingsManager {
             const fogNode = fog(colorNode(fogUniforms.color as any), activeDensity);
 
             sceneWithNodes.fogNode = fogNode;
-            this.cachedFogNode = fogNode;
             this.cachedFogNodesByFalloff[falloffType] = fogNode;
             scene.fog = null;
         } else {
@@ -553,16 +544,16 @@ export class EnvironmentSettingsManager {
             (type === "Color" && prev.config.color !== color) ||
             (type === "Texture" &&
                 (prev.config.texture !== texture ||
-                    JSON.stringify(prev.config.textureAsset) !== JSON.stringify(textureAsset))) ||
+                    !jsonCompatibleEquals(prev.config.textureAsset, textureAsset))) ||
             (type === "Cubemap" &&
-                (JSON.stringify(prev.config.cubemap) !== JSON.stringify(cubemap) ||
-                    JSON.stringify(prev.config.cubemapAssets) !== JSON.stringify(cubemapAssets))) ||
+                (!jsonCompatibleEquals(prev.config.cubemap, cubemap) ||
+                    !jsonCompatibleEquals(prev.config.cubemapAssets, cubemapAssets))) ||
             (type === "Gradient" && (prev.config.gradient !== gradient || prev.config.gradientMode !== gradientMode)) ||
             (effectiveFogType === "height") !== (prev.fogType === "height");
 
         if (!shouldReload) {
             this.currentBackgroundSettings = {
-                config: JSON.parse(JSON.stringify(rendering.background)) as RenderingSettings["background"],
+                config: cloneJsonCompatible(rendering.background) as RenderingSettings["background"],
                 scene,
                 fogType: effectiveFogType,
             };
@@ -576,7 +567,7 @@ export class EnvironmentSettingsManager {
         }
 
         this.currentBackgroundSettings = {
-            config: JSON.parse(JSON.stringify(rendering.background)) as RenderingSettings["background"],
+            config: cloneJsonCompatible(rendering.background) as RenderingSettings["background"],
             scene,
             fogType: effectiveFogType,
         };
@@ -614,7 +605,7 @@ export class EnvironmentSettingsManager {
                     scene.environment.dispose();
                 }
 
-                tex.mapping = EquirectangularRefractionMapping;
+                tex.mapping = EquirectangularReflectionMapping;
 
                 scene.background = tex;
                 scene.environment = tex;
@@ -715,6 +706,7 @@ export class EnvironmentSettingsManager {
                 );
 
                 const tex = new CubeTexture(faceTextures.map(faceTexture => faceTexture.image));
+                tex.colorSpace = SRGBColorSpace;
                 tex.needsUpdate = true;
 
                 if (scene.background instanceof Texture) {
@@ -1113,7 +1105,7 @@ export class EnvironmentSettingsManager {
 
         if (!shouldReload) return;
         this.currentToneMappingSettings = {
-            config: JSON.parse(JSON.stringify(rendering.toneMapping)) as RenderingSettings["toneMapping"],
+            config: cloneJsonCompatible(rendering.toneMapping) as RenderingSettings["toneMapping"],
             renderer,
         };
 

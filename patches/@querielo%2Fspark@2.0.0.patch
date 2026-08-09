@@ -1,3 +1,16 @@
+diff --git a/package.json b/package.json
+index 7c96890ee80d4f272bc27813d931a848f858a1f5..47fa8f57c0e7cf59d74a9e4e12200d6797dbeef7 100644
+--- a/package.json
++++ b/package.json
+@@ -65,7 +65,7 @@
+     "fflate": "^0.8.2"
+   },
+   "peerDependencies": {
+-    "three": "^0.180.0"
++    "three": ">=0.180.0 <0.186.0"
+   },
+   "keywords": ["3d", "three.js", "gsplats", "3dgs", "gaussian", "splats"]
+ }
 diff --git a/dist/spark.cjs.js b/dist/spark.cjs.js
 index 4ab8da5494a00c820eb75af186e81d46a4563eec..ba55b29878e410568395076655dc50a0fd994788 100644
 --- a/dist/spark.cjs.js

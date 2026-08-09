@@ -15,10 +15,10 @@ import {
     FrontSide,
     BackSide,
     DoubleSide,
-    NodeMaterial,
     NoColorSpace,
     NoBlending,
-} from "three/webgpu";
+} from "three";
+import {NodeMaterial} from "three/webgpu";
 
 import global from "../../../global";
 

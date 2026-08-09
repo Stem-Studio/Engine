@@ -17,7 +17,7 @@ import {
     TorusKnotGeometry,
     Vector3,
 } from "three";
-import {Font, FontLoader} from "three/examples/jsm/loaders/FontLoader.js";
+import {Font, FontLoader} from "three/addons/loaders/FontLoader.js";
 
 import {PRIMITIVES_NAME} from "./PrimitivesTab";
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";

@@ -1,7 +1,8 @@
 import * as Comlink from 'comlink';
 import { Noise } from 'noisejs';
-import seedrandom from 'seedrandom';
-import { AmbientLight, Box3, BufferGeometry, FrontSide, DoubleSide, InstancedMesh, LinearFilter, LinearMipmapLinearFilter, Material, MathUtils, Matrix4, Mesh, Object3D, PerspectiveCamera, Quaternion, Scene, Texture, Vector3, Group, WebGPURenderer } from 'three/webgpu';
+import seedrandom from 'seedrandom/seedrandom.js';
+import { AmbientLight, Box3, BufferGeometry, FrontSide, DoubleSide, InstancedMesh, LinearFilter, LinearMipmapLinearFilter, Material, MathUtils, Matrix4, Mesh, Object3D, PerspectiveCamera, Quaternion, Scene, Texture, Vector3, Group } from 'three';
+import type {WebGPURenderer} from "three/webgpu";
 import { acceleratedRaycast } from 'three-mesh-bvh';
 
 import { TerrainObjectType } from './EndlessTerrainConstants';
@@ -58,6 +59,40 @@ interface TerrainObjectsOptions {
     treeDensity?: number;
     /** Rock density control (0-100). 0 = no rocks, 50 = default, 100 = maximum density */
     rockDensity?: number;
+}
+
+function findObjectByUuid(root: Object3D, uuid: string): Object3D | null {
+    const stack: Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const object = stack.pop();
+        if (!object) continue;
+        if (object.uuid === uuid) return object;
+
+        for (let i = object.children.length - 1; i >= 0; i--) {
+            const child = object.children[i];
+            if (child) stack.push(child);
+        }
+    }
+
+    return null;
+}
+
+function findFirstMesh(root: Object3D): Mesh | null {
+    const stack: Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const object = stack.pop();
+        if (!object) continue;
+        if ((object as Mesh).isMesh) return object as Mesh;
+
+        for (let i = object.children.length - 1; i >= 0; i--) {
+            const child = object.children[i];
+            if (child) stack.push(child);
+        }
+    }
+
+    return null;
 }
 
 type AddTask = {
@@ -138,6 +173,11 @@ class IndividualMeshManager implements TerrainManager {
 
 class InstancedMeshManager implements TerrainManager {
     public readonly root: InstancedMesh;
+    // `root.count` is also the renderer's visible instance count. Keep the
+    // allocator's logical count separate so an editor preview cap cannot
+    // corrupt chunk bookkeeping or cause later additions/removals to reuse
+    // the wrong slots.
+    private logicalCount = 0;
     private static readonly BOUNDS_BOX_RECOMPUTE_INTERVAL = 4;
     private chunkInstances = new Map<string, number[]>();
     private instanceOwner: string[] = []; 
@@ -149,11 +189,12 @@ class InstancedMeshManager implements TerrainManager {
 
     constructor(mesh: InstancedMesh) {
         this.root = mesh;
+        this.logicalCount = Math.max(0, Math.floor(mesh.count));
     }
 
     public getObject() { return this.root; }
 
-    public getCount() { return this.root.count; }
+    public getCount() { return this.logicalCount; }
 
     public markBoundsDirty() {
         this.boundsDirty = true;
@@ -175,10 +216,11 @@ class InstancedMeshManager implements TerrainManager {
     }
 
     public addInstance(chunkKey: string, matrix: Matrix4, objectId: string) {
-        if (this.root.count >= this.root.instanceMatrix.count) return -1;
-        const index = this.root.count;
+        if (this.logicalCount >= this.root.instanceMatrix.count) return -1;
+        const index = this.logicalCount;
         this.root.setMatrixAt(index, matrix);
-        this.root.count++;
+        this.logicalCount++;
+        this.root.count = this.logicalCount;
         this.root.instanceMatrix.needsUpdate = true;
         let list = this.chunkInstances.get(chunkKey);
         if (!list) {
@@ -205,18 +247,18 @@ class InstancedMeshManager implements TerrainManager {
         for (let i = 0; i < indices.length; i++) {
             const holeIndex = indices[i];
             if (holeIndex === undefined) continue;
-            if (holeIndex >= this.root.count) continue;
+            if (holeIndex >= this.logicalCount) continue;
             while (true) {
-                const candidateIndex = this.root.count - 1;
+                const candidateIndex = this.logicalCount - 1;
                 if (candidateIndex < holeIndex) {
                     break;
                 }
                 if (candidateIndex === holeIndex) {
-                    this.root.count--;
+                    this.logicalCount--;
                     break;
                 }
                 if (this.victimIndices.has(candidateIndex)) {
-                    this.root.count--;
+                    this.logicalCount--;
                     continue;
                 }
                 this.root.getMatrixAt(candidateIndex, this.tmpMatrix);
@@ -234,10 +276,11 @@ class InstancedMeshManager implements TerrainManager {
                 if (keeperId !== undefined) {
                     this.instanceIds[holeIndex] = keeperId;
                 }
-                this.root.count--;
+                this.logicalCount--;
                 break; 
             }
         }
+        this.root.count = this.logicalCount;
         this.root.instanceMatrix.needsUpdate = true;
         this.chunkInstances.delete(chunkKey);
         return true;
@@ -288,6 +331,8 @@ export class EndlessTerrainObjects {
     private totalInstancesAdded = 0;
     private readonly modifiedManagersScratch = new Set<TerrainManager>();
     private readonly applyPlacementMatrixScratch = new Matrix4();
+    private readonly reprioritizeAddScratch: AddTask[] = [];
+    private readonly densityReaddChunkKeysScratch: string[] = [];
     private priorityOrigin: { x: number; z: number } | null = null;
     private queuePriorityDirty = false;
     private workerTerrainModelsPayload: TerrainPlacementTaskMessage['terrainModels'] | null = null;
@@ -489,9 +534,26 @@ export class EndlessTerrainObjects {
             return;
         }
 
-        const activeTasks = this.updateQueue.slice(this.updateQueueHead).filter((task): task is UpdateTask => task !== undefined);
-        const addTasks = activeTasks.filter((task): task is AddTask => task.type === 'add');
+        const queue = this.updateQueue;
+        const addTasks = this.reprioritizeAddScratch;
+        addTasks.length = 0;
+
+        let writeIndex = 0;
+        for (let readIndex = this.updateQueueHead; readIndex < queue.length; readIndex++) {
+            const task = queue[readIndex];
+            if (!task) {
+                continue;
+            }
+            queue[writeIndex++] = task;
+            if (task.type === 'add') {
+                addTasks.push(task);
+            }
+        }
+        queue.length = writeIndex;
+        this.updateQueueHead = 0;
+
         if (addTasks.length < 2) {
+            addTasks.length = 0;
             this.queuePriorityDirty = false;
             return;
         }
@@ -508,8 +570,13 @@ export class EndlessTerrainObjects {
         });
 
         let addIndex = 0;
-        this.updateQueue = activeTasks.map(task => task.type === 'add' ? addTasks[addIndex++]! : task);
-        this.updateQueueHead = 0;
+        for (let i = 0; i < queue.length; i++) {
+            const task = queue[i]!;
+            if (task.type === 'add') {
+                queue[i] = addTasks[addIndex++]!;
+            }
+        }
+        addTasks.length = 0;
         this.queuePriorityDirty = false;
     }
 
@@ -642,33 +709,17 @@ export class EndlessTerrainObjects {
 
                 let geometry: BufferGeometry | null = null;
                 let material: Material | Material[] | null = null;
-                scene.traverse((child: any) => {
-                    if (child.isMesh && !geometry) {
-                        const m = child as Mesh;
-                        // Apply parent node transforms (e.g. cm→m scale) to geometry
-                        m.updateWorldMatrix(true, false);
-                        geometry = m.geometry.clone();
-                        geometry.applyMatrix4(m.matrixWorld);
-                        if (!geometry.attributes.normal) geometry.computeVertexNormals();
+                const mesh = findFirstMesh(scene);
+                if (mesh) {
+                    // Apply parent node transforms (e.g. cm→m scale) to geometry
+                    mesh.updateWorldMatrix(true, false);
+                    geometry = mesh.geometry.clone();
+                    geometry.applyMatrix4(mesh.matrixWorld);
+                    if (!geometry.attributes.normal) geometry.computeVertexNormals();
 
-                        // Debug: Log material and texture info for bundled models
-                        const debugMat = m.material as any;
-                        console.warn(`[EndlessTerrainObjects] Bundled ${url} material debug:`, {
-                            materialType: debugMat?.type,
-                            hasMap: !!debugMat?.map,
-                            hasNormalMap: !!debugMat?.normalMap,
-                            hasRoughnessMap: !!debugMat?.roughnessMap,
-                            hasMetalnessMap: !!debugMat?.metalnessMap,
-                            mapUuid: debugMat?.map?.uuid,
-                            mapImage: debugMat?.map?.image ? 'present' : 'missing',
-                            mapImageWidth: debugMat?.map?.image?.width,
-                            mapImageHeight: debugMat?.map?.image?.height,
-                        });
-
-                        material = m.material;
-                        this.applyMaterialFixes(material);
-                    }
-                });
+                    material = mesh.material;
+                    this.applyMaterialFixes(material);
+                }
                 if (!geometry || !material) throw new Error(`No mesh found in ${url}`);
 
                 // Generate and cache thumbnail if not already cached
@@ -699,6 +750,7 @@ export class EndlessTerrainObjects {
         const result = EndlessTerrainObjects.thumbnailGenerationQueue.then(async () => {
             // Initialize renderer if needed (reuse for performance)
             if (!EndlessTerrainObjects.thumbnailRenderer) {
+                const {WebGPURenderer} = await import('three/webgpu');
                 EndlessTerrainObjects.thumbnailRenderer = new WebGPURenderer({ antialias: true, alpha: true });
                 EndlessTerrainObjects.thumbnailRenderer.setSize(size, size);
                 await EndlessTerrainObjects.thumbnailRenderer.init();
@@ -760,12 +812,6 @@ export class EndlessTerrainObjects {
             renderer.render(scene, camera);
             const dataUrl = renderer.domElement.toDataURL("image/png");
 
-            // Cleanup - dispose the model clone's resources
-            modelClone.traverse((child) => {
-                if (child instanceof Mesh) {
-                    // Don't dispose geometry/material - they're shared with the original
-                }
-            });
             scene.remove(modelClone);
 
             return dataUrl;
@@ -846,13 +892,7 @@ export class EndlessTerrainObjects {
             return EndlessTerrainObjects.thumbnailCache.get(cacheKey) || null;
         }
 
-        // Find object by UUID in scene
-        let foundObject: Object3D | null = null;
-        sceneRoot.traverse((child) => {
-            if (child.uuid === uuid) {
-                foundObject = child;
-            }
-        });
+        const foundObject = findObjectByUuid(sceneRoot, uuid);
 
         if (!foundObject) {
             console.warn(`[EndlessTerrainObjects] Object not found with UUID: ${uuid}`);
@@ -949,13 +989,7 @@ export class EndlessTerrainObjects {
             return null;
         }
 
-        // Find object by UUID in scene
-        let foundObject: Object3D | null = null;
-        sceneRoot.traverse((child) => {
-            if (child.uuid === uuid) {
-                foundObject = child;
-            }
-        });
+        const foundObject = findObjectByUuid(sceneRoot, uuid);
 
         if (!foundObject) {
             console.warn(`[EndlessTerrainObjects] Object not found with UUID: ${uuid}`);
@@ -967,28 +1001,15 @@ export class EndlessTerrainObjects {
         let material: Material | Material[] | null = null;
 
         const sceneObject: Object3D = foundObject;
+        const mesh = (sceneObject as Mesh).isMesh ? sceneObject as Mesh : findFirstMesh(sceneObject);
 
-        if ((sceneObject as any).isMesh) {
-            const mesh = sceneObject as Mesh;
+        if (mesh) {
             geometry = mesh.geometry.clone();
             if (!geometry.attributes.normal) geometry.computeVertexNormals();
             material = Array.isArray(mesh.material)
                 ? mesh.material.map(m => m.clone())
                 : mesh.material.clone();
             this.applyMaterialFixes(material);
-        } else {
-            // Traverse to find first mesh
-            sceneObject.traverse((child: any) => {
-                if (child.isMesh && !geometry) {
-                    const m = child as Mesh;
-                    geometry = m.geometry.clone();
-                    if (!geometry.attributes.normal) geometry.computeVertexNormals();
-                    material = Array.isArray(m.material)
-                        ? m.material.map(mat => mat.clone())
-                        : m.material.clone();
-                    this.applyMaterialFixes(material);
-                }
-            });
         }
 
         if (!geometry || !material) {
@@ -1036,37 +1057,20 @@ export class EndlessTerrainObjects {
                 // Extract geometry and material from the loaded object
                 let geometry: BufferGeometry | null = null;
                 let material: Material | Material[] | null = null;
+                const mesh = findFirstMesh(loadedObject);
+                if (mesh) {
+                    // Apply parent node transforms (e.g. cm→m scale) to geometry
+                    mesh.updateWorldMatrix(true, false);
+                    geometry = mesh.geometry.clone();
+                    geometry.applyMatrix4(mesh.matrixWorld);
+                    if (!geometry.attributes.normal) geometry.computeVertexNormals();
 
-                loadedObject.traverse((child: any) => {
-                    if (child.isMesh && !geometry) {
-                        const m = child as Mesh;
-                        // Apply parent node transforms (e.g. cm→m scale) to geometry
-                        m.updateWorldMatrix(true, false);
-                        geometry = m.geometry.clone();
-                        geometry.applyMatrix4(m.matrixWorld);
-                        if (!geometry.attributes.normal) geometry.computeVertexNormals();
-
-                        // Debug: Log material and texture info
-                        const debugMat = m.material as any;
-                        console.warn(`[EndlessTerrainObjects] Asset ${assetId} material debug:`, {
-                            materialType: debugMat?.type,
-                            hasMap: !!debugMat?.map,
-                            hasNormalMap: !!debugMat?.normalMap,
-                            hasRoughnessMap: !!debugMat?.roughnessMap,
-                            hasMetalnessMap: !!debugMat?.metalnessMap,
-                            mapUuid: debugMat?.map?.uuid,
-                            mapImage: debugMat?.map?.image ? 'present' : 'missing',
-                            mapImageWidth: debugMat?.map?.image?.width,
-                            mapImageHeight: debugMat?.map?.image?.height,
-                        });
-
-                        // Clone the material to ensure textures are preserved even if loaded object is GC'd
-                        material = Array.isArray(m.material)
-                            ? m.material.map(mat => mat.clone())
-                            : m.material.clone();
-                        this.applyMaterialFixes(material);
-                    }
-                });
+                    // Clone the material to ensure textures are preserved even if loaded object is GC'd
+                    material = Array.isArray(mesh.material)
+                        ? mesh.material.map(mat => mat.clone())
+                        : mesh.material.clone();
+                    this.applyMaterialFixes(material);
+                }
 
                 if (!geometry || !material) {
                     console.warn(`[EndlessTerrainObjects] No mesh found in asset ${assetId}:${revisionId}`);
@@ -1386,7 +1390,7 @@ export class EndlessTerrainObjects {
      */
     private chooseModelForZone(isDitch: boolean, isGrass: boolean, isRock: boolean, isSnow: boolean, rand: number): number {
         let totalWeight = 0;
-        const compatible: { index: number; weight: number }[] = [];
+        let lastCompatibleIndex = -1;
 
         for (let i = 0; i < this.terrainModels.length; i++) {
             const model = this.terrainModels[i];
@@ -1400,21 +1404,31 @@ export class EndlessTerrainObjects {
             const weight = model.probability;
             if (weight <= 0) continue;
 
-            compatible.push({ index: i, weight });
+            lastCompatibleIndex = i;
             totalWeight += weight;
         }
 
-        if (compatible.length === 0 || totalWeight === 0) return -1;
+        if (lastCompatibleIndex === -1 || totalWeight === 0) return -1;
 
         // Weighted random selection among compatible models
         let acc = 0;
         const target = rand * totalWeight;
-        for (const entry of compatible) {
-            acc += entry.weight;
-            if (target <= acc) return entry.index;
+        for (let i = 0; i < this.terrainModels.length; i++) {
+            const model = this.terrainModels[i];
+            if (!model || !this.managers[i]) continue;
+
+            if (model.type === TerrainObjectType.Plant && !isGrass) continue;
+            if (model.type === TerrainObjectType.Tree && (isDitch || isSnow)) continue;
+            if (model.type === TerrainObjectType.Rock && !isRock && !isSnow) continue;
+
+            const weight = model.probability;
+            if (weight <= 0) continue;
+
+            acc += weight;
+            if (target <= acc) return i;
         }
 
-        return compatible[compatible.length - 1]?.index ?? -1;
+        return lastCompatibleIndex;
     }
 
     private processRemove(task: { chunkX: number, chunkZ: number }) {
@@ -1429,161 +1443,8 @@ export class EndlessTerrainObjects {
         }
     }
 
-    /**
-     * Calculate normalized weights for all models.
-     * Returns an array of weights (0-1) that sum to 1.
-     */
-    private getNormalizedWeights(): number[] {
-        const weights: number[] = [];
-        let sum = 0;
-
-        for (const m of this.terrainModels) {
-            const prob = m.probability ?? 0;
-            weights.push(prob);
-            sum += prob;
-        }
-
-        // Normalize to sum to 1
-        if (sum > 0) {
-            for (let i = 0; i < weights.length; i++) {
-                weights[i] = weights[i]! / sum;
-            }
-        } else if (weights.length > 0) {
-            // If all probabilities are 0, distribute evenly
-            const evenWeight = 1 / weights.length;
-            for (let i = 0; i < weights.length; i++) {
-                weights[i] = evenWeight;
-            }
-        }
-
-        return weights;
-    }
-
-    /**
-     * Generate a stratified distribution of model indices for a chunk.
-     * This ensures the distribution matches the configured probabilities more closely
-     * than pure random selection, especially for smaller sample sizes.
-     *
-     * @param chunkX - Chunk X coordinate
-     * @param chunkZ - Chunk Z coordinate
-     * @param totalCount - Total number of objects to distribute
-     * @returns Array of model indices, shuffled but with guaranteed proportions
-     */
-    private generateChunkDistribution(chunkX: number, chunkZ: number, totalCount: number): number[] {
-        const weights = this.getNormalizedWeights();
-        const distribution: number[] = [];
-
-        // Calculate target count for each model based on normalized weights
-        const targetCounts: number[] = [];
-        let assignedCount = 0;
-
-        for (let i = 0; i < weights.length; i++) {
-            const weight = weights[i] ?? 0;
-            // Use floor to avoid over-allocation
-            const count = Math.floor(totalCount * weight);
-            targetCounts.push(count);
-            assignedCount += count;
-        }
-
-        // Distribute remaining slots (due to rounding) to models with highest fractional parts
-        const remaining = totalCount - assignedCount;
-        if (remaining > 0) {
-            // Calculate fractional parts for each model
-            const fractionals: { index: number; frac: number }[] = [];
-            for (let i = 0; i < weights.length; i++) {
-                const weight = weights[i] ?? 0;
-                const exact = totalCount * weight;
-                const frac = exact - Math.floor(exact);
-                fractionals.push({ index: i, frac });
-            }
-
-            // Sort by fractional part descending
-            fractionals.sort((a, b) => b.frac - a.frac);
-
-            // Assign remaining slots to models with highest fractional parts
-            for (let r = 0; r < remaining && r < fractionals.length; r++) {
-                const entry = fractionals[r];
-                if (entry) {
-                    targetCounts[entry.index]!++;
-                }
-            }
-        }
-
-        // Build the distribution array with the target counts
-        for (let modelIndex = 0; modelIndex < targetCounts.length; modelIndex++) {
-            const count = targetCounts[modelIndex] ?? 0;
-            for (let j = 0; j < count; j++) {
-                distribution.push(modelIndex);
-            }
-        }
-
-        // Shuffle the distribution using seeded random for deterministic results
-        const shuffleSeed = `${this.options.seed}:distribution:${chunkX}:${chunkZ}`;
-        const rng = seedrandom(shuffleSeed);
-
-        // Fisher-Yates shuffle
-        for (let i = distribution.length - 1; i > 0; i--) {
-            const j = Math.floor(rng() * (i + 1));
-            const temp = distribution[i]!;
-            distribution[i] = distribution[j]!;
-            distribution[j] = temp;
-        }
-
-        return distribution;
-    }
-
-    /**
-     * Get the model index for a specific object in a chunk.
-     * Uses stratified distribution to ensure proportional representation.
-     * @param chunkX
-     * @param chunkZ
-     * @param objectIndex
-     * @param totalObjectsInChunk
-     */
-    private getModelForObject(chunkX: number, chunkZ: number, objectIndex: number, totalObjectsInChunk: number): number {
-        // Generate or retrieve cached distribution for this chunk
-        const cacheKey = `${chunkX}:${chunkZ}:${totalObjectsInChunk}`;
-
-        if (!this.chunkDistributionCache.has(cacheKey)) {
-            const distribution = this.generateChunkDistribution(chunkX, chunkZ, totalObjectsInChunk);
-            this.chunkDistributionCache.set(cacheKey, distribution);
-        }
-
-        const distribution = this.chunkDistributionCache.get(cacheKey)!;
-
-        // Return the model index for this object position
-        // Use modulo in case objectIndex exceeds distribution length (shouldn't happen normally)
-        return distribution[objectIndex % distribution.length] ?? 0;
-    }
-
-    /** Cache for chunk distributions to avoid recalculating */
-    private chunkDistributionCache = new Map<string, number[]>();
-
-    /**
-     * Clear the distribution cache (call when terrain models change)
-     */
-    public clearDistributionCache(): void {
-        this.chunkDistributionCache.clear();
-    }
-
-    /**
-     * Legacy method for pure random model selection.
-     * Kept for reference but replaced by stratified distribution.
-     * @param rand
-     */
-    private chooseModelRandom(rand: number): number {
-        let sum = 0;
-        for (const m of this.terrainModels) sum += m.probability;
-        if (sum === 0) return 0;
-        let acc = 0;
-        const r = rand * sum;
-        for (let i = 0; i < this.terrainModels.length; i++) {
-            const prob = this.terrainModels[i]?.probability ?? 0;
-            acc += prob;
-            if (r <= acc) return i;
-        }
-        return 0;
-    }
+    /** Retained for compatibility; model selection no longer uses a per-chunk distribution cache. */
+    public clearDistributionCache(): void {}
 
     public forceFlushQueue(limit = Infinity) {
         let p = 0;
@@ -1607,15 +1468,20 @@ export class EndlessTerrainObjects {
     public setDensity(d: number, readd=false) {
         this.options.density = d;
         if(readd) {
-            const keys = Array.from(this.addedChunkKeys);
-            keys.forEach(k => {
-                const parts = k.split(',');
-                if (parts.length < 2) return;
-                const [x, z] = parts.map(Number);
-                if (x === undefined || z === undefined) return;
+            const keys = this.densityReaddChunkKeysScratch;
+            keys.length = 0;
+            this.addedChunkKeys.forEach(key => keys.push(key));
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i]!;
+                const commaIndex = key.indexOf(',');
+                if (commaIndex <= 0 || commaIndex >= key.length - 1) continue;
+                const x = Number(key.slice(0, commaIndex));
+                const z = Number(key.slice(commaIndex + 1));
+                if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
                 this.removeObjectsForChunk(x, z);
                 this.addObjectsForChunk(x, z);
-            });
+            }
+            keys.length = 0;
         }
     }
 

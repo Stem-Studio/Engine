@@ -27,7 +27,7 @@ export type Thumbnail = {
 
 export type CreateModelParams = {
     name: string;
-    blob: Blob;
+    blob: Blob | ArrayBuffer;
     format: ModelFormat;
     contentType: string;
     lods?: ModelLod[];

@@ -1,4 +1,4 @@
-import {BatchedMesh, Box3, Frustum, Matrix4, Sphere} from "three/webgpu";
+import {BatchedMesh, Box3, Frustum, Matrix4, Sphere} from "three";
 
 import frustumCullWGSL from "./shaders/frustum_cull.wgsl?raw";
 

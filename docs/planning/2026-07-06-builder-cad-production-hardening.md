@@ -2,8 +2,10 @@
 
 Date: 2026-07-06
 Branch: `tinyskies-playground-port` (uncommitted work)
-Predecessor: `docs/planning/2026-06-28-builder-and-cad-mode-followups.md` (all items
-checked; this plan is the productization pass on top of that foundation).
+Predecessor:
+[Builder and CAD mode follow-ups](./2026-06-28-builder-and-cad-mode-followups.md)
+(all items checked; this plan is the productization pass on top of that
+foundation).
 
 ## Goal
 
@@ -551,15 +553,16 @@ smaller updates + new test files; `MobileGameServiceIdentity` is new.
 The working tree mixes at least four independent tracks on a branch named for
 a different feature (`tinyskies-playground-port`).
 
-Status note (2026-07-07): split manifest prepared in
-`docs/planning/2026-07-07-builder-cad-pr-split-manifest.md`, including exact
+Status note (2026-07-07): the
+[split manifest](./2026-07-07-builder-cad-pr-split-manifest.md) was prepared,
+including exact
 path buckets, branch names, PR-specific validation commands, and generated
 patch bundles under `docs/planning/pr-split-patches/`. The patch bundles pass
 `git apply --check` against a temporary clean worktree at `HEAD`. Remote
 branches are published to `origin`; actual PR creation is still pending because
 this environment does not have `gh`, `hub`, or a GitHub API token. Exact
 authenticated-environment commands and compare URLs are recorded in
-`docs/planning/2026-07-07-builder-cad-pr-create-handoff.md`.
+[PR creation handoff](./2026-07-07-builder-cad-pr-create-handoff.md).
 Baseline fix branch prepared and published:
 `builder-hardening/direct-copilot-test-fix` at
 `96c47c6`; full base validation passed locally: high-heap typecheck,

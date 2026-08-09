@@ -3,10 +3,8 @@ import type {AICapabilities, AIProvider, AIRequestOptions, AIResponse} from "./t
 /**
  * AIBackend is the seam between the editor and any AI provider surface.
  *
- * In integrated mode the default implementation talks to the same Go backend
- * that's served everything before this abstraction existed; in OSS mode it
- * talks to the local ai-server. The interface is intentionally narrow — it
- * exposes:
+ * The default implementation talks to the local ai-server. The interface is
+ * intentionally narrow — it exposes:
  *
  *   - `capabilities()` so the editor can learn which providers have keys
  *     configured and decide which UI to gate behind a BYOK prompt.
@@ -35,8 +33,7 @@ export interface AIBackend {
      * subsequent requests via the `X-BYOK-Key` header. Returns `true` when the
      * server acknowledges the key.
      *
-     * In integrated mode the call is a no-op + returns `false` because keys
-     * are operator-managed via env vars.
+     * Returns `false` if no client-side key store is available.
      */
     setProviderKey(provider: AIProvider, key: string): Promise<boolean>;
 

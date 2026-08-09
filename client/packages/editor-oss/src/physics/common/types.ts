@@ -1,5 +1,4 @@
-import {Object3D, Vector3} from "three";
-import {QuaternionLike, Vector3Like} from "three/webgpu";
+import {Object3D, Vector3, type QuaternionLike, type Vector3Like} from "three";
 
 import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
 
@@ -91,9 +90,31 @@ export interface IPhysics {
     start(): Promise<void>;
     terminate(): void;
     simulate(deltaTime: number): void;
+    /**
+     * Apply the runtime fixed-step quality policy when the owning adapter
+     * exposes it. Worker and legacy physics implementations may omit this;
+     * EngineRuntime remains the authoritative caller for those paths.
+     */
+    configureQuality?(
+        updateRateHz: number,
+        substeps: number,
+        maxStepsPerFrame: number,
+        schedulerDriven?: boolean,
+        enableExtrapolation?: boolean,
+        solverIterations?: number,
+    ): void;
+    /** Update backend constraint quality without recreating the physics world. */
+    setSolverIterations?(solverIterations: number): void;
+    /**
+     * Non-coalescing authoritative worker step. Returns false only when its
+     * bounded queue is full. Main-thread adapters may omit this method.
+     */
+    simulateFixedStep?(deltaTime: number, substeps: number): boolean;
     pause(): void;
     resume(): void;
     initDebug(): Object3D | null;
+    /** Optional collision wireframe frame produced by the physics backend. */
+    getDebugRenderData?(): PhysicsDebugRenderData | null;
     ping(): Promise<void>; //checks that physics has processed all events and ready for more
     //joints
     addFixedJoint(collisionEnabled: boolean, uuidA: string, uuidB: string, vec3PivotB: Vector3, vec4RotationB: QuaternionLike): void;
@@ -113,8 +134,6 @@ export interface IPhysics {
     addConcaveHull(object: Object3D | null, data: ConcaveHullData): void;
     addConvexHull(object: Object3D | null, data: ConvexHullData): void;
     addCapsuleShape(object: Object3D | null, data: CapsuleData): void;
-    /** @deprecated */
-    addModel(object: Object3D | null, data: ModelData): void;
     /** @deprecated */
     addTerrain(object: Object3D | null, data: TerrainData): void;
     removePrefab(uuid: string): void;
@@ -160,6 +179,15 @@ export interface IPhysics {
     addOtsShiftVector(otsShiftVector: Vector3): void;
 }
 
+export interface PhysicsDebugRenderData {
+    /** XYZ positions for line-list vertices. */
+    vertices: Float32Array;
+    /** RGB or RGBA colors matching the line-list vertices. */
+    colors: Float32Array;
+    /** Number of vertices to draw from `vertices`. */
+    drawCount: number;
+}
+
 export interface IPlayerOptions {
     playerGravity: number;
     jumpHeight: number;
@@ -179,7 +207,7 @@ export interface VehicleInput {
 }
 
 // Pure data — no Three.js references. Used by the engine-facing
-// `VehiclePhysics.addVehicle` API and anywhere the spec has to cross
+// `PhysicsEngine.addVehicle` API and anywhere the spec has to cross
 // a worker `postMessage` boundary.
 export interface VehicleWheelData {
     name: string;
@@ -254,6 +282,8 @@ export interface IDispatcher {
         motionState?: ObjectMotionState
     ): void;
     onCollision(uuid: string, listenerId: string): void;
+    /** Fired after an authoritative worker step's body batch is delivered. */
+    onSimulationComplete?(deltaTime: number): void;
 }
 
 export enum BodyShapeType {
@@ -299,6 +329,10 @@ export type CommonData = {
     contactStiffness: number;
     contactDamping: number;
     damping?: {linear: number; angular: number};
+    /** Enable continuous collision detection for fast-moving dynamic bodies. */
+    ccd?: boolean;
+    /** Allow idle dynamic bodies to sleep; enabled by default for performance. */
+    allowSleep?: boolean;
     collision_flag?: CollisionFlag;
     rotationLock?: { x: boolean; y: boolean; z: boolean };
 };
@@ -306,13 +340,6 @@ export type CommonData = {
 export type BoxData = CommonData & BoxShape;
 
 export type SphereData = CommonData & SphereShape;
-
-export type ModelData = CommonData & {
-    vertices: number[][];
-    matrices: number[][];
-    indexes: number[][];
-    scale: {x: number; y: number; z: number};
-};
 
 export type TerrainData = CommonData & {
     terrainWidth: number;
@@ -362,6 +389,15 @@ export interface ConcaveHullShape {
 
 export interface HeightfieldShape {
     type: BodyShapeType.HEIGHTFIELD;
+    /** Number of samples along the terrain's local z axis. */
+    rows?: number;
+    /** Number of samples along the terrain's local x axis. */
+    columns?: number;
+    /**
+     * Legacy square-heightfield field. New callers should provide rows and
+     * columns, but keeping this optional compatibility field lets authored
+     * scenes created by the old Ammo path continue to load.
+     */
     sampleCount: number;
     heightSamples: number[];
     offset: {x: number; y: number; z: number};
@@ -381,6 +417,7 @@ export const DEFAULT_SCALE = {x: 1, y: 1, z: 1};
 export enum PhysicsEngineType {
     Ammo = "ammo",
     Rapier = "rapier",
-    Jolt = "jolt",
-    PhysX = "physx",
 }
+
+export const isPhysicsEngineType = (value: unknown): value is PhysicsEngineType =>
+    Object.values(PhysicsEngineType).includes(value as PhysicsEngineType);

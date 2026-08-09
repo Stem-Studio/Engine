@@ -12,52 +12,50 @@ import {
     Vector2,
     Raycaster,
     Intersection,
-    Texture,
-} from "three/webgpu";
+} from "three";
 
 import {DetectDevice} from "./DetectDevice";
-import GeometryUtils from "./GeometryUtils";
+import {
+    createGeometryRevisionSnapshot,
+    getGeometryHashSignature,
+    hashGeometry,
+    isGeometryRevisionCurrent,
+    type GeometryRevisionSnapshot,
+} from "./geometryHash";
 import MaterialUtils, {convertMeshStandardToNodeMaterial, hasCustomTSLNodes, patchNodeMaterialSetup} from "./MaterialUtils";
 import MeshUtils from "./MeshUtils";
 import global from "../global";
-import Box from "../object/geometry/Box";
-import Circle from "../object/geometry/Circle";
-import Cone from "../object/geometry/Cone";
-import Cylinder from "../object/geometry/Cylinder";
-import Icosahedron from "../object/geometry/Icosahedron";
-import Lathe from "../object/geometry/Lathe";
-import Plane from "../object/geometry/Plane";
-import Sphere from "../object/geometry/Sphere";
-import Sprite from "../object/geometry/Sprite";
-import Teapot from "../object/geometry/Teapot";
-import Torus from "../object/geometry/Torus";
-import TorusKnot from "../object/geometry/TorusKnot";
-import Triangle from "../object/geometry/Triangle";
 import {getOrCreateDynamicRoot} from "@stem/editor-oss/scene/dynamicRoots";
+import {
+    hashBatchMaterial,
+    hasPerInstanceBatchMaterialChange,
+    hasSignificantBatchMaterialChange,
+    isBatchMaterialSupported,
+    snapshotBatchMaterial,
+    type MaterialProperties,
+} from "./BatchMaterialCompatibility";
 
 extendBatchedMeshPrototype();
 
-const BATCHABLE_MESHES = [
-    Mesh,
-    Box,
-    Group,
-    Sphere,
-    TorusKnot,
-    Circle,
-    Icosahedron,
-    Sprite,
-    Triangle,
-    Cone,
-    Lathe,
-    Teapot,
-    Cylinder,
-    Plane,
-    Torus,
-];
+const BATCHABLE_EDITOR_GEOMETRY_TYPES = new Set([
+    "BoxGeometry",
+    "CircleGeometry",
+    "ConeGeometry",
+    "CylinderGeometry",
+    "IcosahedronGeometry",
+    "LatheGeometry",
+    "PlaneGeometry",
+    "SphereGeometry",
+    "TetrahedronGeometry",
+    "TeapotGeometry",
+    "TorusGeometry",
+    "TorusKnotGeometry",
+]);
 
 const BATCH_MAX_INSTANCES = 200;
 const BATCH_MIN_VERTICES_COUNT = 10000;
 const BATCH_MIN_INDICES_COUNT = 10000;
+const BATCH_MIN_NEW_MESHES_PER_GROUP = 2;
 
 type UniformValue = number | Color | Vector2 | null;
 
@@ -68,66 +66,50 @@ type BatchedMeshWithOriginals = BatchedMesh & {
     setUniformAt?: (id: number, name: string, value: UniformValue) => void;
 };
 
-interface MaterialProperties {
-    color?: Color | null;
-    roughness?: number | null;
-    metalness?: number | null;
-    opacity?: number | null;
-    fog?: boolean | null;
-    transparent?: boolean | null;
-    visible?: boolean | null;
-    emissive?: Color | null;
-    emissiveIntensity?: number | null;
-
-    side?: number | null;
-    depthWrite?: boolean | null;
-    depthTest?: boolean | null;
-    blending?: number | null;
-
-    map?: Texture | null;
-    normalMap?: Texture | null;
-    bumpMap?: Texture | null;
-    displacementMap?: Texture | null;
-    roughnessMap?: Texture | null;
-    metalnessMap?: Texture | null;
-    emissiveMap?: Texture | null;
-    aoMap?: Texture | null;
-    alphaMap?: Texture | null;
-    envMap?: Texture | null;
-    lightMap?: Texture | null;
-
-    normalScale?: Vector2 | null;
-    bumpScale?: number | null;
-    displacementScale?: number | null;
-    displacementBias?: number | null;
-    envMapIntensity?: number | null;
-    lightMapIntensity?: number | null;
-}
-
 interface SceneWithBatchingUserData {
     userData?: {rendering?: {batching?: {enableDynamic?: boolean}}};
 }
 
 type MaterialCloneable = MeshStandardMaterial & {clone?: () => MeshStandardMaterial};
+type BatchedRaycastIntersection = Intersection & {batchId?: number};
 
 interface BatchedMeshData {
     originalMesh: Mesh;
     instanceId: number;
     geometryId: number;
+    geometry: BufferGeometry;
+    geometryUsage: GeometryUsage;
+    geometryRevision: GeometryRevisionSnapshot;
+    castShadow: boolean;
+    receiveShadow: boolean;
+    layersMask: number;
+    renderOrder: number;
+    material: MeshStandardMaterial;
+    materialUsage: MaterialUsage;
     transform: Matrix4;
     materialProperties: MaterialProperties;
+    lastUpdateSerial: number;
 }
 
+type MeshBatchEntry = {batchGroup: BatchGroup; meshData: BatchedMeshData};
+type MaterialFrameChange = {serial: number; significant: boolean; perInstance: boolean};
+type MaterialUsage = {count: number};
+type GeometryUsage = {count: number; latestRevision: GeometryRevisionSnapshot};
+type GeometryFrameRevision = {serial: number; current: boolean};
+type ProgressiveBatchCandidate = {mesh: Mesh; batchKey: string};
+
 interface BatchGroup {
+    key: string;
     material: MeshStandardMaterial;
     batchedMesh: BatchedMesh;
     meshes: Map<Mesh, BatchedMeshData>;
+    instanceIdToMesh: Map<number, Mesh>;
     materialHash: string;
 
     lodEnabled: boolean;
     customUniformsEnabled: boolean;
     geometries: Map<number, BufferGeometry>;
-    key?: string;
+    boundsDirty: boolean;
     filled?: boolean;
 }
 
@@ -138,6 +120,11 @@ interface BatchStat {
     geometryCount: number;
     usedVertexCount: number;
     usedIndexCount: number;
+}
+
+interface GeometryHashCacheEntry {
+    signature: string;
+    hash: string;
 }
 
 /**
@@ -153,15 +140,33 @@ export default class BatchManager {
     public readonly scene: Scene;
 
     private batchGroups: Map<string, BatchGroup[]> = new Map();
+    private dirtyBatchBounds: Set<BatchGroup> = new Set();
 
     private sceneMeshes: Mesh[] = [];
+    private sceneMeshSet: Set<Mesh> = new Set();
+    private newMeshScratch: Mesh[] = [];
+    private newMeshGroupScratch: Map<string, Mesh[]> = new Map();
+    private progressiveCandidateGroups: Map<string, ProgressiveBatchCandidate[]> = new Map();
+    private progressiveNewMeshes: ProgressiveBatchCandidate[] = [];
+    private progressiveAnalysisCursor: number = 0;
+    private progressiveQueueCursor: number = 0;
+    private progressiveQueuePrepared: boolean = false;
+    private sceneMeshRevision: number = 0;
+    private progressiveWorkRevision: number = -1;
+    private staleMeshRemovalPending: boolean = false;
+    private retryableMeshes: Set<Mesh> = new Set();
+    private materialFrameChanges: WeakMap<MeshStandardMaterial, MaterialFrameChange> = new WeakMap();
+    private materialUsageByMaterial: WeakMap<MeshStandardMaterial, MaterialUsage> = new WeakMap();
+    private geometryFrameRevisions: WeakMap<BufferGeometry, GeometryFrameRevision> = new WeakMap();
+    private geometryUsageByGeometry: WeakMap<BufferGeometry, GeometryUsage> = new WeakMap();
+    private batchUpdateSerial: number = 0;
     // Meshes that are under a static subtree (self or any ancestor has userData.isStatic === true)
     private staticMeshes: Set<Mesh> = new Set();
 
-    private meshDataMap: Map<Mesh, {batchGroup: BatchGroup; meshData: BatchedMeshData}> = new Map();
+    private meshDataMap: Map<Mesh, MeshBatchEntry> = new Map();
 
-    // Cache of geometry uuid -> computed batch hash (position + optional index)
-    private geometryHashCache: Map<string, string> = new Map();
+    // Cache of geometry UUID to its full render-attribute batch hash.
+    private geometryHashCache: Map<string, GeometryHashCacheEntry> = new Map();
 
     private nonBatchableMeshes: WeakSet<Mesh> = new WeakSet();
 
@@ -177,6 +182,9 @@ export default class BatchManager {
     private readonly isPublishMode: boolean;
 
     private static readonly MAX_NEW_MESHES_PER_UPDATE = DetectDevice.getOS() === "iOS" ? 3 : Infinity;
+    private static readonly MAX_PROGRESSIVE_MESHES_PER_UPDATE = DetectDevice.getOS() === "iOS" ? 3 : 64;
+    private static readonly PROGRESSIVE_BATCH_TIME_BUDGET_MS = DetectDevice.getOS() === "iOS" ? 2 : 4;
+    private static readonly PROGRESSIVE_TIME_CHECK_INTERVAL = 8;
 
     private _isWebGPU: boolean = false;
 
@@ -191,21 +199,25 @@ export default class BatchManager {
         return this.batchRoot;
     }
 
-    private _externalMeshes: boolean = false;
+    private usesExternalSceneMeshes: boolean = false;
+    private externalSceneMeshesDirty: boolean = false;
+    private externalSceneMeshSource: readonly Mesh[] | null = null;
+    private externalSceneMeshSourceRevision: number | null = null;
 
-    private hiddenMaterials: Set<string> = new Set();
-    private materialsToKeepVisible: Set<string> = new Set();
+    private hiddenOriginalMeshes: Map<Mesh, boolean> = new Map();
 
     constructor(scene: Scene) {
         this.scene = scene;
+        this.isPublishMode = !!global.app?.options?.isPlayModeOnly;
         this.findOrCreateBatchRoot();
 
-        // Start periodic stats storage
-        this.statsIntervalId = setInterval(() => {
-            this.storeBatchStats();
-        }, 5000);
-
-        this.isPublishMode = !!global.app?.options?.isPlayModeOnly;
+        // Editor-only persistence used to size future batches after scene edits.
+        // Published/play-only runtimes should not wake up just to mutate scene metadata.
+        if (!this.isPublishMode) {
+            this.statsIntervalId = setInterval(() => {
+                this.storeBatchStats();
+            }, 5000);
+        }
     }
 
     /**
@@ -241,8 +253,14 @@ export default class BatchManager {
                 }
             }
         }
-        // Re-evaluate current batches: remove any now-excluded meshes and try batching newly allowed ones
-        this.updateBatchesForSceneChanges();
+        if (this.usesExternalSceneMeshes) {
+            this.refreshExternalSceneAnalysis();
+            this.invalidateProgressiveBatchWork();
+            this.externalSceneMeshesDirty = true;
+        }
+        // The renderer supplies its external mesh snapshot before the next draw and then
+        // reconciles under the progressive budget. Running a scene traversal here would
+        // make outline setup synchronously batch the whole scene during startup.
     }
 
     /**
@@ -255,26 +273,26 @@ export default class BatchManager {
             return;
         }
 
-        if (this._externalMeshes) {
-            // Meshes provided externally via setSceneMeshes — skip scene traversal.
-            // Still collect materials for excluded objects so hideOriginalMeshes works.
-            this.staticMeshes.clear();
-            this.materialsToKeepVisible.clear();
-            for (const obj of this.excludedObjects) {
-                this.collectMaterialsRecursively(obj);
-            }
-            this._externalMeshes = false;
+        if (this.usesExternalSceneMeshes) {
+            if (!this.externalSceneMeshesDirty && !this.hasRetryableMeshBecomeBatchable()) return;
         } else {
             this.collectSceneMeshes();
+            this.addNewMeshesFromList(BatchManager.MAX_NEW_MESHES_PER_UPDATE);
+            this.removeStaleMeshes();
+            return;
         }
 
-        this.addNewMeshesFromList(BatchManager.MAX_NEW_MESHES_PER_UPDATE);
+        const pending = this.addNewMeshesProgressively(
+            BatchManager.MAX_PROGRESSIVE_MESHES_PER_UPDATE,
+            BatchManager.PROGRESSIVE_BATCH_TIME_BUDGET_MS,
+        );
 
-        // remove meshes no longer in scene
-        this.removeStaleMeshes();
+        if (this.staleMeshRemovalPending) {
+            this.removeStaleMeshes();
+            this.staleMeshRemovalPending = false;
+        }
 
-        // Temporary disable static geometry CPU cleanup during batch updates
-        // this.cleanStaticGeometriesCPU();
+        this.externalSceneMeshesDirty = pending;
     }
 
     /**
@@ -282,6 +300,7 @@ export default class BatchManager {
      * @returns {void}
      */
     public clear(): void {
+        this.showOriginalMeshes();
         for (const batchGroups of this.batchGroups.values()) {
             for (const batchGroup of batchGroups) {
                 try {
@@ -293,6 +312,7 @@ export default class BatchManager {
                 // Clear per-group collections to drop references
                 try {
                     batchGroup.meshes.clear();
+                    batchGroup.instanceIdToMesh.clear();
                 } catch {
                     /* ignore */
                 }
@@ -304,11 +324,29 @@ export default class BatchManager {
             }
         }
         this.batchGroups.clear();
+        this.dirtyBatchBounds.clear();
 
         // Drop references to original meshes and analysis caches
         this.meshDataMap.clear();
         this.sceneMeshes.length = 0;
+        this.sceneMeshSet.clear();
+        this.newMeshScratch.length = 0;
+        this.newMeshGroupScratch.clear();
+        this.progressiveCandidateGroups.clear();
+        this.progressiveNewMeshes.length = 0;
+        this.progressiveAnalysisCursor = 0;
+        this.progressiveQueueCursor = 0;
+        this.progressiveQueuePrepared = false;
+        this.sceneMeshRevision = 0;
+        this.progressiveWorkRevision = -1;
+        this.staleMeshRemovalPending = false;
+        this.retryableMeshes.clear();
+        this.hiddenOriginalMeshes.clear();
         this.usedStatsBatchKeys.clear();
+        this.usesExternalSceneMeshes = false;
+        this.externalSceneMeshesDirty = false;
+        this.externalSceneMeshSource = null;
+        this.externalSceneMeshSourceRevision = null;
     }
 
     /**
@@ -334,9 +372,54 @@ export default class BatchManager {
         this.geometryHashCache.clear();
     }
 
-    public setSceneMeshes(meshes: Mesh[]): void {
-        this.sceneMeshes = meshes;
-        this._externalMeshes = true;
+    public setSceneMeshes(meshes: Mesh[], sourceRevision?: number): void {
+        this.usesExternalSceneMeshes = true;
+        if (
+            sourceRevision !== undefined &&
+            meshes === this.externalSceneMeshSource &&
+            sourceRevision === this.externalSceneMeshSourceRevision
+        ) {
+            return;
+        }
+        if (sourceRevision === undefined && this.hasSameSceneMeshes(meshes)) return;
+
+        this.sceneMeshes.length = meshes.length;
+        for (let i = 0; i < this.sceneMeshes.length; i++) {
+            this.sceneMeshes[i] = meshes[i]!;
+        }
+        this.externalSceneMeshSource = meshes;
+        this.externalSceneMeshSourceRevision = sourceRevision ?? null;
+        this.refreshExternalSceneAnalysis();
+        this.invalidateProgressiveBatchWork();
+        this.externalSceneMeshesDirty = true;
+    }
+
+    private hasSameSceneMeshes(meshes: Mesh[]): boolean {
+        if (meshes.length !== this.sceneMeshes.length) return false;
+        for (let i = 0; i < this.sceneMeshes.length; i++) {
+            if (meshes[i] !== this.sceneMeshes[i]) return false;
+        }
+        return true;
+    }
+
+    private refreshExternalSceneAnalysis(): void {
+        this.sceneMeshSet.clear();
+        this.staticMeshes.clear();
+
+        for (let i = 0; i < this.sceneMeshes.length; i++) {
+            const mesh = this.sceneMeshes[i];
+            if (!mesh || this.isExcludedOrDescendant(mesh)) continue;
+            this.sceneMeshSet.add(mesh);
+
+            let current: Object3D | null = mesh;
+            while (current) {
+                if (current.userData?.isStatic === true) {
+                    this.staticMeshes.add(mesh);
+                    break;
+                }
+                current = current.parent;
+            }
+        }
     }
 
     /**
@@ -357,27 +440,23 @@ export default class BatchManager {
     public hideOriginalMeshes(): void {
         if (!this.isDynamicBatchingEnabled()) return;
 
-        this.hiddenMaterials.clear();
+        // A newly-created or moved batch must have a valid aggregate bound before
+        // it becomes renderable. If bound computation fails we deliberately leave
+        // whole-batch culling disabled while retaining safe per-object culling.
+        this.flushDirtyBatchBounds();
+
         for (const batchGroups of this.batchGroups.values()) {
             for (const batchGroup of batchGroups) {
                 for (const meshData of batchGroup.meshes.values()) {
-                    if (meshData.originalMesh.material) {
-                        const materials = Array.isArray(meshData.originalMesh.material) ? meshData.originalMesh.material : [meshData.originalMesh.material];
-                        for (let i = 0; i < materials.length; i++) {
-                            const mat = materials[i]!;
-                            if (mat.visible && !this.materialsToKeepVisible.has(mat.uuid)) {
-                                this.hiddenMaterials.add(mat.uuid);
-                                mat.visible = false;
-                            }
-                        }
+                    const mesh = meshData.originalMesh;
+                    if (!this.hiddenOriginalMeshes.has(mesh)) {
+                        this.hiddenOriginalMeshes.set(mesh, mesh.visible);
                     }
+                    mesh.visible = false;
                 }
                 batchGroup.batchedMesh.visible = true;
             }
         }
-
-        // Temporary disable static geometry CPU cleanup during batch updates
-        // this.cleanStaticGeometriesCPU();
     }
 
     /**
@@ -391,23 +470,11 @@ export default class BatchManager {
             }
         }
 
-        for (const batchGroups of this.batchGroups.values()) {
-            for (const batchGroup of batchGroups) {
-                for (const meshData of batchGroup.meshes.values()) {
-                    if (meshData.originalMesh.material) {
-                        const materials = Array.isArray(meshData.originalMesh.material) ? meshData.originalMesh.material : [meshData.originalMesh.material];
-                        for (let i = 0; i < materials.length; i++) {
-                            const mat = materials[i]!;
-                            if (this.hiddenMaterials.has(mat.uuid)) {
-                                mat.visible = true;
-                            }
-                        }
-                    }
-                }
-            }
+        for (const [mesh, visible] of this.hiddenOriginalMeshes) {
+            mesh.visible = visible;
         }
 
-        this.hiddenMaterials.clear();
+        this.hiddenOriginalMeshes.clear();
     }
 
     private isDynamicBatchingEnabled(): boolean {
@@ -462,33 +529,42 @@ export default class BatchManager {
         this.batchRoot.userData.isSelectable = false;
     }
 
-    private updateMeshTransform(mesh: Mesh): void {
+    private updateMeshTransform(mesh: Mesh, entry: MeshBatchEntry): void {
         // In publish mode, static subtrees are batched once and never updated
         if (this.isPublishMode && this.staticMeshes.has(mesh)) return;
-        const result = this.findBatchGroupForMesh(mesh);
-        if (!result) return;
-
-        const {batchGroup} = result;
-        const meshData = batchGroup.meshes.get(mesh);
-        if (!meshData) return;
+        const {batchGroup, meshData} = entry;
 
         if (this.hasMatrixChangedSinceLastUpdate(mesh.matrixWorld, meshData.transform)) {
             meshData.transform.copy(mesh.matrixWorld);
             batchGroup.batchedMesh.setMatrixAt(meshData.instanceId, meshData.transform);
+            this.markBatchBoundsDirty(batchGroup);
         }
     }
 
-    private updateMeshMaterial(mesh: Mesh): void {
+    private updateMeshMaterial(mesh: Mesh, entry: MeshBatchEntry): void {
         if (this.isPublishMode && this.staticMeshes.has(mesh)) return;
-        const entry = this.meshDataMap.get(mesh);
-        if (!entry) return;
         const {batchGroup, meshData} = entry;
 
         const material = mesh.material as MeshStandardMaterial;
         const oldProps = meshData.materialProperties;
-
-        // Detect whether "big" material features changed (textures, blending, etc.)
-        const significantChange = this.hasSignificantMaterialChange(oldProps, material);
+        const useFrameCache = material === meshData.material && meshData.materialUsage.count > 1;
+        const cachedChange = useFrameCache ? this.materialFrameChanges.get(material) : undefined;
+        let significantChange: boolean;
+        let perInstanceChanged: boolean;
+        if (cachedChange?.serial === this.batchUpdateSerial) {
+            significantChange = cachedChange.significant;
+            perInstanceChanged = cachedChange.perInstance;
+        } else {
+            significantChange = this.hasSignificantMaterialChange(oldProps, material);
+            perInstanceChanged = !significantChange && this.hasPerInstanceMaterialChange(oldProps, material);
+            if (useFrameCache) {
+                this.materialFrameChanges.set(material, {
+                    serial: this.batchUpdateSerial,
+                    significant: significantChange,
+                    perInstance: perInstanceChanged,
+                });
+            }
+        }
 
         if (significantChange) {
             // Re-batch for changes that alter the material program or textures
@@ -496,8 +572,6 @@ export default class BatchManager {
             this.addMesh(mesh);
             return;
         }
-
-        const perInstanceChanged = this.hasPerInstanceMaterialChange(oldProps, material);
 
         if (perInstanceChanged) {
             if (batchGroup.customUniformsEnabled) {
@@ -561,6 +635,7 @@ export default class BatchManager {
                     }
 
                     // Refresh cached properties regardless so future diffs are correct
+                    this.setTrackedMeshMaterial(meshData, material);
                     meshData.materialProperties = this.extractMaterialProperties(material);
                 } catch {
                     // As a fallback, re-batch this mesh to a group that can accommodate its material
@@ -571,20 +646,65 @@ export default class BatchManager {
                 // Per-instance uniforms are not available for this batch (likely due to textures).
                 // We update the cached properties but cannot reflect per-instance color without rebatching
                 // into a texture-less/custom-uniforms-enabled group.
+                this.setTrackedMeshMaterial(meshData, material);
                 meshData.materialProperties = this.extractMaterialProperties(material);
             }
             return;
         }
+
+        this.setTrackedMeshMaterial(meshData, material);
+    }
+
+    private setTrackedMeshMaterial(meshData: BatchedMeshData, material: MeshStandardMaterial): void {
+        if (meshData.material === material) return;
+        this.decrementMaterialUsage(meshData.materialUsage);
+        meshData.material = material;
+        meshData.materialUsage = this.incrementMaterialUsage(material);
+    }
+
+    private incrementMaterialUsage(material: MeshStandardMaterial): MaterialUsage {
+        let usage = this.materialUsageByMaterial.get(material);
+        if (!usage) {
+            usage = {count: 0};
+            this.materialUsageByMaterial.set(material, usage);
+        }
+        usage.count++;
+        return usage;
+    }
+
+    private decrementMaterialUsage(usage: MaterialUsage): void {
+        usage.count = Math.max(0, usage.count - 1);
+    }
+
+    private trackGeometry(geometry: BufferGeometry): {
+        usage: GeometryUsage;
+        revision: GeometryRevisionSnapshot;
+    } {
+        let usage = this.geometryUsageByGeometry.get(geometry);
+        if (!usage) {
+            usage = {count: 0, latestRevision: createGeometryRevisionSnapshot(geometry)};
+            this.geometryUsageByGeometry.set(geometry, usage);
+        } else if (!isGeometryRevisionCurrent(geometry, usage.latestRevision)) {
+            usage.latestRevision = createGeometryRevisionSnapshot(geometry);
+        }
+        usage.count++;
+        return {usage, revision: usage.latestRevision};
+    }
+
+    private decrementGeometryUsage(usage: GeometryUsage): void {
+        usage.count = Math.max(0, usage.count - 1);
     }
 
     private handleBatchOverflow(
         batchKey: string,
         geometry: BufferGeometry,
         material: MeshStandardMaterial,
+        layersMask: number,
+        renderOrder: number,
     ): BatchGroup {
         // console.warn(`[BatchManager] Batch group ${batchKey} is full, creating new batch group`);
 
-        const batchGroup = this.createBatchGroup(geometry, material, batchKey);
+        const batchGroup = this.createBatchGroup(geometry, material, batchKey, layersMask, renderOrder);
 
         let batchGroups = this.batchGroups.get(batchKey);
         if (!batchGroups) {
@@ -597,16 +717,22 @@ export default class BatchManager {
         return batchGroup;
     }
 
-    private addMesh(mesh: Mesh): boolean {
-        if (!this.canBatch(mesh)) return false;
+    private addMesh(mesh: Mesh, validatedBatchKey?: string): boolean {
+        if (validatedBatchKey === undefined && !this.canBatch(mesh)) return false;
+
+        const batchKey = validatedBatchKey ?? this.createMeshBatchKey(mesh);
+        if (!batchKey) return false;
 
         const material = mesh.material as MeshStandardMaterial;
         const geometry = mesh.geometry;
-        const baseKey = this.createBatchKey(geometry, material);
-        // Include shadow flags in key so each shadow combination gets its own group
-        const batchKey = `${baseKey}_cs${mesh.castShadow ? 1 : 0}_rs${mesh.receiveShadow ? 1 : 0}`;
 
-        let batchGroup = this.getOrCreateBatchGroup(batchKey, geometry, material);
+        let batchGroup = this.getOrCreateBatchGroup(
+            batchKey,
+            geometry,
+            material,
+            mesh.layers.mask,
+            mesh.renderOrder,
+        );
 
         let geometryId = this.findGeometryIdInBatchGroup(batchGroup, geometry);
         if (geometryId === -1) {
@@ -621,7 +747,13 @@ export default class BatchManager {
 
                 batchGroup.filled = true;
 
-                batchGroup = this.handleBatchOverflow(batchKey, geometry, material);
+                batchGroup = this.handleBatchOverflow(
+                    batchKey,
+                    geometry,
+                    material,
+                    mesh.layers.mask,
+                    mesh.renderOrder,
+                );
                 try {
                     geometryId = batchGroup.batchedMesh.addGeometry(geometry);
                 } catch {
@@ -670,16 +802,29 @@ export default class BatchManager {
             }
         }
 
+        const geometryTracking = this.trackGeometry(geometry);
         const meshData: BatchedMeshData = {
             originalMesh: mesh,
             instanceId,
             geometryId,
+            geometry,
+            geometryUsage: geometryTracking.usage,
+            geometryRevision: geometryTracking.revision,
+            castShadow: mesh.castShadow,
+            receiveShadow: mesh.receiveShadow,
+            layersMask: mesh.layers.mask,
+            renderOrder: mesh.renderOrder,
+            material,
+            materialUsage: this.incrementMaterialUsage(material),
             transform,
             materialProperties: this.extractMaterialProperties(material),
+            lastUpdateSerial: this.batchUpdateSerial,
         };
 
         batchGroup.meshes.set(mesh, meshData);
+        batchGroup.instanceIdToMesh.set(instanceId, mesh);
         this.meshDataMap.set(mesh, {batchGroup, meshData});
+        this.markBatchBoundsDirty(batchGroup);
 
         batchGroup.batchedMesh.visible = false;
 
@@ -693,23 +838,23 @@ export default class BatchManager {
     }
 
     private removeMesh(mesh: Mesh): void {
-        const result = this.findBatchGroupForMesh(mesh);
-        if (!result) return;
+        const entry = this.meshDataMap.get(mesh);
+        if (!entry) return;
 
-        const {batchGroup} = result;
-
-        const batchKey = this.getBatchKeyForGroup(batchGroup);
-        if (!batchKey) {
-            // If we cannot resolve a batch key, abort cleanup for safety
-            return;
-        }
-
-        const meshData = batchGroup.meshes.get(mesh);
-        if (!meshData) return;
+        const {batchGroup, meshData} = entry;
+        const batchKey = batchGroup.key;
 
         batchGroup.batchedMesh.deleteInstance(meshData.instanceId);
         batchGroup.meshes.delete(mesh);
+        batchGroup.instanceIdToMesh.delete(meshData.instanceId);
         this.meshDataMap.delete(mesh);
+        if (batchGroup.meshes.size > 0) {
+            this.markBatchBoundsDirty(batchGroup);
+        } else {
+            this.dirtyBatchBounds.delete(batchGroup);
+        }
+        this.decrementMaterialUsage(meshData.materialUsage);
+        this.decrementGeometryUsage(meshData.geometryUsage);
 
         // If there are no remaining instances using this geometry, remove the geometry from the BatchedMesh
         const removedGeometryId = meshData.geometryId;
@@ -813,11 +958,21 @@ export default class BatchManager {
     public canBatch(mesh: Mesh): boolean {
         if (
             (mesh as BatchedMesh).isBatchedMesh ||
+            (mesh as Mesh & {isInstancedMesh?: boolean}).isInstancedMesh ||
+            (mesh as Mesh & {isSkinnedMesh?: boolean}).isSkinnedMesh ||
+            Array.isArray((mesh as Mesh & {morphTargetInfluences?: number[]}).morphTargetInfluences) ||
             !mesh.visible ||
             !mesh.geometry ||
             !mesh.material ||
             !mesh.geometry.getAttribute("position")
         ) {
+            if (
+                (mesh as Mesh & {isInstancedMesh?: boolean}).isInstancedMesh ||
+                (mesh as Mesh & {isSkinnedMesh?: boolean}).isSkinnedMesh ||
+                Array.isArray((mesh as Mesh & {morphTargetInfluences?: number[]}).morphTargetInfluences)
+            ) {
+                this.nonBatchableMeshes.add(mesh);
+            }
             return false;
         }
 
@@ -826,26 +981,33 @@ export default class BatchManager {
         }
 
         if (mesh.userData?.isBatchable === false) {
-            this.nonBatchableMeshes.add(mesh);
             return false;
         }
 
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const material = mesh.material;
 
         // Authored TSL node graphs cannot be reproduced by the batching path,
         // which rebuilds its own node material for per-instance uniforms.
-        if (materials.some(material => hasCustomTSLNodes(material))) {
+        if (Array.isArray(material)) {
+            for (let i = 0; i < material.length; i++) {
+                const entry = material[i];
+                if (entry && hasCustomTSLNodes(entry)) {
+                    this.nonBatchableMeshes.add(mesh);
+                    return false;
+                }
+            }
+        } else if (hasCustomTSLNodes(material)) {
             this.nonBatchableMeshes.add(mesh);
             return false;
         }
 
-        if (!BATCHABLE_MESHES.includes(mesh.constructor as typeof Mesh)) {
+        if (mesh.constructor !== Mesh && !BATCHABLE_EDITOR_GEOMETRY_TYPES.has(mesh.geometry.type)) {
             this.nonBatchableMeshes.add(mesh);
             return false;
         }
 
-        if (Array.isArray(mesh.material)) {
-            return materials.every(material => MaterialUtils.isMeshStandardMaterial(material));
+        if (Array.isArray(material)) {
+            return false;
         }
 
         if (this.isWebGPU) {
@@ -865,11 +1027,22 @@ export default class BatchManager {
             }
         }
 
-        return MaterialUtils.isMeshStandardMaterial(mesh.material);
+        return MaterialUtils.isMeshStandardMaterial(material) && isBatchMaterialSupported(material);
     }
 
     public isExcluded(object: Object3D): boolean {
         return this.excludedObjects.has(object);
+    }
+
+    private isExcludedOrDescendant(object: Object3D): boolean {
+        let current: Object3D | null = object;
+        while (current) {
+            if (this.excludedObjects.has(current)) {
+                return true;
+            }
+            current = current.parent;
+        }
+        return false;
     }
 
     private createBatchKey(geometry: BufferGeometry, material: MeshStandardMaterial): string {
@@ -880,113 +1053,23 @@ export default class BatchManager {
         return `${geometryHash}_${materialHash}`;
     }
 
-    private hashStructureGeometry(geometry: BufferGeometry): string {
-        const attributes = geometry.attributes;
-        const hashParts: string[] = [];
-
-        for (const [key, attr] of Object.entries(attributes)) {
-            hashParts.push(`${key}:${attr.itemSize}:`);
+    private createMeshBatchKey(mesh: Mesh): string | null {
+        if (Array.isArray(mesh.material)) {
+            return null;
         }
 
-        if (geometry.index) {
-            const indexType = geometry.index.constructor.name;
-            hashParts.push(`idx:${indexType}:`);
+        if (!MaterialUtils.isMeshStandardMaterial(mesh.material)) {
+            return null;
         }
 
-        return hashParts.join("|");
+        const baseKey = this.createBatchKey(mesh.geometry, mesh.material);
+        // Camera layers and render order are draw-level properties on BatchedMesh.
+        // They must be identical across sources or authored visibility/order is lost.
+        return `${baseKey}_cs${mesh.castShadow ? 1 : 0}_rs${mesh.receiveShadow ? 1 : 0}_ly${mesh.layers.mask}_ro${mesh.renderOrder}`;
     }
 
     private hashMaterial(material: MeshStandardMaterial): string {
-        const hashParts: string[] = [];
-
-        hashParts.push(`type:${this.classifyMaterialType(material)}`);
-        hashParts.push(`side:${material.side}`);
-        hashParts.push(`transparent:${material.transparent ? "1" : "0"}`);
-        hashParts.push(`opacity:${Math.round(material.opacity * 100)}`);
-        hashParts.push(`fog:${material.fog ? "1" : "0"}`);
-        hashParts.push(`depthWrite:${material.depthWrite ? "1" : "0"}`);
-        hashParts.push(`depthTest:${material.depthTest ? "1" : "0"}`);
-        hashParts.push(`blending:${material.blending}`);
-
-        if (material.map) {
-            hashParts.push(`map:${material.map.uuid}`);
-            if (material.map.wrapS) hashParts.push(`wrapS:${material.map.wrapS}`);
-            if (material.map.wrapT) hashParts.push(`wrapT:${material.map.wrapT}`);
-            if (material.map.repeat) {
-                hashParts.push(`repeatX:${Math.round(material.map.repeat.x * 100)}`);
-                hashParts.push(`repeatY:${Math.round(material.map.repeat.y * 100)}`);
-            }
-            if (material.map.offset) {
-                hashParts.push(`offsetX:${Math.round(material.map.offset.x * 100)}`);
-                hashParts.push(`offsetY:${Math.round(material.map.offset.y * 100)}`);
-            }
-        } else {
-            hashParts.push(`map:null`);
-        }
-
-        if (material.normalMap) {
-            hashParts.push(`normalMap:${material.normalMap.uuid}`);
-            hashParts.push(
-                `normalScale:${Math.round(material.normalScale.x * 100)}_${Math.round(material.normalScale.y * 100)}`,
-            );
-            if (material.normalMap.wrapS) hashParts.push(`normalWrapS:${material.normalMap.wrapS}`);
-            if (material.normalMap.wrapT) hashParts.push(`normalWrapT:${material.normalMap.wrapT}`);
-            if (material.normalMap.repeat) {
-                hashParts.push(`normalRepeatX:${Math.round(material.normalMap.repeat.x * 100)}`);
-                hashParts.push(`normalRepeatY:${Math.round(material.normalMap.repeat.y * 100)}`);
-            }
-        } else {
-            hashParts.push(`normalMap:null`);
-        }
-
-        if (material.bumpMap) {
-            hashParts.push(`bumpMap:${material.bumpMap.uuid}`);
-            hashParts.push(`bumpScale:${Math.round(material.bumpScale * 100)}`);
-            if (material.bumpMap.wrapS) hashParts.push(`bumpWrapS:${material.bumpMap.wrapS}`);
-            if (material.bumpMap.wrapT) hashParts.push(`bumpWrapT:${material.bumpMap.wrapT}`);
-            if (material.bumpMap.repeat) {
-                hashParts.push(`bumpRepeatX:${Math.round(material.bumpMap.repeat.x * 100)}`);
-                hashParts.push(`bumpRepeatY:${Math.round(material.bumpMap.repeat.y * 100)}`);
-            }
-        } else {
-            hashParts.push(`bumpMap:null`);
-        }
-
-        if (material.displacementMap) {
-            hashParts.push(`displacementMap:${material.displacementMap.uuid}`);
-            hashParts.push(`displacementScale:${Math.round(material.displacementScale * 100)}`);
-            hashParts.push(`displacementBias:${Math.round(material.displacementBias * 100)}`);
-            if (material.displacementMap.wrapS) hashParts.push(`displacementWrapS:${material.displacementMap.wrapS}`);
-            if (material.displacementMap.wrapT) hashParts.push(`displacementWrapT:${material.displacementMap.wrapT}`);
-            if (material.displacementMap.repeat) {
-                hashParts.push(`displacementRepeatX:${Math.round(material.displacementMap.repeat.x * 100)}`);
-                hashParts.push(`displacementRepeatY:${Math.round(material.displacementMap.repeat.y * 100)}`);
-            }
-        } else {
-            hashParts.push(`displacementMap:null`);
-        }
-
-        if (material.roughnessMap) hashParts.push(`roughnessMap:${material.roughnessMap.uuid}`);
-        if (material.metalnessMap) hashParts.push(`metalnessMap:${material.metalnessMap.uuid}`);
-        if (material.emissiveMap) hashParts.push(`emissiveMap:${material.emissiveMap.uuid}`);
-        if (material.aoMap) hashParts.push(`aoMap:${material.aoMap.uuid}`);
-        if (material.alphaMap) hashParts.push(`alphaMap:${material.alphaMap.uuid}`);
-        if (material.envMap) hashParts.push(`envMap:${material.envMap.uuid}`);
-
-        hashParts.push(`envMapIntensity:${Math.round(material.envMapIntensity * 100)}`);
-
-        if (material.lightMap) hashParts.push(`lightMap:${material.lightMap.uuid}`);
-        if (material.lightMapIntensity !== undefined)
-            hashParts.push(`lightMapIntensity:${Math.round(material.lightMapIntensity * 100)}`);
-
-        return hashParts.join("|");
-    }
-
-    private classifyMaterialType(material: MeshStandardMaterial): string {
-        if (material.transparent) return "transparent";
-        if (material.metalness > 0.5) return "metal";
-        if (material.roughness < 0.3) return "glossy";
-        return "matte";
+        return hashBatchMaterial(material);
     }
 
     private findGeometryIdInBatchGroup(batchGroup: BatchGroup, geometry: BufferGeometry): number {
@@ -1003,26 +1086,37 @@ export default class BatchManager {
     }
 
     private hashGeometry(geometry: BufferGeometry): string {
+        const signature = getGeometryHashSignature(geometry);
         const cached = this.geometryHashCache.get(geometry.uuid);
-        if (cached) return cached;
+        if (cached && cached.signature === signature) return cached.hash;
 
-        const hash = GeometryUtils.hashGeometry(geometry);
-        this.geometryHashCache.set(geometry.uuid, hash);
+        const hash = hashGeometry(geometry);
+        this.geometryHashCache.set(geometry.uuid, {signature, hash});
         return hash;
     }
 
-    private createBatchGroup(geometry: BufferGeometry, material: MeshStandardMaterial, batchKey: string): BatchGroup {
+    private createBatchGroup(
+        geometry: BufferGeometry,
+        material: MeshStandardMaterial,
+        batchKey: string,
+        layersMask: number,
+        renderOrder: number,
+    ): BatchGroup {
         const {maxInstanceCount, maxVertexCount, maxIndexCount} = this.getOptimalBatchCapacity(batchKey, [geometry]);
 
         const nodeMaterial = convertMeshStandardToNodeMaterial(material);
 
         const batchedMesh = new BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, nodeMaterial);
 
-        // FIXME: Temporarily set frustumCulled to false to avoid issues with bounding box not being set yet
-        // For example, characters in GaF can lose their hats.
-        batchedMesh.perObjectFrustumCulled = false;
+        // Per-instance bounds are maintained by BatchedMesh from the source
+        // geometries. Whole-batch culling is enabled only after we compute the
+        // aggregate sphere, so an incomplete batch can never disappear.
+        batchedMesh.perObjectFrustumCulled = true;
         batchedMesh.frustumCulled = false;
-        batchedMesh.sortObjects = !false;
+        // Opaque draw order has no visual effect and sorting it is O(N log N).
+        batchedMesh.sortObjects = material.transparent;
+        batchedMesh.layers.mask = layersMask;
+        batchedMesh.renderOrder = renderOrder;
 
         // Make dispose idempotent: guard against double-dispose calls which may throw
         try {
@@ -1047,13 +1141,16 @@ export default class BatchManager {
         }
 
         const batchGroup: BatchGroup = {
+            key: batchKey,
             material,
             batchedMesh,
             meshes: new Map(),
+            instanceIdToMesh: new Map(),
             materialHash: this.hashMaterial(material),
             lodEnabled: false,
             customUniformsEnabled: false,
             geometries: new Map(),
+            boundsDirty: true,
         };
 
         // Name the batched material as Batched_<materialHash> for easier debugging/inspection.
@@ -1111,18 +1208,18 @@ export default class BatchManager {
         }
 
         const originalBatchedRaycast = batchedMesh.raycast.bind(batchedMesh);
+        const tempIntersects: BatchedRaycastIntersection[] = [];
         batchedMesh.raycast = (raycaster: Raycaster, intersects: Intersection[]) => {
-            const tempIntersects: Intersection[] = [];
+            tempIntersects.length = 0;
             originalBatchedRaycast(raycaster, tempIntersects);
             for (const inter of tempIntersects) {
-                const instanceId = inter.instanceId;
-                for (const [mesh, meshData] of batchGroup.meshes.entries()) {
-                    if (meshData.instanceId === instanceId) {
-                        intersects.push(Object.assign({}, inter, {object: mesh}));
-                        break;
-                    }
+                const instanceId = typeof inter.instanceId === "number" ? inter.instanceId : inter.batchId;
+                const mesh = typeof instanceId === "number" ? batchGroup.instanceIdToMesh.get(instanceId) : undefined;
+                if (mesh) {
+                    intersects.push(Object.assign({}, inter, {object: mesh, instanceId}));
                 }
             }
+            tempIntersects.length = 0;
         };
 
         // track key on the batchGroup for quick lookups
@@ -1131,25 +1228,64 @@ export default class BatchManager {
     }
 
     private collectSceneMeshes(): void {
+        this.usesExternalSceneMeshes = false;
+        this.externalSceneMeshesDirty = false;
+        this.externalSceneMeshSource = null;
+        this.externalSceneMeshSourceRevision = null;
         this.sceneMeshes.length = 0;
+        this.sceneMeshSet.clear();
         this.staticMeshes.clear();
-        this.materialsToKeepVisible.clear();
         this.traverseSceneAnalysis(this.scene, this.sceneMeshes, false);
     }
 
     private addNewMeshesFromList(limit?: number): number {
         let added = 0;
-        const newMeshes: Mesh[] = [];
+        const newMeshes = this.newMeshScratch;
+        const candidateGroups = this.newMeshGroupScratch;
+        newMeshes.length = 0;
+        candidateGroups.clear();
+
         for (let i = 0; i < this.sceneMeshes.length; i++) {
             const mesh = this.sceneMeshes[i];
-            if (mesh && !this.meshDataMap.has(mesh) && this.canBatch(mesh)) {
-                newMeshes.push(mesh);
+            if (!mesh || this.meshDataMap.has(mesh) || this.isExcludedOrDescendant(mesh)) {
+                continue;
+            }
+            if (!this.canBatch(mesh)) {
+                if (!this.nonBatchableMeshes.has(mesh)) this.retryableMeshes.add(mesh);
+                continue;
+            }
+            this.retryableMeshes.delete(mesh);
+
+            const batchKey = this.createMeshBatchKey(mesh);
+            if (!batchKey) {
+                continue;
+            }
+
+            let groupedMeshes = candidateGroups.get(batchKey);
+            if (!groupedMeshes) {
+                groupedMeshes = [];
+                candidateGroups.set(batchKey, groupedMeshes);
+            }
+            groupedMeshes.push(mesh);
+        }
+
+        for (const [batchKey, groupedMeshes] of candidateGroups) {
+            if (
+                groupedMeshes.length >= BATCH_MIN_NEW_MESHES_PER_GROUP ||
+                this.findAvailableBatchGroup(batchKey)
+            ) {
+                for (let i = 0; i < groupedMeshes.length; i++) {
+                    const mesh = groupedMeshes[i];
+                    if (mesh) newMeshes.push(mesh);
+                }
             }
         }
 
         // NOTE: This sorting is important to ensure larger meshes are batched first
         // this helps avoid overflow issues with smaller meshes, and decrease memory usage and draw calls (win-win)
-        newMeshes.sort((a, b) => (b.geometry.attributes.position?.count ?? 0) - (a.geometry.attributes.position?.count ?? 0));
+        if (newMeshes.length > 1) {
+            newMeshes.sort((a, b) => (b.geometry.attributes.position?.count ?? 0) - (a.geometry.attributes.position?.count ?? 0));
+        }
 
         for (const mesh of newMeshes) {
             if (limit !== undefined && added >= limit) break;
@@ -1158,87 +1294,142 @@ export default class BatchManager {
             }
         }
 
+        newMeshes.length = 0;
+        candidateGroups.clear();
         return added;
+    }
+
+    private invalidateProgressiveBatchWork(): void {
+        this.sceneMeshRevision++;
+        this.staleMeshRemovalPending = true;
+        this.progressiveWorkRevision = -1;
+        this.progressiveAnalysisCursor = 0;
+        this.progressiveQueueCursor = 0;
+        this.progressiveQueuePrepared = false;
+        this.progressiveCandidateGroups.clear();
+        this.progressiveNewMeshes.length = 0;
+    }
+
+    private now(): number {
+        return globalThis.performance?.now() ?? Date.now();
+    }
+
+    private addNewMeshesProgressively(limit: number, timeBudgetMs: number): boolean {
+        if (this.progressiveWorkRevision !== this.sceneMeshRevision) {
+            this.progressiveWorkRevision = this.sceneMeshRevision;
+            this.progressiveAnalysisCursor = 0;
+            this.progressiveQueueCursor = 0;
+            this.progressiveQueuePrepared = false;
+            this.progressiveCandidateGroups.clear();
+            this.progressiveNewMeshes.length = 0;
+        }
+
+        const startTime = this.now();
+        let workSinceTimeCheck = 0;
+
+        while (this.progressiveAnalysisCursor < this.sceneMeshes.length) {
+            const mesh = this.sceneMeshes[this.progressiveAnalysisCursor++];
+            if (mesh && !this.meshDataMap.has(mesh) && !this.isExcludedOrDescendant(mesh)) {
+                if (!this.canBatch(mesh)) {
+                    if (!this.nonBatchableMeshes.has(mesh)) this.retryableMeshes.add(mesh);
+                } else {
+                    this.retryableMeshes.delete(mesh);
+                    const batchKey = this.createMeshBatchKey(mesh);
+                    if (batchKey) {
+                        let groupedMeshes = this.progressiveCandidateGroups.get(batchKey);
+                        if (!groupedMeshes) {
+                            groupedMeshes = [];
+                            this.progressiveCandidateGroups.set(batchKey, groupedMeshes);
+                        }
+                        groupedMeshes.push({mesh, batchKey});
+                    }
+                }
+            }
+
+            workSinceTimeCheck++;
+            if (
+                workSinceTimeCheck >= BatchManager.PROGRESSIVE_TIME_CHECK_INTERVAL &&
+                this.now() - startTime >= timeBudgetMs
+            ) {
+                return true;
+            }
+            if (workSinceTimeCheck >= BatchManager.PROGRESSIVE_TIME_CHECK_INTERVAL) workSinceTimeCheck = 0;
+        }
+
+        if (!this.progressiveQueuePrepared) {
+            for (const [batchKey, groupedMeshes] of this.progressiveCandidateGroups) {
+                if (
+                    groupedMeshes.length >= BATCH_MIN_NEW_MESHES_PER_GROUP ||
+                    this.findAvailableBatchGroup(batchKey)
+                ) {
+                    for (let i = 0; i < groupedMeshes.length; i++) {
+                        const candidate = groupedMeshes[i];
+                        if (candidate) this.progressiveNewMeshes.push(candidate);
+                    }
+                }
+            }
+            if (this.progressiveNewMeshes.length > 1) {
+                this.progressiveNewMeshes.sort((a, b) =>
+                    (b.mesh.geometry.attributes.position?.count ?? 0) -
+                    (a.mesh.geometry.attributes.position?.count ?? 0));
+            }
+            this.progressiveCandidateGroups.clear();
+            this.progressiveQueuePrepared = true;
+            if (
+                this.sceneMeshes.length >= BatchManager.PROGRESSIVE_TIME_CHECK_INTERVAL &&
+                this.now() - startTime >= timeBudgetMs &&
+                this.progressiveNewMeshes.length > 0
+            ) return true;
+        }
+
+        let added = 0;
+        let drainWork = 0;
+        while (this.progressiveQueueCursor < this.progressiveNewMeshes.length) {
+            const candidate = this.progressiveNewMeshes[this.progressiveQueueCursor++];
+            if (!candidate) continue;
+            drainWork++;
+            const mesh = candidate.mesh;
+            if (
+                !this.sceneMeshSet.has(mesh) ||
+                this.meshDataMap.has(mesh) ||
+                this.isExcludedOrDescendant(mesh)
+            ) continue;
+            if (!this.canBatch(mesh)) {
+                if (!this.nonBatchableMeshes.has(mesh)) this.retryableMeshes.add(mesh);
+                continue;
+            }
+            const currentBatchKey = this.createMeshBatchKey(mesh);
+            if (currentBatchKey !== candidate.batchKey) {
+                this.invalidateProgressiveBatchWork();
+                return true;
+            }
+            if (this.addMesh(mesh, currentBatchKey)) added++;
+            if (
+                added >= limit ||
+                drainWork >= BatchManager.PROGRESSIVE_TIME_CHECK_INTERVAL &&
+                this.now() - startTime >= timeBudgetMs
+            ) return true;
+            if (drainWork >= BatchManager.PROGRESSIVE_TIME_CHECK_INTERVAL) drainWork = 0;
+        }
+
+        this.progressiveNewMeshes.length = 0;
+        this.progressiveQueueCursor = 0;
+        return false;
     }
 
     private removeStaleMeshes(): void {
         if (this.meshDataMap.size === 0) return;
-        const present = new Set(this.sceneMeshes);
         for (const mesh of this.meshDataMap.keys()) {
-            if (!present.has(mesh)) this.removeMesh(mesh);
+            if (!this.sceneMeshSet.has(mesh)) this.removeMesh(mesh);
         }
     }
 
     private extractMaterialProperties(material: MeshStandardMaterial): MaterialProperties {
-        const props: MaterialProperties = {
-            color: material.color?.clone(),
-            roughness: material.roughness,
-            metalness: material.metalness,
-            opacity: material.opacity,
-            fog: material.fog,
-            transparent: material.transparent,
-            visible: material.visible,
-            emissive: material.emissive?.clone(),
-            emissiveIntensity: material.emissiveIntensity,
-
-            side: material.side,
-            depthWrite: material.depthWrite,
-            depthTest: material.depthTest,
-            blending: material.blending,
-
-            map: material.map,
-            normalMap: material.normalMap,
-            bumpMap: material.bumpMap,
-            displacementMap: material.displacementMap,
-            roughnessMap: material.roughnessMap,
-            metalnessMap: material.metalnessMap,
-            emissiveMap: material.emissiveMap,
-            aoMap: material.aoMap,
-            alphaMap: material.alphaMap,
-            envMap: material.envMap,
-            lightMap: material.lightMap,
-
-            normalScale: new Vector2().copy(material.normalScale),
-            bumpScale: material.bumpScale,
-            displacementScale: material.displacementScale,
-            displacementBias: material.displacementBias,
-            envMapIntensity: material.envMapIntensity,
-            lightMapIntensity: material.lightMapIntensity,
-        };
-
-        return props;
+        return snapshotBatchMaterial(material);
     }
 
     private hasSignificantMaterialChange(oldProps: MaterialProperties, newProps: MeshStandardMaterial): boolean {
-        if (oldProps.fog !== newProps.fog) return true;
-        if (oldProps.side !== newProps.side) return true;
-        if (oldProps.depthWrite !== newProps.depthWrite) return true;
-        if (oldProps.depthTest !== newProps.depthTest) return true;
-        if (oldProps.blending !== newProps.blending) return true;
-
-        if (oldProps.map !== newProps.map) return true;
-        if (oldProps.normalMap !== newProps.normalMap) return true;
-        if (oldProps.bumpMap !== newProps.bumpMap) return true;
-        if (oldProps.displacementMap !== newProps.displacementMap) return true;
-        if (oldProps.roughnessMap !== newProps.roughnessMap) return true;
-        if (oldProps.metalnessMap !== newProps.metalnessMap) return true;
-        if (oldProps.emissiveMap !== newProps.emissiveMap) return true;
-        if (oldProps.aoMap !== newProps.aoMap) return true;
-        if (oldProps.alphaMap !== newProps.alphaMap) return true;
-        if (oldProps.envMap !== newProps.envMap) return true;
-        if (oldProps.lightMap !== newProps.lightMap) return true;
-
-        const nsOld = oldProps.normalScale;
-        const nsNew = newProps.normalScale;
-        if ((nsOld === null || nsOld === undefined) !== (nsNew === null || nsNew === undefined)) return true;
-        if (nsOld && nsNew && !nsOld.equals(nsNew)) return true;
-        if (oldProps.bumpScale !== newProps.bumpScale) return true;
-        if (oldProps.displacementScale !== newProps.displacementScale) return true;
-        if (oldProps.displacementBias !== newProps.displacementBias) return true;
-        if (oldProps.envMapIntensity !== newProps.envMapIntensity) return true;
-        if (oldProps.lightMapIntensity !== newProps.lightMapIntensity) return true;
-
-        return false;
+        return hasSignificantBatchMaterialChange(oldProps, newProps);
     }
 
     /**
@@ -1251,29 +1442,7 @@ export default class BatchManager {
      * @returns true if any per-instance-updatable property changed
      */
     private hasPerInstanceMaterialChange(oldProps: MaterialProperties, newProps: MaterialProperties): boolean {
-        // Compare colors safely (handle nulls and optional equals)
-        const oColor: Color | null = oldProps.color ?? null;
-        const nColor: Color | null = newProps.color ?? null;
-        const colorChanged =
-            oColor === null && nColor !== null ||
-            oColor !== null && nColor === null ||
-            oColor !== null && nColor !== null && !(oColor.equals && oColor.equals(nColor));
-
-        const oEm: Color | null = oldProps.emissive ?? null;
-        const nEm: Color | null = newProps.emissive ?? null;
-        const emissiveChanged =
-            oEm === null && nEm !== null ||
-            oEm !== null && nEm === null ||
-            oEm !== null && nEm !== null && !(oEm.equals && oEm.equals(nEm));
-
-        return (
-            colorChanged ||
-            emissiveChanged ||
-            oldProps.roughness !== newProps.roughness ||
-            oldProps.metalness !== newProps.metalness ||
-            oldProps.opacity !== newProps.opacity ||
-            oldProps.emissiveIntensity !== newProps.emissiveIntensity
-        );
+        return hasPerInstanceBatchMaterialChange(oldProps, newProps);
     }
 
     private getOptimalBatchCapacity(
@@ -1337,20 +1506,48 @@ export default class BatchManager {
      * @returns The matching BatchStat if found, otherwise undefined.
      */
     private selectBatchStatFromUserData(batchKey: string, geometries: BufferGeometry[]): BatchStat | undefined {
-        // Remove all map sections from batchKey that contain unique texture UUIDs
-        const modifiedBatchKey = batchKey.replace(/\|[^|]*?(m|M)ap:[^|]*?\|/g, "|");
+        const modifiedBatchKey = this.normalizeBatchStatKey(batchKey);
         const inputGeometryHashes = geometries.map(g => this.hashGeometry(g));
+        return this.selectBatchStatFromUserDataByHashes(modifiedBatchKey, inputGeometryHashes);
+    }
+
+    private normalizeBatchStatKey(batchKey: string): string {
+        return batchKey
+            .split("|")
+            .filter(part => !this.isTextureMapBatchKeyPart(part))
+            .join("|");
+    }
+
+    private isTextureMapBatchKeyPart(part: string): boolean {
+        const separatorIndex = part.indexOf(":");
+        if (separatorIndex === -1) {
+            return false;
+        }
+
+        const key = part.slice(0, separatorIndex);
+        return key === "map" || key.endsWith("Map");
+    }
+
+    private selectBatchStatFromUserDataByHashes(batchKey: string, inputGeometryHashes: string[]): BatchStat | undefined {
         const userData = (this.scene as SceneWithBatchingUserData).userData;
         const batchingObj = userData?.rendering?.batching as {stats?: BatchStat[]} | undefined;
         const statsArr = batchingObj?.stats;
         if (Array.isArray(statsArr)) {
             return statsArr.find(
                 (s: BatchStat) =>
-                    s.batchKey === modifiedBatchKey &&
+                    s.batchKey === batchKey &&
+                    Array.isArray(s.geometryHashes) &&
                     inputGeometryHashes.some(hash => s.geometryHashes.includes(hash)),
             );
         }
         return undefined;
+    }
+
+    private selectBatchStatFromUserDataByKey(batchKey: string): BatchStat | undefined {
+        const userData = (this.scene as SceneWithBatchingUserData).userData;
+        const batchingObj = userData?.rendering?.batching as {stats?: BatchStat[]} | undefined;
+        const statsArr = batchingObj?.stats;
+        return Array.isArray(statsArr) ? statsArr.find((s: BatchStat) => s.batchKey === batchKey) : undefined;
     }
 
     private hasMatrixChangedSinceLastUpdate(currentMatrix: Matrix4, storedMatrix: Matrix4): boolean {
@@ -1390,6 +1587,8 @@ export default class BatchManager {
         batchKey: string,
         geometry: BufferGeometry,
         material: MeshStandardMaterial,
+        layersMask: number,
+        renderOrder: number,
     ): BatchGroup {
         let batchGroup = this.findAvailableBatchGroup(batchKey);
 
@@ -1398,7 +1597,7 @@ export default class BatchManager {
         }
 
         // console.log(`[BatchManager] All batch groups for ${batchKey} are full, creating new batch group`);
-        batchGroup = this.createBatchGroup(geometry, material, batchKey);
+        batchGroup = this.createBatchGroup(geometry, material, batchKey, layersMask, renderOrder);
 
         let batchGroups = this.batchGroups.get(batchKey);
         if (!batchGroups) {
@@ -1410,79 +1609,147 @@ export default class BatchManager {
         return batchGroup;
     }
 
-    private findBatchGroupForMesh(mesh: Mesh): {batchGroup: BatchGroup} | null {
-        const entry = this.meshDataMap.get(mesh);
-        if (!entry) return null;
-
-        const {batchGroup} = entry;
-
-        return {batchGroup};
-    }
-
-    private getBatchKeyForGroup(batchGroup: BatchGroup): string | null {
-        const existing = batchGroup.key;
-        if (existing) return existing;
-        for (const [key, groups] of this.batchGroups.entries()) {
-            if (groups.includes(batchGroup)) {
-                // cache it for future fast lookup
-                batchGroup.key = key;
-                return key;
-            }
-        }
-        return null;
-    }
-
     private updateBatchedMeshes(): void {
-        for (const mesh of [...this.meshDataMap.keys()]) {
+        this.batchUpdateSerial++;
+        for (const [mesh, entry] of this.meshDataMap) {
+            if (entry.meshData.lastUpdateSerial === this.batchUpdateSerial) continue;
+            entry.meshData.lastUpdateSerial = this.batchUpdateSerial;
+
+            // Static publish-mode meshes are immutable by contract. They still
+            // need the cheap eligibility and structural checks below so a hidden,
+            // disabled, malformed, or structurally edited mesh can safely leave
+            // the batch, but they do not need the full canBatch/material/transform
+            // reconciliation on every frame. Dynamic meshes retain the complete
+            // path below.
+            if (
+                this.isPublishMode &&
+                this.staticMeshes.has(mesh) &&
+                mesh.visible &&
+                mesh.userData?.isBatchable !== false &&
+                mesh.geometry &&
+                !Array.isArray(mesh.material) &&
+                mesh.material &&
+                mesh.geometry.getAttribute("position") &&
+                !this.hasBatchStructureChanged(mesh, entry.meshData)
+            ) {
+                continue;
+            }
+
             if (!this.canBatch(mesh)) {
+                if (!this.nonBatchableMeshes.has(mesh)) this.retryableMeshes.add(mesh);
                 this.removeMesh(mesh);
                 continue;
             }
-            this.updateMeshTransform(mesh);
-            this.updateMeshMaterial(mesh);
+            if (this.hasBatchStructureChanged(mesh, entry.meshData)) {
+                this.removeMesh(mesh);
+                this.addMesh(mesh);
+                continue;
+            }
+            this.updateMeshTransform(mesh, entry);
+            this.updateMeshMaterial(mesh, entry);
         }
+        this.flushDirtyBatchBounds();
+    }
+
+    /**
+     * Recompute aggregate culling spheres only for batches whose membership or
+     * transforms changed. BatchedMesh performs per-instance culling itself, but
+     * the renderer needs this aggregate sphere to reject an entirely offscreen
+     * batch before invoking BatchedMesh.onBeforeRender().
+     */
+    private flushDirtyBatchBounds(): void {
+        for (const batchGroup of this.dirtyBatchBounds) {
+            this.dirtyBatchBounds.delete(batchGroup);
+            if (!batchGroup.boundsDirty || batchGroup.meshes.size === 0) continue;
+
+            const batchedMesh = batchGroup.batchedMesh;
+            try {
+                batchedMesh.computeBoundingSphere();
+                batchGroup.boundsDirty = false;
+                batchedMesh.frustumCulled = true;
+            } catch {
+                // Fail open: per-object culling remains valid and rendering the
+                // batch is preferable to dropping visible gameplay objects.
+                batchedMesh.frustumCulled = false;
+            }
+        }
+    }
+
+    private markBatchBoundsDirty(batchGroup: BatchGroup): void {
+        batchGroup.boundsDirty = true;
+        this.dirtyBatchBounds.add(batchGroup);
+    }
+
+    private hasRetryableMeshBecomeBatchable(): boolean {
+        for (const mesh of this.retryableMeshes) {
+            if (!this.sceneMeshSet.has(mesh) || this.meshDataMap.has(mesh) || this.nonBatchableMeshes.has(mesh)) {
+                this.retryableMeshes.delete(mesh);
+                continue;
+            }
+            if (this.canBatch(mesh)) {
+                this.invalidateProgressiveBatchWork();
+                this.externalSceneMeshesDirty = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private hasBatchStructureChanged(mesh: Mesh, meshData: BatchedMeshData): boolean {
+        const geometry = mesh.geometry;
+        let geometryRevisionChanged = false;
+        if (geometry === meshData.geometry) {
+            const useFrameCache = meshData.geometryUsage.count > 1;
+            const cachedRevision = useFrameCache ? this.geometryFrameRevisions.get(geometry) : undefined;
+            let current: boolean;
+            if (cachedRevision?.serial === this.batchUpdateSerial) {
+                current = cachedRevision.current;
+            } else {
+                current = isGeometryRevisionCurrent(geometry, meshData.geometryRevision);
+                if (useFrameCache) {
+                    this.geometryFrameRevisions.set(geometry, {serial: this.batchUpdateSerial, current});
+                }
+            }
+            geometryRevisionChanged = !current;
+        }
+        return (
+            geometry !== meshData.geometry ||
+            geometryRevisionChanged ||
+            mesh.castShadow !== meshData.castShadow ||
+            mesh.receiveShadow !== meshData.receiveShadow ||
+            mesh.layers.mask !== meshData.layersMask ||
+            mesh.renderOrder !== meshData.renderOrder
+        );
     }
 
     private traverseSceneAnalysis(object: Object3D, meshes: Mesh[], isStaticInherited: boolean): void {
-        if (!object.visible) return;
+        const stack: Array<{object: Object3D; isStaticInherited: boolean}> = [{object, isStaticInherited}];
 
-        // We use === false because by default userData.isBatchable is undefined and meshes are batchable
-        if (object.userData.isBatchable === false || this.isExcluded(object)) {
-            this.collectMaterialsRecursively(object);
-            return;
-        }
+        while (stack.length > 0) {
+            const frame = stack.pop();
+            if (!frame) continue;
 
-        const selfStatic = isStaticInherited || object.userData?.isStatic === true;
+            const current = frame.object;
+            if (!current.visible) continue;
 
-        if (MeshUtils.isMesh(object) && (this.meshDataMap.has(object) || this.canBatch(object))) {
-            meshes.push(object);
-            if (selfStatic) this.staticMeshes.add(object);
-        }
-
-        for (let i = 0; i < object.children.length; i++) {
-            const child = object.children[i];
-            if (child) this.traverseSceneAnalysis(child, meshes, selfStatic);
-        }
-    }
-
-    private collectMaterialsRecursively(object: Object3D): void {
-        if (!object.visible) return;
-
-        if (MeshUtils.isMesh(object)) {
-            if (!Array.isArray(object.material)) {
-                if (object.material) this.materialsToKeepVisible.add(object.material.uuid);
-            } else {
-                const materials = object.material;
-                for (let i = 0; i < materials.length; i++) {
-                    const mat = materials[i];
-                    if (mat) this.materialsToKeepVisible.add(mat.uuid);
-                }
+            // We use === false because by default userData.isBatchable is undefined and meshes are batchable
+            if (current.userData.isBatchable === false || this.isExcluded(current)) {
+                continue;
             }
-        }
 
-        for (let i = 0; i < object.children.length; i++) {
-            const child = object.children[i];
-            if (child) this.collectMaterialsRecursively(child);
+            const selfStatic = frame.isStaticInherited || current.userData?.isStatic === true;
+
+            if (MeshUtils.isMesh(current) && (this.meshDataMap.has(current) || this.canBatch(current))) {
+                meshes.push(current);
+                this.sceneMeshSet.add(current);
+                if (selfStatic) this.staticMeshes.add(current);
+            }
+
+            const children = current.children;
+            for (let i = children.length - 1; i >= 0; i--) {
+                const child = children[i];
+                if (child) stack.push({object: child, isStaticInherited: selfStatic});
+            }
         }
     }
 
@@ -1529,8 +1796,7 @@ export default class BatchManager {
 
         const mergedStats: BatchStat[] = [];
         for (const stat of stats) {
-            // Remove map sections from batchKey that contain unique texture UUIDs
-            const modifiedBatchKey = stat.batchKey.replace(/(m|M)ap:[^|]*?\|/g, "|");
+            const modifiedBatchKey = this.normalizeBatchStatKey(stat.batchKey);
             const batchGroups = this.batchGroups.get(stat.batchKey) || [];
             const geometryHashes: string[] = [];
             for (const group of batchGroups) {
@@ -1539,14 +1805,15 @@ export default class BatchManager {
                 }
             }
 
-            const prev = this.selectBatchStatFromUserData(
+            const prev = this.selectBatchStatFromUserDataByHashes(
                 modifiedBatchKey,
-                batchGroups.flatMap(g => Array.from(g.geometries.values())),
-            );
+                geometryHashes,
+            ) ?? this.selectBatchStatFromUserDataByKey(modifiedBatchKey);
             if (prev) {
+                const prevGeometryHashes = Array.isArray(prev.geometryHashes) ? prev.geometryHashes : [];
                 mergedStats.push({
                     batchKey: modifiedBatchKey,
-                    geometryHashes: [...new Set([...stat.geometryHashes, ...prev.geometryHashes])],
+                    geometryHashes: [...new Set([...geometryHashes, ...prevGeometryHashes])],
                     instanceCount: Math.max(stat.instanceCount, prev.instanceCount),
                     geometryCount: Math.max(stat.geometryCount, prev.geometryCount),
                     usedVertexCount: Math.max(stat.usedVertexCount, prev.usedVertexCount),
@@ -1565,114 +1832,17 @@ export default class BatchManager {
         }
         // Also keep any previous batchKeys not present in current stats
         for (const stat of batchingObj.stats ?? []) {
-            if (!mergedStats.find(s => s.batchKey === stat.batchKey)) {
-                mergedStats.push(stat);
+            const modifiedBatchKey = this.normalizeBatchStatKey(stat.batchKey);
+            if (!mergedStats.find(s => s.batchKey === modifiedBatchKey)) {
+                mergedStats.push(
+                    modifiedBatchKey === stat.batchKey ? stat : {
+                        ...stat,
+                        batchKey: modifiedBatchKey,
+                    },
+                );
             }
         }
         batchingObj.stats = mergedStats;
     }
 
-    private isUnderStatic(object: Object3D | null | undefined): boolean {
-        let current: Object3D | null | undefined = object;
-        while (current) {
-            const ud = current.userData as {isStatic?: boolean} | undefined;
-            if (ud && ud.isStatic === true) return true;
-            current = current.parent;
-        }
-        return false;
-    }
-
-    private findMeshesUsingGeometry(geometry: BufferGeometry): Mesh[] {
-        const result: Mesh[] = [];
-        this.scene.traverse(obj => {
-            if (MeshUtils.isMesh(obj)) {
-                if (obj.geometry === geometry) result.push(obj);
-            }
-        });
-        return result;
-    }
-
-    private isGeometryFullyBatchedAndStatic(geometry: BufferGeometry): boolean {
-        const meshes = this.findMeshesUsingGeometry(geometry);
-        if (meshes.length === 0) return false;
-        for (const m of meshes) {
-            if (!this.isUnderStatic(m)) return false;
-            if (!this.meshDataMap.has(m)) return false;
-        }
-        return true;
-    }
-
-    private cleanGeometryCPU(geometry: BufferGeometry): void {
-        const ud = geometry.userData as {cpuCleaned?: boolean; nonCloneable?: boolean};
-        if (ud.cpuCleaned) return;
-
-        try {
-            const names = Object.keys(geometry.attributes || {});
-            for (const name of names) {
-                if (name === "position") continue;
-                try {
-                    geometry.deleteAttribute(name);
-                } catch {
-                    /* ignore */
-                }
-            }
-            try {
-                geometry.setIndex(null);
-            } catch {
-                /* ignore */
-            }
-        } catch {
-            // ignore
-        }
-
-        ud.cpuCleaned = true;
-        ud.nonCloneable = true;
-
-        // Prevent clone/copy to avoid rehydrating CPU data
-        try {
-            (geometry as unknown as {copy: (...args: unknown[]) => BufferGeometry}).copy = function (): BufferGeometry {
-                try {
-                    console.warn("[BatchManager] Suppressed copy() for CPU-cleaned static geometry.");
-                } catch {
-                    /* noop */
-                }
-                return this as BufferGeometry;
-            };
-        } catch {
-            /* ignore */
-        }
-        try {
-            (geometry as unknown as {clone: (...args: unknown[]) => BufferGeometry}).clone =
-                function (): BufferGeometry {
-                    try {
-                        console.warn("[BatchManager] Suppressed clone() for CPU-cleaned static geometry.");
-                    } catch {
-                        /* noop */
-                    }
-                    return this as BufferGeometry;
-                };
-        } catch {
-            /* ignore */
-        }
-    }
-
-    private cleanStaticGeometriesCPU(): void {
-        if (this.isPublishMode) {
-            return;
-        }
-
-        for (const groups of this.batchGroups.values()) {
-            for (const group of groups) {
-                for (const geom of group.geometries.values()) {
-                    try {
-                        if (this.isGeometryFullyBatchedAndStatic(geom)) {
-                            this.cleanGeometryCPU(geom);
-                        }
-                    } catch {
-                        // ignore
-                    }
-                }
-            }
-        }
-    }
 }

@@ -20,9 +20,9 @@ import (
 
 // SearchModelsRequest represents the request structure for model search
 type SearchModelsRequest struct {
-	UserQuery string `json:"userQuery"`
-	AIProvider  string `json:"aiProvider,omitempty"` // Optional aiProvider selection
-	Provider    string `json:"provider,omitempty"`    // Optional provider selection (local, polyhaven, sketchfab, meshy)
+	UserQuery  string `json:"userQuery"`
+	AIProvider string `json:"aiProvider,omitempty"` // Optional aiProvider selection
+	Provider   string `json:"provider,omitempty"`   // Optional provider selection (local, polyhaven, sketchfab, meshy)
 }
 
 // AssetResult represents a single asset result
@@ -506,7 +506,7 @@ func searchMeshyAssets(ctx context.Context, searchItem helpers.AssetSearchItem) 
 		DownloadURL: taskResult.Model,
 		PreviewURL:  taskResult.Thumbnail,
 		Tags:        []string{},
-		License:     "Proprietary",
+		License:     "Provider Terms",
 		Category:    "Generated",
 	}
 	log.Println("🏁 [Meshy] Returning generated asset successfully.")

@@ -1,6 +1,5 @@
+import {AnimationClip, NumberKeyframeTrack, Object3D} from "three";
 import {VRM, VRMExpressionPresetName} from "@pixiv/three-vrm";
-import * as THREE from "three";
-
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import GameManager from "@stem/editor-oss/behaviors/game/GameManager";
 import {
@@ -8,14 +7,14 @@ import {
     configureAvatarBudgetPolicyFromEngine,
     markObjectForAvatarBudget,
 } from "@stem/editor-oss/core/budget/AvatarBudgetPolicy";
-import {loadMixamoAnimationToVRM} from "@stem/editor-oss/editor/assets/v2/utils/loadMixamoAnimationToVRM";
+import {FrameClock} from "@stem/editor-oss/utils/FrameClock";
 
 type ExtendedVRMExpressionManager = VRM["expressionManager"] & {userData: any};
 export class VRMExpressionController {
     engine: EngineRuntime;
     registeredModels: VRM[] = [];
     activeModels: VRM[] = [];
-    clock: THREE.Clock;
+    clock: FrameClock;
     requestAnimationFrameId: number;
     gameStarted: boolean = false;
     game?: GameManager | null;
@@ -24,7 +23,7 @@ export class VRMExpressionController {
 
     constructor(engine: EngineRuntime) {
         this.engine = engine;
-        this.clock = new THREE.Clock();
+        this.clock = new FrameClock();
         this.requestAnimationFrameId = -1;
     }
 
@@ -48,14 +47,14 @@ export class VRMExpressionController {
         markObjectForAvatarBudget(model.scene, {enabled: true});
     };
 
-    getRegisteredVRMModel = (model: THREE.Object3D) => {
+    getRegisteredVRMModel = (model: Object3D) => {
         return this.registeredModels.find(vrm => vrm.scene.uuid === model.uuid);
     };
 
-    createExpressionTrack = (model: THREE.Object3D, expression: string) => {
+    createExpressionTrack = (model: Object3D, expression: string) => {
         const vrmModel = this.getRegisteredVRMModel(model);
         if (vrmModel && vrmModel.expressionManager) {
-            return new THREE.NumberKeyframeTrack(
+            return new NumberKeyframeTrack(
                 vrmModel.expressionManager.getExpressionTrackName(expression) || expression, // name
                 [0.0, 0.5, 1.0], // times
                 [0.0, 1.0, 0.0],
@@ -65,7 +64,7 @@ export class VRMExpressionController {
         }
     };
 
-    animateModel = (model: THREE.Object3D, clip: THREE.AnimationClip) => {
+    animateModel = (model: Object3D, clip: AnimationClip) => {
         const vrmModel = this.getRegisteredVRMModel(model);
 
         if (vrmModel) {
@@ -77,11 +76,14 @@ export class VRMExpressionController {
         }
     };
 
-    playMixamoAnimation = async (model: THREE.Object3D, animationName: string) => {
+    playMixamoAnimation = async (model: Object3D, animationName: string) => {
         const vrmModel = this.getRegisteredVRMModel(model);
 
         if (vrmModel) {
             try {
+                const {loadMixamoAnimationToVRM} = await import(
+                    "@stem/editor-oss/editor/assets/v2/utils/loadMixamoAnimationToVRM"
+                );
                 const animation = await loadMixamoAnimationToVRM(animationName, vrmModel);
                 if (animation) {
                     this.engine?.animationControl?.playCustomAnimation(model, animation, 1);
@@ -97,7 +99,7 @@ export class VRMExpressionController {
         }
     };
 
-    stopAnimation = (model: THREE.Object3D) => {
+    stopAnimation = (model: Object3D) => {
         const vrmModel = this.getRegisteredVRMModel(model);
 
         if (vrmModel) {
@@ -106,30 +108,39 @@ export class VRMExpressionController {
         }
     };
 
-    update = () => {
+    update = (deltaTime?: number) => {
         if (!this.game || !this.game.scene || !this.gameStarted) {
             return;
         }
 
-        const delta = this.clock?.getDelta() || 0;
+        const delta = deltaTime ?? this.clock.getDelta();
         const camera = this.game.camera;
         configureAvatarBudgetPolicyFromEngine(this.avatarBudgetPolicy, this.engine);
 
         if (this.activeModels.length > 0) {
-            this.activeModels.forEach(vrm => {
-                if (vrm) {
-                    if (camera) {
-                        const decision = this.avatarBudgetPolicy.decide(vrm.scene, camera);
-                        this.avatarBudgetPolicy.applyVisibilityState(vrm.scene, decision);
-                        if (!this.avatarBudgetPolicy.shouldRunExpressionUpdate(vrm.scene, decision, delta)) return;
+            if (camera) {
+                this.avatarBudgetPolicy.beginFrame(camera);
+            }
+            try {
+                this.activeModels.forEach(vrm => {
+                    if (vrm) {
+                        if (camera) {
+                            const decision = this.avatarBudgetPolicy.decide(vrm.scene, camera);
+                            this.avatarBudgetPolicy.applyVisibilityState(vrm.scene, decision);
+                            if (!this.avatarBudgetPolicy.shouldRunExpressionUpdate(vrm.scene, decision, delta)) return;
+                        }
+                        if (this.subtleMovementEnabled) {
+                            this.applySubtleFaceMovement(vrm, delta);
+                        }
+                        vrm.update(delta);
+                        vrm.expressionManager?.update();
                     }
-                    if (this.subtleMovementEnabled) {
-                        this.applySubtleFaceMovement(vrm, delta);
-                    }
-                    vrm.update(delta);
-                    vrm.expressionManager?.update();
+                });
+            } finally {
+                if (camera) {
+                    this.avatarBudgetPolicy.endFrame();
                 }
-            });
+            }
         }
     };
 

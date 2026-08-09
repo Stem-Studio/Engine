@@ -3,7 +3,6 @@ package byok
 import (
 	"encoding/json"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -94,27 +93,16 @@ func TestCapabilitiesEnvBeatsByokSession(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesBuildModeFromEnv asserts the build-mode field reflects the
-// BUILD_MODE env var and defaults to "integrated".
-func TestCapabilitiesBuildModeFromEnv(t *testing.T) {
-	for _, mode := range []string{"oss", "integrated", ""} {
-		t.Run("BUILD_MODE="+mode, func(t *testing.T) {
-			t.Setenv("BUILD_MODE", mode)
-			req := httptest.NewRequest("GET", "/api/AI/Capabilities", nil)
-			rec := httptest.NewRecorder()
-			CapabilitiesHandler(rec, req)
+func TestCapabilitiesReportsOpenSourceBuildMode(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/AI/Capabilities", nil)
+	rec := httptest.NewRecorder()
+	CapabilitiesHandler(rec, req)
 
-			var got CapabilitiesResponse
-			if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			want := mode
-			if want == "" {
-				want = "integrated"
-			}
-			if strings.ToLower(got.BuildMode) != want {
-				t.Errorf("BuildMode=%q, want %q", got.BuildMode, want)
-			}
-		})
+	var got CapabilitiesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.BuildMode != "oss" {
+		t.Errorf("BuildMode=%q, want oss", got.BuildMode)
 	}
 }

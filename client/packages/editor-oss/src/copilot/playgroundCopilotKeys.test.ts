@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../ai", () => ({
+vi.mock("../ai/aiBackendFactory", () => ({
     getBYOKKeyStore: () => mocks.store,
 }));
 

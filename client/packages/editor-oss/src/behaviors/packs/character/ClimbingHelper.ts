@@ -1,10 +1,11 @@
-import {Box3, Matrix3, Object3D, Raycaster, Scene, Vector3} from "three";
+import {Box3, Matrix3, Object3D, Raycaster, Scene, Vector3, type Intersection} from "three";
 
 import CollisionDetector from '../../../behaviors/collisions/CollisionDetector';
 import { ICameraControl } from '../../../controls/CameraControl';
 import { CollisionBehavior, IPhysics } from '../../../physics/common/types';
 import { COLLISION_TYPE } from '@stem/editor-oss/types/editor';
 import BoundingBoxUtil from '@stem/editor-oss/utils/BoundingBoxUtil';
+import {findObjectDepthFirst} from '@stem/editor-oss/utils/SceneTraverser';
 import TagUtil from '@stem/editor-oss/utils/TagUtil';
 
 /**
@@ -22,9 +23,18 @@ export class ClimbingHelper {
     private climbable: Object3D | null = null;
 
     private readonly localCharacterBox = new Box3();
+    private readonly worldCharacterBox = new Box3();
     private readonly worldClimbableBox = new Box3();
     private readonly normalMatrix = new Matrix3();
     private readonly worldNormal = new Vector3();
+    private readonly raycaster = new Raycaster();
+    private readonly raycastIntersections: Intersection[] = [];
+    private readonly characterPosition = new Vector3();
+    private readonly climbablePosition = new Vector3();
+    private readonly climbableDirection = new Vector3();
+    private readonly climbableBoundsScratch = new Box3();
+    private readonly climbVelocity = new Vector3();
+    private readonly gravityVector = new Vector3();
 
     private readonly onObjectAddedListener = this.onObjectAdded.bind(this);
     private readonly onObjectRemovedListener = this.onObjectRemoved.bind(this);
@@ -100,7 +110,7 @@ export class ClimbingHelper {
 
         this.climbable = null;
 
-        this.physics.setPlayerGravity(this.character.uuid, new Vector3(0, this.playerGravity, 0));
+        this.physics.setPlayerGravity(this.character.uuid, this.gravityVector.set(0, this.playerGravity, 0));
 
         this.physics.setCollisionBehavior(this.character.uuid, CollisionBehavior.Regular);
     }
@@ -116,7 +126,7 @@ export class ClimbingHelper {
             this.moveDown(dt);
         } else {
             // Clear the vertical velocity
-            this.physics.movePlayerObject(this.character.uuid, new Vector3(0, 0, 0), false);
+            this.physics.movePlayerObject(this.character.uuid, this.climbVelocity.set(0, 0, 0), false);
         }
     }
 
@@ -127,7 +137,7 @@ export class ClimbingHelper {
 
         const upSpeed = !this.isAtTop() ? this.climbingSpeed : 0;
 
-        this.physics.movePlayerObject(this.character.uuid, new Vector3(0, upSpeed * dt, 0), false);
+        this.physics.movePlayerObject(this.character.uuid, this.climbVelocity.set(0, upSpeed * dt, 0), false);
     }
 
     public moveDown(dt: number) {
@@ -140,7 +150,7 @@ export class ClimbingHelper {
             return;
         }
 
-        this.physics.movePlayerObject(this.character.uuid, new Vector3(0, -this.climbingSpeed * dt, 0), false);
+        this.physics.movePlayerObject(this.character.uuid, this.climbVelocity.set(0, -this.climbingSpeed * dt, 0), false);
     }
 
     public isAtTop() {
@@ -153,7 +163,7 @@ export class ClimbingHelper {
         // accurate when the character is climbing. So instead we do a raycast
         // to determine if the character is on the ground.
         const worldCharacterBox = this.getWorldCharacterBox();
-        const raycaster = new Raycaster();
+        const raycaster = this.raycaster;
         // Bottom center of character's bounding box
         raycaster.ray.origin.set(
             (worldCharacterBox.min.x + worldCharacterBox.max.x) / 2,
@@ -164,7 +174,9 @@ export class ClimbingHelper {
         raycaster.far = (worldCharacterBox.max.y - worldCharacterBox.min.y) / 4;
 
         // TODO: can we raycast against a smaller subset of objects?
-        const intersections = raycaster.intersectObject(this.scene, true);
+        const intersections = this.raycastIntersections;
+        intersections.length = 0;
+        raycaster.intersectObject(this.scene, true, intersections);
         for (const intersection of intersections) {
             // Ignore intersections with the character and instersections
             // without a normal.
@@ -179,10 +191,12 @@ export class ClimbingHelper {
             this.worldNormal.normalize();
 
             if (this.worldNormal.dot(ClimbingHelper.upVector) > Math.cos(this.groundNormalAngle)) {
+                intersections.length = 0;
                 return true;
             }
         }
 
+        intersections.length = 0;
         return false;
     }
 
@@ -193,9 +207,9 @@ export class ClimbingHelper {
     ): boolean {
         // TODO: this could be improved by taking into account the bounds of the
         // climbable object, not just its position.
-        const characterPosition = new Vector3();
-        const climbablePosition = new Vector3();
-        const climbableDirection = new Vector3();
+        const characterPosition = this.characterPosition;
+        const climbablePosition = this.climbablePosition;
+        const climbableDirection = this.climbableDirection;
         this.character.getWorldPosition(characterPosition);
         climbable.getWorldPosition(climbablePosition);
         climbableDirection.subVectors(climbablePosition, characterPosition);
@@ -227,7 +241,7 @@ export class ClimbingHelper {
         }
 
         // If the climbable is too short, don't start climbing.
-        const climbableBox = new Box3().setFromObject(climbable);
+        const climbableBox = this.climbableBoundsScratch.setFromObject(climbable);
         const climbableHeight = climbableBox.max.y - climbableBox.min.y;
         const characterBox = this.getWorldCharacterBox();
         const characterHeight = characterBox.max.y - characterBox.min.y;
@@ -246,7 +260,7 @@ export class ClimbingHelper {
 
     private getWorldCharacterBox() {
         this.character.updateMatrixWorld();
-        return this.localCharacterBox.clone().applyMatrix4(this.character.matrixWorld);
+        return this.worldCharacterBox.copy(this.localCharacterBox).applyMatrix4(this.character.matrixWorld);
     }
 
     private addListener(climbable: Object3D) {
@@ -290,7 +304,7 @@ export class ClimbingHelper {
     }
 
     private onCollision(objectUuid: string) {
-        const object = this.scene.getObjectByProperty("uuid", objectUuid);
+        const object = findObjectDepthFirst(this.scene, candidate => candidate.uuid === objectUuid);
         if (!object) {
             return;
         }
@@ -304,9 +318,7 @@ export class ClimbingHelper {
     }
 
     private getClimbableObjects(): Object3D[] {
-        const climbables = TagUtil.getObjectsByTag(this.scene, "climbable");
-        const physicalClimbables = TagUtil.getObjectsByTag(this.scene, "physics.climbable");
-        return climbables.concat(physicalClimbables);
+        return TagUtil.getObjectsByTag(this.scene, ["climbable", "physics.climbable"]);
     }
 
     private isObjectClimbable(object: Object3D): boolean {

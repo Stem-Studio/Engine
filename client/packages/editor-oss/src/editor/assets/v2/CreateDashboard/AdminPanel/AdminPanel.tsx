@@ -10,7 +10,8 @@ import {Templates} from "./Templates/Templates";
 import {URLMapping} from "./URLMapping/URLMapping";
 import {WhitelistManagement} from "./Whitelist/WhitelistManagement";
 import {ROUTES} from "@web-shared/routes";
-import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {Container} from "../SettingsPage/SettingsPage.style";
 

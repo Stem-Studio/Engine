@@ -1,4 +1,4 @@
-import { Matrix3, Plane, Vector4 } from "three/webgpu";
+import { Matrix3, Plane, Vector4 } from "three";
 
 const _plane = /*@__PURE__*/ new Plane();
 

@@ -6,7 +6,6 @@ import type {FileData} from "../../types/file";
 
 const mocks = vi.hoisted(() => ({
     navigate: vi.fn(),
-    forkScene: vi.fn(),
     updateScene: vi.fn(),
     getScene: vi.fn(),
     saveTemplateIds: vi.fn(),
@@ -36,7 +35,6 @@ vi.mock("@stem/network/api/rewards", () => ({
 }));
 
 vi.mock("@stem/network/api/scene/v2", () => ({
-    forkScene: (...args: unknown[]) => mocks.forkScene(...args),
     getScene: (...args: unknown[]) => mocks.getScene(...args),
     updateScene: (...args: unknown[]) => mocks.updateScene(...args),
 }));
@@ -50,9 +48,15 @@ vi.mock("@stem/network/api/updateUser", () => ({
     addLikedGame: (...args: unknown[]) => mocks.addLikedGame(...args),
 }));
 
-vi.mock("../../../../../context", () => ({
+vi.mock("../../../../../context/AppGlobalContext", () => ({
     useAppGlobalContext: () => ({openSceneHistoryModal: vi.fn()}),
+}));
+
+vi.mock("../../../../../context/AuthorizationContext", () => ({
     useAuthorizationContext: () => mocks.auth,
+}));
+
+vi.mock("../../../../../context/HomepageContext", () => ({
     useHomepageContext: () => ({setShouldRefreshDashboard: vi.fn()}),
 }));
 
@@ -80,7 +84,6 @@ vi.mock("../../../../../utils/authRedirect", () => ({
 
 vi.mock("../../../../../utils/productAnalytics", () => ({
     PRODUCT_ANALYTICS_EVENTS: {
-        GAME_REMIX_CLICKED: "game_remix_clicked",
         GAME_PLAY_CLICKED: "game_play_clicked",
         GAME_LIKE_CLICKED: "game_like_clicked",
         GAME_SHARE_CLICKED: "game_share_clicked",
@@ -126,7 +129,7 @@ const createScene = (overrides: Partial<FileData> = {}): FileData => ({
     ...overrides,
 });
 
-describe("OverviewActionBar remix visibility", () => {
+describe("OverviewActionBar in the OSS build", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.auth.isAdmin = false;
@@ -148,7 +151,7 @@ describe("OverviewActionBar remix visibility", () => {
         }) as unknown as typeof IntersectionObserver;
     });
 
-    it("disables remix for non-owner editors when the scene is not cloneable", () => {
+    it("does not render hosted remix UI for a non-cloneable scene", () => {
         mocks.auth.isAdmin = true;
 
         render(
@@ -160,11 +163,11 @@ describe("OverviewActionBar remix visibility", () => {
             />,
         );
 
-        const remixButton = screen.getByTestId("overview-remix") as HTMLButtonElement;
-        expect(remixButton.disabled).toBe(true);
+        expect(screen.queryByTestId("overview-remix")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", {name: /remix/i})).not.toBeInTheDocument();
     });
 
-    it("shows remix for non-owners only when the scene is explicitly cloneable", () => {
+    it("does not render hosted remix UI even when scene metadata is cloneable", () => {
         render(
             <OverviewActionBar
                 scene={createScene({IsCloneable: true})}
@@ -174,7 +177,7 @@ describe("OverviewActionBar remix visibility", () => {
             />,
         );
 
-        const remixButton = screen.getByTestId("overview-remix") as HTMLButtonElement;
-        expect(remixButton.disabled).toBe(false);
+        expect(screen.queryByTestId("overview-remix")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", {name: /remix/i})).not.toBeInTheDocument();
     });
 });

@@ -2,10 +2,9 @@ import {RefObject, useRef, useState} from "react";
 import styled from "styled-components";
 import {useOnClickOutside} from "usehooks-ts";
 
-import {useAuthorizationContext, useHomepageContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import {showToast} from "@stem/editor-oss/showToast";
-import {DashboardAssetPackImportUtils} from "@stem/editor-oss/utils/DashboardAssetPackImportUtils";
-import {DashboardImportUtils} from "@stem/editor-oss/utils/DashboardImportUtils";
 import {ImportProgressDialog, type ImportProgress} from "../common/ImportProgressDialog";
 import {MissingTextureDialog} from "../common/MissingTextureDialog";
 import {TextureVariantDialog} from "../common/TextureVariantDialog";
@@ -52,85 +51,97 @@ export const ImportIcon = () => {
 
     useOnClickOutside(ref as RefObject<HTMLElement>, () => setOptionsVisible(false));
 
-    const handleImportAssetPack = () => {
+    const handleImportAssetPack = async () => {
         if (isImporting || !isAdmin) return;
 
         setImportDialogTitle("Importing Asset Pack");
 
-        DashboardAssetPackImportUtils.dashboardAssetPackImport(
-            () => {
-                setIsImporting(true);
-                setImportProgress({
-                    currentStep: "Initializing import...",
-                });
-            },
-            result => {
-                setIsImporting(false);
-                setImportProgress(null);
-
-                if (result.success) {
-                    if (result.failedCount && result.failedCount > 0) {
-                        const total = (result.successCount ?? 0) + result.failedCount;
-                        const failedNames = result.failedAssets?.join(", ") ?? "";
-                        showToast({
-                            type: "warning",
-                            title: `Imported ${result.successCount} of ${total} assets`,
-                            body: `Failed: ${failedNames}`,
-                        });
-                    } else {
-                        showToast({type: "success", title: "Asset pack imported and published"});
-                        setShowTemplatePanel(false);
-                    }
-                    setShouldRefreshDashboard(true);
-                } else {
-                    showToast({
-                        type: "error",
-                        body: result.error || "Asset pack import failed",
+        try {
+            const {DashboardAssetPackImportUtils} = await import("@stem/editor-oss/utils/DashboardAssetPackImportUtils");
+            DashboardAssetPackImportUtils.dashboardAssetPackImport(
+                () => {
+                    setIsImporting(true);
+                    setImportProgress({
+                        currentStep: "Initializing import...",
                     });
-                    console.error("Asset pack import failed:", result.error);
-                }
-            },
-            progress => {
-                setImportProgress(progress);
-            },
-        );
+                },
+                result => {
+                    setIsImporting(false);
+                    setImportProgress(null);
+
+                    if (result.success) {
+                        if (result.failedCount && result.failedCount > 0) {
+                            const total = (result.successCount ?? 0) + result.failedCount;
+                            const failedNames = result.failedAssets?.join(", ") ?? "";
+                            showToast({
+                                type: "warning",
+                                title: `Imported ${result.successCount} of ${total} assets`,
+                                body: `Failed: ${failedNames}`,
+                            });
+                        } else {
+                            showToast({type: "success", title: "Asset pack imported and published"});
+                            setShowTemplatePanel(false);
+                        }
+                        setShouldRefreshDashboard(true);
+                    } else {
+                        showToast({
+                            type: "error",
+                            body: result.error || "Asset pack import failed",
+                        });
+                        console.error("Asset pack import failed:", result.error);
+                    }
+                },
+                progress => {
+                    setImportProgress(progress);
+                },
+            );
+        } catch (error) {
+            showToast({type: "error", body: "Failed to load asset pack importer"});
+            console.error("Failed to load asset pack importer:", error);
+        }
     };
 
-    const handleImportGame = () => {
+    const handleImportGame = async () => {
         if (isImporting) return;
 
         setImportDialogTitle("Importing Scene");
 
-        DashboardImportUtils.dashboardSceneImport(
-            () => {
-                setIsImporting(true);
-                setImportProgress({
-                    currentStep: "Initializing import...",
-                });
-            },
-            result => {
-                setIsImporting(false);
-                setImportProgress(null);
-
-                if (result.success) {
-                    showToast({type: "success", title: "Scene imported successfully"});
-                    // Refresh the dashboard to show the newly imported scene
-                    setShouldRefreshDashboard(true);
-                    setShowTemplatePanel(false);
-                } else {
-                    showToast({
-                        type: "error",
-                        body: result.error || "Import failed",
+        try {
+            const {DashboardImportUtils} = await import("@stem/editor-oss/utils/DashboardImportUtils");
+            DashboardImportUtils.dashboardSceneImport(
+                () => {
+                    setIsImporting(true);
+                    setImportProgress({
+                        currentStep: "Initializing import...",
                     });
-                    console.error("Import failed:", result.error);
-                }
-            },
-            window.location.origin, // Use current domain as options server
-            progress => {
-                setImportProgress(progress);
-            },
-            {isAdmin},
-        );
+                },
+                result => {
+                    setIsImporting(false);
+                    setImportProgress(null);
+
+                    if (result.success) {
+                        showToast({type: "success", title: "Scene imported successfully"});
+                        // Refresh the dashboard to show the newly imported scene
+                        setShouldRefreshDashboard(true);
+                        setShowTemplatePanel(false);
+                    } else {
+                        showToast({
+                            type: "error",
+                            body: result.error || "Import failed",
+                        });
+                        console.error("Import failed:", result.error);
+                    }
+                },
+                window.location.origin, // Use current domain as options server
+                progress => {
+                    setImportProgress(progress);
+                },
+                {isAdmin},
+            );
+        } catch (error) {
+            showToast({type: "error", body: "Failed to load scene importer"});
+            console.error("Failed to load scene importer:", error);
+        }
     };
 
     const importOptions = [
@@ -160,34 +171,78 @@ export const ImportIcon = () => {
                     onCancel={handleTextureContinue}
                 />
             )}
-            <button
-                className="reset-css"
+            <ImportButton
+                type="button"
+                aria-label="Import project"
+                disabled={isImporting}
+                $active={optionsVisible}
                 onClick={isAdmin ? () => setOptionsVisible(true) : handleImportGame}
-                style={{position: "relative"}}
                 ref={ref}
             >
                 <img
                     src={importIcon}
-                    alt="import game"
+                    alt=""
+                    aria-hidden="true"
                 />
                 {optionsVisible && isAdmin && (
                     <Menu>
                         {importOptions.map(({label, handler}) => (
                             <MenuItem
+                                type="button"
                                 key={label}
                                 disabled={isImporting}
                                 onClick={handler}
-                                className="reset-css"
                             >
                                 {isImporting ? "Importing..." : label}
                             </MenuItem>
                         ))}
                     </Menu>
                 )}
-            </button>
+            </ImportButton>
         </>
     );
 };
+
+const ImportButton = styled.button<{$active?: boolean}>`
+    position: relative;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid ${({$active}) => ($active ? "rgba(248, 250, 252, 0.28)" : "transparent")};
+    border-radius: 4px;
+    background: ${({$active}) => ($active ? "rgba(248, 250, 252, 0.08)" : "transparent")};
+    color: #f8fafc;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    appearance: none;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+
+    img {
+        width: 18px;
+        height: 18px;
+        display: block;
+        object-fit: contain;
+        pointer-events: none;
+    }
+
+    &:hover:not(:disabled) {
+        border-color: rgba(248, 250, 252, 0.24);
+        background: rgba(248, 250, 252, 0.08);
+    }
+
+    &:focus-visible {
+        outline: 2px solid rgba(248, 250, 252, 0.42);
+        outline-offset: 2px;
+    }
+
+    &:disabled {
+        opacity: 0.55;
+        cursor: wait;
+    }
+`;
 
 const Menu = styled.div`
     position: absolute;
@@ -204,6 +259,8 @@ const Menu = styled.div`
     overflow: hidden;
 `;
 const MenuItem = styled.button`
+    border: 0;
+    background: transparent;
     padding: 12px 16px;
     font-size: var(--theme-font-size-s);
     font-weight: var(--theme-font-regular);

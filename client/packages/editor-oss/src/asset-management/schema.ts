@@ -1,10 +1,10 @@
-import z from 'zod';
+import z from 'zod/v3';
 
 import { AssetDerivativeType, AssetType } from '@stem/network/api/asset';
 
 export const AssetSchema = z.object({
   id: z.string(),
-  type: z.enum(AssetType),
+  type: z.nativeEnum(AssetType),
   format: z.string(),
   contentType: z.string(),
   name: z.string(),
@@ -26,7 +26,7 @@ export const AssetDerivativeSchema = z.object({
   id: z.string(),
   assetId: z.string(),
   revisionId: z.string(),
-  type: z.enum(AssetDerivativeType),
+  type: z.nativeEnum(AssetDerivativeType),
   format: z.string(),
   contentType: z.string(),
   contentEncoding: z.string().optional(),

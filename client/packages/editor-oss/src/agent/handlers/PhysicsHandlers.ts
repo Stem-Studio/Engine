@@ -2,22 +2,17 @@ import * as THREE from "three";
 
 import EngineRuntime from "../../EngineRuntime";
 import {getPhysics} from "../../physics/common/getPhysics";
-import {PhysicsEngineType} from "../../physics/common/types";
+import {isPhysicsEngineType, PhysicsEngineType} from "../../physics/common/types";
 import {PhysicsEngineFactory} from "../../physics/PhysicsEngineFactory";
+import {findObjectByUuidOrNameDepthFirst} from "../../utils/SceneTraverser";
 import {CommandResult} from "../types/ACPTypes";
 
-const VALID_PHYSICS_ENGINES: PhysicsEngineType[] = [
-    PhysicsEngineType.Ammo,
-    PhysicsEngineType.Rapier,
-    PhysicsEngineType.Jolt,
-    PhysicsEngineType.PhysX,
-];
+const VALID_PHYSICS_ENGINES = Object.values(PhysicsEngineType);
 
 function normalizePhysicsEngineInput(value: unknown): PhysicsEngineType | null {
     if (typeof value !== "string") return null;
     const lowered = value.trim().toLowerCase();
-    const match = VALID_PHYSICS_ENGINES.find(engine => engine === lowered);
-    return match ?? null;
+    return isPhysicsEngineType(lowered) ? lowered : null;
 }
 
 /**
@@ -333,15 +328,7 @@ export class PhysicsHandlers {
     }
 
     private findObject(identifier: string): THREE.Object3D | null {
-        // Try by UUID first
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-
-        // Try by name if UUID search fails
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
-
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
     }
 
     private compactObject<T extends Record<string, unknown>>(value: T): Partial<T> {

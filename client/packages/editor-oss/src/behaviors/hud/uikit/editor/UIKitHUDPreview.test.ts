@@ -69,10 +69,6 @@ vi.mock("@pmndrs/pointer-events", () => ({
     }),
 }));
 
-vi.mock("../../../../constants/RenderOrder", () => ({
-    RenderOrder: {UI: 100},
-}));
-
 vi.mock("../screens/UIKitStartMenu", () => ({
     UIKitStartMenu: class {
         container = mockScreenContainer;

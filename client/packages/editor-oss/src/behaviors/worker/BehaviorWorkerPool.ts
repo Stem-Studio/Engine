@@ -25,6 +25,7 @@ export class BehaviorWorkerPool {
     private count: number;
     private busy: Set<number> = new Set();
     private queue: Array<{type: string; data: unknown}> = [];
+    private queueHead = 0;
 
     constructor(behavior: Behavior, label: string, options: {count: number}) {
         this.behavior = behavior;
@@ -106,6 +107,7 @@ export class BehaviorWorkerPool {
         this.bridges = [];
         this.busy.clear();
         this.queue = [];
+        this.queueHead = 0;
     }
 
     private findFree(): number {
@@ -116,15 +118,32 @@ export class BehaviorWorkerPool {
     }
 
     private drainQueue(): void {
-        while (this.queue.length > 0) {
+        while (this.queueHead < this.queue.length) {
             const idx = this.findFree();
-            if (idx === -1) return;
-            const job = this.queue.shift();
-            if (!job) return;
+            if (idx === -1) {
+                this.compactQueueIfNeeded();
+                return;
+            }
+            const job = this.queue[this.queueHead++]!;
             const bridge = this.bridges[idx];
-            if (!bridge) return;
+            if (!bridge) {
+                this.compactQueueIfNeeded();
+                return;
+            }
             this.busy.add(idx);
             bridge.sendMessage(job.type, job.data);
+        }
+
+        this.compactQueueIfNeeded();
+    }
+
+    private compactQueueIfNeeded(): void {
+        if (this.queueHead >= this.queue.length) {
+            this.queue.length = 0;
+            this.queueHead = 0;
+        } else if (this.queueHead >= 1024 && this.queueHead * 2 >= this.queue.length) {
+            this.queue.splice(0, this.queueHead);
+            this.queueHead = 0;
         }
     }
 }

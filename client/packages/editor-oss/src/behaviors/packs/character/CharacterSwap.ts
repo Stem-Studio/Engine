@@ -1,7 +1,7 @@
-import { Object3D} from 'three';
+import {Object3D} from "three";
 
-import GameManager from '../../../behaviors/game/GameManager';
-import RangeDetector from '../../../behaviors/range/RangeDetector';
+import GameManager from "../../../behaviors/game/GameManager";
+import RangeDetector from "../../../behaviors/range/RangeDetector";
 
 export class CharacterSwap {
     
@@ -47,7 +47,7 @@ export class CharacterSwap {
             return;
         }
 
-        if (this.rangeDetector?.isInRange() && this.game!.player!.userData.pressE) {
+        if (this.rangeDetector.isTargetInRange && player.userData.pressE) {
             this.swapCharacterControl(player);
         }
     }

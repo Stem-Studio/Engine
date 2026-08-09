@@ -34,6 +34,32 @@ describe("UniformSpatialGrid", () => {
             expect(customGrid.entityCount).toBe(1);
             customGrid.dispose();
         });
+
+        it("should fall back to the default cell size for invalid values", () => {
+            const invalidGrids = [
+                new UniformSpatialGrid(0),
+                new UniformSpatialGrid(-10),
+                new UniformSpatialGrid(Number.NaN),
+            ];
+
+            for (const invalidGrid of invalidGrids) {
+                const obj1 = new Object3D();
+                obj1.position.set(24, 0, 0);
+                obj1.updateMatrixWorld();
+                invalidGrid.update("entity1", obj1);
+
+                const obj2 = new Object3D();
+                obj2.position.set(26, 0, 0);
+                obj2.updateMatrixWorld();
+                invalidGrid.update("entity2", obj2);
+
+                const results = invalidGrid.queryRadius(new Vector3(25, 0, 0), 5);
+                expect(results).toContain("entity1");
+                expect(results).toContain("entity2");
+
+                invalidGrid.dispose();
+            }
+        });
     });
 
     describe("update", () => {
@@ -80,7 +106,27 @@ describe("UniformSpatialGrid", () => {
 
             // Should still be in one cell only
             expect(grid.entityCount).toBe(1);
-            // Cell count may be 1 or 2 depending on cleanup
+            expect(grid.cellCount).toBe(1);
+        });
+
+        it("reuses the tracked cell record when an entity crosses cell boundaries", () => {
+            const obj = new Object3D();
+            obj.position.set(10, 0, 0);
+            obj.updateMatrixWorld();
+            grid.update("entity1", obj);
+
+            const records = (grid as unknown as {entityCells: Map<string, unknown>}).entityCells;
+            const originalRecord = records.get("entity1");
+
+            obj.position.set(30, 0, 0);
+            obj.updateMatrixWorld();
+            grid.update("entity1", obj);
+
+            expect(records.get("entity1")).toBe(originalRecord);
+            expect(grid.queryRadius(new Vector3(30, 0, 0), 1)).toEqual(["entity1"]);
+            expect(grid.queryRadius(new Vector3(10, 0, 0), 1)).toEqual([]);
+            expect(grid.entityCount).toBe(1);
+            expect(grid.cellCount).toBe(1);
         });
 
         it("should handle fast path when entity stays in same cell", () => {
@@ -99,6 +145,26 @@ describe("UniformSpatialGrid", () => {
             // Position should be updated
             expect(grid.getPosition("entity1")?.x).toBeCloseTo(12, 5);
             // Cell count should not increase
+            expect(grid.cellCount).toBe(initialCellCount);
+        });
+
+        it("should refresh Object3D reference when entity stays in same cell", () => {
+            const oldObj = new Object3D();
+            oldObj.position.set(10, 0, 0);
+            oldObj.updateMatrixWorld();
+            grid.update("entity1", oldObj);
+
+            const initialCellCount = grid.cellCount;
+
+            const newObj = new Object3D();
+            newObj.position.set(12, 0, 0);
+            newObj.updateMatrixWorld();
+            grid.update("entity1", newObj);
+
+            expect(grid.getObject("entity1")).toBe(newObj);
+            expect(grid.getObject("entity1")).not.toBe(oldObj);
+            expect(grid.getPosition("entity1")?.x).toBeCloseTo(12, 5);
+            expect(grid.entityCount).toBe(1);
             expect(grid.cellCount).toBe(initialCellCount);
         });
 
@@ -124,6 +190,78 @@ describe("UniformSpatialGrid", () => {
             grid.update("entity1", obj);
 
             expect(grid.getObject("entity1")).toBe(obj);
+        });
+
+        it("reuses clean shared-ancestor validation within a frame", () => {
+            const root = new Object3D();
+            const sharedParent = new Object3D();
+            root.add(sharedParent);
+            const children = Array.from({length: 100}, () => {
+                const child = new Object3D();
+                sharedParent.add(child);
+                return child;
+            });
+            root.updateMatrixWorld(true);
+
+            let rootStateReads = 0;
+            let rootNeedsUpdate = root.matrixWorldNeedsUpdate;
+            Object.defineProperty(root, "matrixWorldNeedsUpdate", {
+                configurable: true,
+                get: () => {
+                    rootStateReads++;
+                    return rootNeedsUpdate;
+                },
+                set: value => {
+                    rootNeedsUpdate = value;
+                },
+            });
+
+            grid.beginFrame();
+            for (let i = 0; i < children.length; i++) {
+                grid.update(`entity-${i}`, children[i]!);
+            }
+            grid.endFrame();
+
+            expect(rootStateReads).toBe(1);
+            expect(grid.entityCount).toBe(children.length);
+        });
+
+        it("refreshes every tracked sibling below an ancestor that moved this frame", () => {
+            const root = new Object3D();
+            const movingParent = new Object3D();
+            const childA = new Object3D();
+            const childB = new Object3D();
+            childA.position.x = 1;
+            childB.position.x = 2;
+            root.add(movingParent);
+            movingParent.add(childA, childB);
+            root.updateMatrixWorld(true);
+
+            movingParent.position.x = 10;
+            movingParent.updateMatrix();
+
+            grid.beginFrame();
+            grid.update("child-a", childA);
+            grid.update("child-b", childB);
+            grid.endFrame();
+
+            expect(grid.getPosition("child-a")?.x).toBeCloseTo(11);
+            expect(grid.getPosition("child-b")?.x).toBeCloseTo(12);
+        });
+
+        it("does not retain frame-cache assumptions for standalone updates", () => {
+            const parent = new Object3D();
+            const child = new Object3D();
+            child.position.x = 1;
+            parent.add(child);
+            parent.updateMatrixWorld(true);
+            grid.update("child", child);
+
+            parent.position.x = 20;
+            parent.updateMatrix();
+            grid.update("child", child);
+
+            expect(grid.getPosition("child")?.x).toBeCloseTo(21);
         });
     });
 
@@ -223,6 +361,47 @@ describe("UniformSpatialGrid", () => {
             expect(results).toContain("entity1");
             expect(results).toContain("entity2");
         });
+
+        it("should reuse an optional target array for allocation-free radius queries", () => {
+            const near = new Object3D();
+            near.position.set(5, 0, 0);
+            near.updateMatrixWorld();
+            grid.update("near", near);
+
+            const far = new Object3D();
+            far.position.set(100, 0, 0);
+            far.updateMatrixWorld();
+            grid.update("far", far);
+
+            const target = ["stale"];
+            const first = grid.queryRadius(new Vector3(0, 0, 0), 10, target);
+            expect(first).toBe(target);
+            expect(target).toEqual(["near"]);
+
+            const second = grid.queryRadius(new Vector3(100, 0, 0), 1, target);
+            expect(second).toBe(target);
+            expect(target).toEqual(["far"]);
+        });
+
+        it("should return the cleared target for invalid radius queries", () => {
+            const obj = new Object3D();
+            obj.position.set(0, 0, 0);
+            obj.updateMatrixWorld();
+            grid.update("entity1", obj);
+
+            const target = ["stale"];
+
+            expect(grid.queryRadius(new Vector3(0, 0, 0), Number.POSITIVE_INFINITY, target)).toBe(target);
+            expect(target).toEqual([]);
+
+            target.push("stale");
+            expect(grid.queryRadius(new Vector3(0, 0, 0), -1, target)).toBe(target);
+            expect(target).toEqual([]);
+
+            target.push("stale");
+            expect(grid.queryRadius(new Vector3(Number.NaN, 0, 0), 5, target)).toBe(target);
+            expect(target).toEqual([]);
+        });
     });
 
     describe("getObject", () => {
@@ -270,8 +449,29 @@ describe("UniformSpatialGrid", () => {
             grid.remove("entity1");
 
             expect(grid.entityCount).toBe(0);
+            expect(grid.cellCount).toBe(0);
             expect(grid.getPosition("entity1")).toBeUndefined();
             expect(grid.getObject("entity1")).toBeUndefined();
+        });
+
+        it("keeps occupied cell counts stable when removing one entity from a shared cell", () => {
+            const obj1 = new Object3D();
+            obj1.position.set(10, 0, 0);
+            obj1.updateMatrixWorld();
+            grid.update("entity1", obj1);
+
+            const obj2 = new Object3D();
+            obj2.position.set(12, 0, 0);
+            obj2.updateMatrixWorld();
+            grid.update("entity2", obj2);
+
+            expect(grid.cellCount).toBe(1);
+
+            grid.remove("entity1");
+
+            expect(grid.entityCount).toBe(1);
+            expect(grid.cellCount).toBe(1);
+            expect(grid.queryRadius(new Vector3(12, 0, 0), 1)).toEqual(["entity2"]);
         });
 
         it("should handle removing non-existent entity", () => {

@@ -30,6 +30,32 @@
     --theme-grey-bg-tertiary-button-active: #353952;
     --theme-container-divider: #1e2235;
 
+    /* Editor workspace chrome */
+    --theme-workspace-surface: var(--theme-container-main-dark);
+    --theme-workspace-surface-raised: var(--theme-container-minor-dark);
+    --theme-workspace-border: rgba(255, 255, 255, 0.1);
+    --theme-workspace-control-border: rgba(255, 255, 255, 0.14);
+    --theme-workspace-selected-border: rgba(56, 189, 248, 0.6);
+    --theme-workspace-selected-bg: rgba(2, 132, 199, 0.28);
+    --theme-workspace-action: #0284c7;
+    --theme-workspace-action-hover: #0369a1;
+    --theme-workspace-connection-warning: #eab308;
+    --theme-workspace-focus: #93c5fd;
+    --theme-workspace-text: var(--theme-font-main-selected-color);
+    --theme-workspace-text-muted: rgba(248, 250, 252, 0.68);
+    --theme-workspace-control-hover: var(--theme-grey-bg-secondary-button);
+    --theme-workspace-control-radius: 8px;
+    --theme-workspace-panel-radius: 16px;
+    --theme-workspace-touch-target: 44px;
+    --theme-workspace-space-xs: 4px;
+    --theme-workspace-space-compact: 6px;
+    --theme-workspace-space-sm: 8px;
+    --theme-workspace-space-input: 10px;
+    --theme-workspace-space-snug: 11px;
+    --theme-workspace-space-md: 12px;
+    --theme-workspace-drawer-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+    --theme-workspace-drawer-shadow-left: -12px 0 32px rgba(0, 0, 0, 0.38);
+
     /* Dialog theme - orange primary CTA */
     --theme-dialog-bg: #181b2e;
     --theme-dialog-border-radius: 8px;

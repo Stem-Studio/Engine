@@ -9,8 +9,8 @@ import {Raycaster, Vector2} from "three";
 import BaseEvent from "./BaseEvent";
 import global from "../global";
 import {resolveSelectionTargetFromPickHit} from "./picking/pickTargetUtils";
-import {findTopVFXParent} from "../services";
 import {getNonSelectableReason} from "../utils/SelectionUtils";
+import {findTopVFXParent} from "../utils/vfxRuntime";
 
 /**
  * Checks whether pick-event tracing is enabled.
@@ -30,6 +30,7 @@ class PickEvent extends BaseEvent {
 
         this.onDownPosition = new Vector2();
         this.onUpPosition = new Vector2();
+        this.reusableIntersections = [];
 
         this.onAppStarted = this.onAppStarted.bind(this);
         this.onAppModeEntered = this.onAppModeEntered.bind(this);
@@ -125,54 +126,73 @@ class PickEvent extends BaseEvent {
 
         // event.preventDefault();
 
-        let array = this.getMousePosition(this.app.viewport, event.clientX, event.clientY);
-        this.onDownPosition.fromArray(array);
+        this.writeMousePosition(this.onDownPosition, this.app.viewport, event.clientX, event.clientY);
 
         document.addEventListener("mouseup", this.onMouseUp, false);
     }
 
     onMouseUp(event) {
-        if (this.app.disableClickEvents) {
-            return;
+        try {
+            if (this.app.disableClickEvents) {
+                return;
+            }
+            this.writeMousePosition(this.onUpPosition, this.app.viewport, event.clientX, event.clientY);
+
+            if (shouldTracePickEvent()) {
+                const distance = this.onDownPosition.distanceTo(this.onUpPosition);
+                console.info("[PickEvent] onMouseUp", {
+                    button: event.button,
+                    distance,
+                    withinClickTolerance: distance <= CLICK_DISTANCE_TOLERANCE,
+                });
+            }
+
+            this.handleClick(event);
+        } finally {
+            document.removeEventListener("mouseup", this.onMouseUp, false);
         }
-        let array = this.getMousePosition(this.app.viewport, event.clientX, event.clientY);
-        this.onUpPosition.fromArray(array);
-
-        if (shouldTracePickEvent()) {
-            const distance = this.onDownPosition.distanceTo(this.onUpPosition);
-            console.info("[PickEvent] onMouseUp", {
-                button: event.button,
-                distance,
-                withinClickTolerance: distance <= CLICK_DISTANCE_TOLERANCE,
-            });
-        }
-
-        this.handleClick(event);
-
-        document.removeEventListener("mouseup", this.onMouseUp, false);
     }
 
-    getIntersects(point, objects, recursive = true) {
+    setRayFromPoint(point) {
         this.mouse.set(point.x * 2 - 1, -(point.y * 2) + 1);
         this.raycaster.setFromCamera(
             this.mouse,
             this.app.editor.view === "perspective" ? this.app.editor.camera : this.app.editor.orthCamera,
         );
-        return this.raycaster.intersectObjects(objects, recursive);
     }
 
-    getMousePosition = function (dom, x, y) {
+    intersectObjectsInto(objects, recursive = true, target = []) {
+        return this.raycaster.intersectObjects(objects, recursive, target);
+    }
+
+    getIntersects(point, objects, recursive = true, target = []) {
+        target.length = 0;
+        this.setRayFromPoint(point);
+        return this.intersectObjectsInto(objects, recursive, target);
+    }
+
+    writeMousePosition(target, dom, x, y) {
         let rect = dom.getBoundingClientRect();
+        target.set((x - rect.left) / rect.width, (y - rect.top) / rect.height);
+        return target;
+    }
+
+    getMousePosition(dom, x, y) {
+        const rect = dom.getBoundingClientRect();
         return [(x - rect.left) / rect.width, (y - rect.top) / rect.height];
-    };
+    }
 
     getClosestSelectableObject(objectsCollision) {
-        let closestObject = null;
-        let closestDistance = Infinity;
+        let previousResolvedObject = null;
 
         for (let i = 0; i < objectsCollision.length; i++) {
             const hitObject = objectsCollision[i].object;
             const resolvedObject = resolveSelectionTargetFromPickHit(hitObject);
+            if (resolvedObject && resolvedObject === previousResolvedObject) {
+                continue;
+            }
+            previousResolvedObject = resolvedObject;
+
             const blockReason = this.getNonSelectableReason(resolvedObject);
             if (blockReason) {
                 if (shouldTracePickEvent()) {
@@ -193,13 +213,10 @@ class PickEvent extends BaseEvent {
                 continue;
             }
 
-            if (objectsCollision[i].distance < closestDistance) {
-                closestDistance = objectsCollision[i].distance;
-                closestObject = resolvedObject;
-            }
+            return resolvedObject;
         }
 
-        return closestObject;
+        return null;
     }
 
     getNonSelectableReason(object) {
@@ -208,6 +225,24 @@ class PickEvent extends BaseEvent {
 
     canSelectObject(object) {
         return !this.getNonSelectableReason(object);
+    }
+
+    getToggledMultiSelection(currentSelection) {
+        const selected = this.app.editor.selected;
+        const selectedObjects = Array.isArray(selected) ? selected : selected ? [selected] : [];
+        const existingIndex = selectedObjects.indexOf(currentSelection);
+
+        if (existingIndex === -1) {
+            return [...selectedObjects, currentSelection];
+        }
+
+        const toggledSelection = new Array(selectedObjects.length - 1);
+        for (let i = 0, j = 0; i < selectedObjects.length; i++) {
+            if (i !== existingIndex) {
+                toggledSelection[j++] = selectedObjects[i];
+            }
+        }
+        return toggledSelection;
     }
 
     handleClick(e) {
@@ -236,15 +271,19 @@ class PickEvent extends BaseEvent {
                 return;
             }
 
-            const objectsIntersects = this.getIntersects(this.onUpPosition, objects);
-            const helpersIntersects = this.getIntersects(this.onUpPosition, selectionHelpers, false);
-            const allObjectsIntersects = objectsIntersects.concat(helpersIntersects);
+            const allObjectsIntersects = this.reusableIntersections;
+            allObjectsIntersects.length = 0;
+            this.setRayFromPoint(this.onUpPosition);
+            this.intersectObjectsInto(objects, true, allObjectsIntersects);
+            const objectsIntersectsCount = allObjectsIntersects.length;
+            this.intersectObjectsInto(selectionHelpers, false, allObjectsIntersects);
+            const helpersIntersectsCount = allObjectsIntersects.length - objectsIntersectsCount;
 
             if (shouldTracePickEvent()) {
                 console.info("[PickEvent] handleClick intersects", {
                     clickDistance,
-                    objectsIntersects: objectsIntersects.length,
-                    helpersIntersects: helpersIntersects.length,
+                    objectsIntersects: objectsIntersectsCount,
+                    helpersIntersects: helpersIntersectsCount,
                     totalIntersects: allObjectsIntersects.length,
                 });
             }
@@ -262,19 +301,7 @@ class PickEvent extends BaseEvent {
             }
 
             if (isMultiselecting) {
-                let selectedObjects = Array.isArray(editor.selected) ? editor.selected.slice() : [editor.selected];
-
-                // Check if the current selection is already in the selected objects
-                const alreadySelected = selectedObjects.find(obj => obj === currentSelection);
-
-                if (!alreadySelected) {
-                    selectedObjects.push(currentSelection);
-                } else {
-                    // Remove the current selection from the selected objects
-                    selectedObjects = selectedObjects.filter(obj => obj !== currentSelection);
-                }
-
-                editor.select(selectedObjects);
+                editor.select(this.getToggledMultiSelection(currentSelection));
             } else {
                 // check if selected object is part of VFX, if it is, select main parent container
                 const vfxParent = findTopVFXParent(currentSelection, editor.scene);

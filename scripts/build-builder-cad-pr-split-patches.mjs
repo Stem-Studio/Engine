@@ -189,8 +189,6 @@ const buckets = [
       "client/packages/editor-oss/src/global.ts",
       "client/packages/editor-oss/src/physics/PhysicsUtil.ts",
       "client/packages/editor-oss/src/physics/PhysicsUtil.test.ts",
-      "client/packages/editor-oss/src/scheduler/CommandBuffer.ts",
-      "client/packages/editor-oss/src/scheduler/__tests__/CommandBuffer.test.ts",
       "client/packages/editor-oss/src/serialization/core/PrefabSerializer.ts",
       "client/packages/editor-oss/src/serialization/core/PrefabSerializer.test.ts",
       "scripts/playwright/_tinyskies-diag.mjs",

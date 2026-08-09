@@ -146,10 +146,9 @@ export interface Behavior {
 
     /**
      * Called at fixed timestep for physics-dependent logic (similar to Godot's _physics_process).
-     * Runs in FIXED_UPDATE stage when FrameOrchestrator is enabled and "Fixed Rate Behaviors" is on.
-     * The rate is determined by scheduler.fixedTimestepHz from quality settings (e.g., 60Hz on desktop).
+     * Runs from the legacy runtime loop when fixed-rate behavior updates are enabled.
+     * The default fixed timestep is 60Hz unless the runtime overrides it.
      * Behaviors that need deterministic physics interaction should implement this method.
-     * Visual smoothing can be done in update() using interpolationAlpha.
      * @param fixedDeltaTime - Fixed timestep in seconds (e.g., 1/60 = 0.0167s at 60Hz)
      */
     fixedUpdate?(fixedDeltaTime: number): void;

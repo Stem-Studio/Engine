@@ -3,9 +3,7 @@ import {Scene} from "three";
 import {SEARCH_GAME_QUERY} from "./types";
 import {ROUTES} from "@web-shared/routes";
 import {DEFAULT_FILE_DATA, FileData} from "../../editor/assets/v2/types/file";
-import Ajax from "../../utils/Ajax";
-import {backendUrlFromPath} from "../../utils/UrlUtils";
-import {IS_OSS} from "../../mode/buildMode";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 export const truncateName = (name: string, limit: number) => {
     if (name.length > limit) {
@@ -110,42 +108,20 @@ export type ModelData = {
     Thumbnail: string;
 };
 
-export const fetchModels = async (SceneID?: string, ERTHModels?: boolean): Promise<ModelData[]> => {
-    if (IS_OSS) return [];
-    const queryParams = new URLSearchParams();
-
-    if (SceneID) {
-        queryParams.append("SceneID", SceneID);
-    }
-    if (ERTHModels) {
-        queryParams.append("ERTHLibrary", "true");
-    }
-
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Mesh/List${queryParams.toString() ? "?" + queryParams.toString() : ""}`),
-        });
-
-        if (!response || response.data?.Code !== 200) {
-            return [];
-        }
-
-        return response.data.Data as ModelData[];
-    } catch (error) {
-        console.warn("[fetchModels] Failed to fetch models list", error);
-        return [];
-    }
+export const fetchModels = async (_SceneID?: string, _ERTHModels?: boolean): Promise<ModelData[]> => {
+    return [];
 };
 
 export const getSceneUniqueModels = (scene: Scene) => {
     const modelsData: FileData[] = [];
+    const seenModelIds = new Set<string>();
+    const validKeys = new Set(Object.keys(DEFAULT_FILE_DATA) as (keyof FileData)[]);
 
     const cleanUserData = (userData: any): FileData => {
-        const validKeys = Object.keys(DEFAULT_FILE_DATA) as (keyof FileData)[];
         const cleanedData: Partial<FileData> = {};
 
         for (const key in userData) {
-            if (validKeys.includes(key as keyof FileData)) {
+            if (validKeys.has(key as keyof FileData)) {
                 cleanedData[key as keyof FileData] = userData[key];
             }
         }
@@ -153,19 +129,19 @@ export const getSceneUniqueModels = (scene: Scene) => {
         return cleanedData as FileData;
     };
 
-    scene.traverse(child => {
-        if (child.userData.ID) {
-            const cleanedUserData = cleanUserData(child.userData);
-            modelsData.push(cleanedUserData);
-        }
+    traverseObjectDepthFirst(scene, child => {
+        const modelId = child.userData.ID;
+        if (!modelId || seenModelIds.has(modelId)) return;
+        seenModelIds.add(modelId);
+        modelsData.push(cleanUserData(child.userData));
     });
 
-    return modelsData.filter((obj1, i, arr) => arr.findIndex(obj2 => obj2.ID === obj1.ID) === i).reverse();
+    return modelsData.reverse();
 };
 
 export const getObjectNamesInScene = (scene: Scene) => {
     const objectNames = new Set<string>();
-    scene.traverse(child => {
+    traverseObjectDepthFirst(scene, child => {
         if (child.name) {
             objectNames.add(child.name);
         }

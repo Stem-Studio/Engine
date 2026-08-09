@@ -1,17 +1,19 @@
 import Stats from 'stats-gl';
 
+import {RollingMaxWindow} from './RollingMaxWindow';
+
 type StatsPanel = InstanceType<typeof Stats.Panel>;
 
 export class RamPanelManager {
     private panel: StatsPanel;
-    private history: number[] = [];
-    private maxSamples: number;
+    private history: RollingMaxWindow;
     private stats: Stats;
     private running: boolean = false;
+    private animationFrameId: number | null = null;
 
     constructor(stats: Stats, maxSamples = 40) {
         this.stats = stats;
-        this.maxSamples = maxSamples;
+        this.history = new RollingMaxWindow(maxSamples, 1);
         this.panel = new Stats.Panel('RAM (MB)', '#ff0', '#222');
         this.stats.addPanel(this.panel);
     }
@@ -24,28 +26,38 @@ export class RamPanelManager {
 
     stop() {
         this.running = false;
+        if (this.animationFrameId !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(this.animationFrameId);
+        }
+        this.animationFrameId = null;
     }
 
     private updateLoop = () => {
         if (!this.running) return;
+        this.animationFrameId = null;
 
         // Get used JS heap size in MB
         const usedHeapSize = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
         if (usedHeapSize !== undefined) {
             const usedHeapSizeMB = Math.round(usedHeapSize / (1024 * 1024));
 
-            this.history.push(usedHeapSizeMB);
-            if (this.history.length > this.maxSamples) this.history.shift();
-            const maxHeapSize = Math.max(...this.history, 1);
+            const maxHeapSize = this.history.push(usedHeapSizeMB);
             this.panel.update(usedHeapSizeMB, maxHeapSize, 0);
             this.panel.updateGraph(usedHeapSizeMB, maxHeapSize);
         }
 
-        requestAnimationFrame(this.updateLoop);
+        if (typeof requestAnimationFrame === 'function') {
+            this.animationFrameId = requestAnimationFrame(this.updateLoop);
+        }
     };
 
     reset() {
         this.panel.update(0, 1, 0);
-        this.history = [];
+        this.history.clear();
+    }
+
+    dispose() {
+        this.stop();
+        this.reset();
     }
 }

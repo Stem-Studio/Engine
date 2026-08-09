@@ -19,6 +19,15 @@ const baseUrl = (
   process.env.PLAYWRIGHT_BASE_URL || "http://localhost:5173"
 ).replace(/\/$/, "");
 const headed = process.env.HEADED === "1";
+const viewport = (() => {
+  const [width, height] = (process.env.VIEWPORT || "1440x900")
+    .split("x")
+    .map(Number);
+  return Number.isFinite(width) && Number.isFinite(height)
+    ? { width, height }
+    : { width: 1440, height: 900 };
+})();
+const mobileViewport = viewport.width <= 900 && viewport.height <= 500;
 const report = {
   baseUrl,
   startedAt: new Date().toISOString(),
@@ -28,10 +37,12 @@ const report = {
   failedRequests: [],
 };
 const failures = [];
-const toolbarLayoutViewports = [
-  { width: 1280, height: 800 },
-  { width: 1024, height: 640 },
-];
+const toolbarLayoutViewports = process.env.VIEWPORT
+  ? [viewport]
+  : [
+      { width: 1280, height: 800 },
+      { width: 1024, height: 640 },
+    ];
 
 function assert(name, condition, detail = "") {
   report.assertions[name] = { pass: !!condition, detail };
@@ -76,6 +87,60 @@ async function clickCanvas(page, canvas, relX, relY) {
   assert("canvas has bounds", !!box, JSON.stringify(box));
   if (!box || box.width <= 0 || box.height <= 0) return;
   await page.mouse.click(box.x + box.width * relX, box.y + box.height * relY);
+}
+
+async function dispatchPlanViewportClick(page, relX, relY) {
+  await page.evaluate(({relX, relY}) => {
+    const app = window.app || globalThis.app;
+    const viewport =
+      app?.viewport ||
+      app?.renderer?.domElement ||
+      app?.editor?.renderer?.domElement ||
+      document.getElementById("scene-container") ||
+      document.querySelector("canvas");
+    if (!(viewport instanceof HTMLElement)) return;
+    const rect = viewport.getBoundingClientRect();
+    const clientX = rect.left + rect.width * relX;
+    const clientY = rect.top + rect.height * relY;
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 1,
+      pointerId: 91,
+      pointerType: "touch",
+      isPrimary: true,
+    };
+    viewport.dispatchEvent(new PointerEvent("pointerdown", init));
+    viewport.dispatchEvent(new PointerEvent("pointerup", {...init, buttons: 0}));
+  }, {relX, relY});
+}
+
+async function dispatchPlanViewportMove(page, relX, relY) {
+  await page.evaluate(({relX, relY}) => {
+    const app = window.app || globalThis.app;
+    const viewport =
+      app?.viewport ||
+      app?.renderer?.domElement ||
+      app?.editor?.renderer?.domElement ||
+      document.getElementById("scene-container") ||
+      document.querySelector("canvas");
+    if (!(viewport instanceof HTMLElement)) return;
+    const rect = viewport.getBoundingClientRect();
+    viewport.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + rect.width * relX,
+      clientY: rect.top + rect.height * relY,
+      button: 0,
+      buttons: 1,
+      pointerId: 91,
+      pointerType: "touch",
+      isPrimary: true,
+    }));
+  }, {relX, relY});
 }
 
 async function getCanvasBox(page) {
@@ -155,6 +220,28 @@ async function clickControl(locator, timeout = 5000) {
         if (element instanceof HTMLElement) element.click();
       });
     });
+}
+
+async function dismissSceneSavedToast(page) {
+  await page.mouse.move(100, 100);
+  await page.evaluate(() => {
+    const title = Array.from(document.querySelectorAll("*")).find(
+      (element) => element.childElementCount === 0 && element.textContent?.trim() === "Scene Saved",
+    );
+    if (!title) return;
+    let root = title.parentElement;
+    for (let depth = 0; depth < 5 && root; depth++, root = root.parentElement) {
+      const buttons = root.querySelectorAll("button");
+      if (buttons.length > 0) {
+        buttons[buttons.length - 1].click();
+        return;
+      }
+    }
+  }).catch(() => {});
+  await page.waitForFunction(() => !Array.from(document.querySelectorAll("*"))
+    .some((element) => element.childElementCount === 0 && element.textContent?.trim() === "Scene Saved"),
+  undefined,
+  {timeout: 8000}).catch(() => {});
 }
 
 async function isPressed(page, testId) {
@@ -427,17 +514,73 @@ async function assertDesktopToolbarBounds(page, testId, label) {
   );
 }
 
+async function assertQuickBuildLandscapeLane(page) {
+  const viewport = page.viewportSize();
+  if (!viewport || viewport.width > 960 || viewport.height > 600) return;
+
+  const bounds = await page.evaluate(() => {
+    const toolbar = document.querySelector('[data-testid="quick-build-toolbar"]');
+    const leftPanel = document.querySelector('[aria-label="Project hierarchy and library"]');
+    const actionBar = document.querySelector('[data-testid="editor-action-bar"]');
+    const rect = (element) => {
+      const value = element?.getBoundingClientRect();
+      return value
+        ? {left: value.left, right: value.right, top: value.top, bottom: value.bottom, height: value.height}
+        : null;
+    };
+    return {toolbar: rect(toolbar), leftPanel: rect(leftPanel), actionBar: rect(actionBar)};
+  });
+  const toolbar = bounds.toolbar;
+  const leftPanel = bounds.leftPanel;
+  const actionBar = bounds.actionBar;
+  const clearsLeft = !leftPanel || toolbar?.left >= leftPanel.right - 1;
+  const clearsRight = !actionBar || toolbar?.right <= actionBar.left + 1;
+  const compact = !!toolbar && toolbar.height <= viewport.height * 0.15;
+  assert(
+    "Quick Build landscape rail stays in the playable center lane",
+    !!toolbar && clearsLeft && clearsRight && compact,
+    JSON.stringify(bounds),
+  );
+}
+
 async function selectPressed(page, testId, label) {
   const button = page.locator(`[data-testid="${testId}"]`).first();
   await clickControl(button);
   await waitForPressed(page, testId, label);
 }
 
+async function openCompactPanel(page, panel, targetOverride) {
+  if (!mobileViewport) return;
+  const testId = panel === "hierarchy"
+    ? "topnav-toggle-hierarchy"
+    : "topnav-toggle-inspector";
+  const toggle = page.locator(`[data-testid="${testId}"]`).first();
+  if (!(await toggle.isVisible().catch(() => false))) return;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if ((await toggle.getAttribute("aria-expanded")) === "true") break;
+    await clickControl(toggle);
+    await page.waitForTimeout(200);
+  }
+  const target = targetOverride || (panel === "hierarchy"
+    ? '[data-testid="leftpanel-tab-project"]'
+    : '[data-testid="cad-tools-toggle"]');
+  await page.locator(target).first().waitFor({state: "visible", timeout: 5000}).catch(() => {});
+  if (panel === "hierarchy") {
+    await page.waitForFunction(() => {
+      const element = document.querySelector('[aria-label="Project hierarchy and library"]');
+      const rect = element?.getBoundingClientRect();
+      return !!rect && rect.left >= -1 && rect.right > 0;
+    }, undefined, {timeout: 5000});
+  }
+}
+
 async function enableCadTools(page) {
+  await openCompactPanel(page, "hierarchy");
   await clickControl(
     page.locator('[data-testid="leftpanel-tab-project"]').first(),
   );
   await clickControl(page.locator("text=Project Settings").first());
+  await openCompactPanel(page, "inspector");
   const cadToggle = page.locator('[data-testid="cad-tools-toggle"]').first();
   const cadSwitch = page.locator('[data-testid="cad-tools-switch"]').first();
   const cadCheckbox = page
@@ -455,6 +598,7 @@ async function enableCadTools(page) {
 }
 
 async function addCubeForActionbar(page) {
+  await openCompactPanel(page, "hierarchy");
   await clickControl(
     page.locator('[data-testid="leftpanel-tab-library"]').first(),
   );
@@ -712,16 +856,16 @@ async function verifyMeshCadFromCadMenu(page) {
   );
 
   await clickControl(meshClose);
-  await page.waitForTimeout(300);
+  await meshClose.waitFor({state: "hidden", timeout: 2000}).catch(() => {});
   assert(
     "Mesh CAD toolbar closes",
-    !(await meshClose.isVisible().catch(() => false)),
+    !(await page.locator('[data-testid="mesh-cad-toolbar"]').first().isVisible().catch(() => false)),
   );
 }
 
 const browser = await chromium.launch({ headless: !headed });
 const page = await (
-  await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  await browser.newContext({ viewport, isMobile: mobileViewport, hasTouch: mobileViewport })
 ).newPage();
 
 page.on("console", (m) => {
@@ -734,13 +878,15 @@ page.on("pageerror", (e) =>
     stack: e.stack?.slice(0, 2000),
   }),
 );
-page.on("requestfailed", (r) =>
+page.on("requestfailed", (r) => {
+  const failure = r.failure()?.errorText;
+  if (failure === "net::ERR_ABORTED") return;
   report.failedRequests.push({
     url: r.url(),
     method: r.method(),
-    failure: r.failure()?.errorText,
-  }),
-);
+    failure,
+  });
+});
 page.on("response", (r) => {
   if (
     r.status() >= 400 &&
@@ -787,6 +933,7 @@ try {
     .first()
     .waitFor({ timeout: 5000 });
   await assertDesktopToolbarBounds(page, "quick-build-toolbar", "Quick Build");
+  await assertQuickBuildLandscapeLane(page);
   const textureState = await page
     .waitForFunction(
       () => {
@@ -816,6 +963,60 @@ try {
     !!textureState?.src,
     JSON.stringify(textureState),
   );
+  if (mobileViewport) {
+    const utilityToggle = page
+      .locator('[data-testid="quick-build-utilities-toggle"]')
+      .first();
+    assert(
+      "Quick Build compact utilities toggle visible",
+      await utilityToggle.isVisible().catch(() => false),
+    );
+    await clickControl(utilityToggle);
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[data-testid="quick-build-utilities-toggle"]')
+          ?.getAttribute("aria-expanded") === "true",
+      null,
+      { timeout: 3000 },
+    );
+    assert(
+      "Quick Build compact utilities drawer opens",
+      await utilityToggle.getAttribute("aria-expanded").then((value) => value === "true"),
+    );
+    const compactPrimaryBounds = await page.evaluate(() => {
+      const toolbar = document.querySelector('[data-testid="quick-build-toolbar"]')?.getBoundingClientRect();
+      const ids = [
+        "quick-build-tool-select",
+        "quick-build-tool-erase",
+        "quick-build-group-terrain",
+        "quick-build-group-paths",
+        "quick-build-group-nature",
+        "quick-build-group-buildings",
+        "quick-build-utilities-toggle",
+      ];
+      const controls = ids.map((id) => {
+        const rect = document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect();
+        return rect ? {id, left: rect.left, right: rect.right} : null;
+      }).filter(Boolean);
+      return toolbar ? {
+        toolbar: {left: toolbar.left, right: toolbar.right},
+        controls,
+      } : null;
+    });
+    const primaryFitsLane = !!compactPrimaryBounds && compactPrimaryBounds.controls.every(
+      (control) => control.left >= compactPrimaryBounds.toolbar.left - 1 &&
+        control.right <= compactPrimaryBounds.toolbar.right + 1,
+    );
+    assert(
+      "Quick Build compact primary controls stay inside the playable lane",
+      primaryFitsLane,
+      JSON.stringify(compactPrimaryBounds),
+    );
+    await page
+      .screenshot({path: resolve(outDir, "01-quick-build-utilities-open.png")})
+      .catch(() => {});
+  }
   const quickToolIds = [
     "select",
     "erase",
@@ -911,21 +1112,61 @@ try {
     "Quick Build single brush reselects",
   );
 
-  const stampPositions = [
-    ["ground", 0.28, 0.42],
-    ["sand", 0.34, 0.42],
-    ["stone", 0.4, 0.42],
-    ["path", 0.46, 0.42],
-    ["water", 0.52, 0.42],
-    ["bridge", 0.58, 0.42],
-    ["farm", 0.64, 0.42],
-    ["fence", 0.7, 0.42],
-    ["tree", 0.34, 0.56],
-    ["bush", 0.4, 0.56],
-    ["rock", 0.46, 0.56],
-    ["house", 0.76, 0.62],
-    ["lamp", 0.84, 0.62],
-  ];
+  if (mobileViewport) {
+    const utilityToggle = page
+      .locator('[data-testid="quick-build-utilities-toggle"]')
+      .first();
+    await clickControl(utilityToggle);
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[data-testid="quick-build-utilities-toggle"]')
+          ?.getAttribute("aria-expanded") === "false",
+      null,
+      { timeout: 3000 },
+    );
+    await dispatchPlanViewportMove(page, 0.5, 0.5);
+    const status = page.locator('[data-testid="quick-build-placement-status"]').first();
+    const statusBox = await status.boundingBox().catch(() => null);
+    assert(
+      "Quick Build placement status is visible on landscape preview",
+      !!statusBox && statusBox.width > 0 && statusBox.height > 0,
+      `${JSON.stringify(statusBox)} ${await status.textContent().catch(() => "")}`,
+    );
+    await page.screenshot({path: resolve(outDir, "01-quick-build-placement-status.png")}).catch(() => {});
+  }
+
+  const stampPositions = mobileViewport
+    ? [
+        ["ground", 0.46, 0.18],
+        ["sand", 0.51, 0.18],
+        ["stone", 0.56, 0.18],
+        ["path", 0.61, 0.18],
+        ["water", 0.66, 0.18],
+        ["bridge", 0.71, 0.18],
+        ["farm", 0.76, 0.18],
+        ["fence", 0.81, 0.18],
+        ["tree", 0.51, 0.18],
+        ["bush", 0.56, 0.18],
+        ["rock", 0.61, 0.18],
+        ["house", 0.76, 0.18],
+        ["lamp", 0.84, 0.18],
+      ]
+    : [
+        ["ground", 0.28, 0.42],
+        ["sand", 0.34, 0.42],
+        ["stone", 0.4, 0.42],
+        ["path", 0.46, 0.42],
+        ["water", 0.52, 0.42],
+        ["bridge", 0.58, 0.42],
+        ["farm", 0.64, 0.42],
+        ["fence", 0.7, 0.42],
+        ["tree", 0.34, 0.56],
+        ["bush", 0.4, 0.56],
+        ["rock", 0.46, 0.56],
+        ["house", 0.76, 0.62],
+        ["lamp", 0.84, 0.62],
+      ];
   let expectedQuickObjects = 0;
   for (const [id, relX, relY] of stampPositions) {
     await selectQuickBuildTool(
@@ -988,15 +1229,17 @@ try {
       await selectPlanCadTool(page, id, `BIM Plan ${id} selects`);
     }
 
+    const planWallY = mobileViewport ? 0.82 : 0.56;
+    const planWallX1 = mobileViewport ? 0.52 : 0.38;
+    const planWallX2 = mobileViewport ? 0.72 : 0.62;
     await selectPlanCadTool(page, "wall", "BIM Plan wall ready for placement");
-    await clickCanvas(page, canvas, 0.38, 0.56);
+    if (mobileViewport) await dispatchPlanViewportClick(page, planWallX1, planWallY);
+    else await clickCanvas(page, canvas, planWallX1, planWallY);
     {
       const box = await getCanvasBox(page);
       if (box) {
-        await page.mouse.move(
-          box.x + box.width * 0.62,
-          box.y + box.height * 0.56,
-        );
+        if (mobileViewport) await dispatchPlanViewportMove(page, planWallX2, planWallY);
+        else await page.mouse.move(box.x + box.width * planWallX2, box.y + box.height * planWallY);
         const measurement = page
           .locator('[data-testid="plan-cad-measurement"]')
           .first();
@@ -1010,7 +1253,8 @@ try {
         );
       }
     }
-    await clickCanvas(page, canvas, 0.62, 0.56);
+    if (mobileViewport) await dispatchPlanViewportClick(page, planWallX2, planWallY);
+    else await clickCanvas(page, canvas, planWallX2, planWallY);
     const wallCounts = await waitForPlanCadCount(
       page,
       "wall",
@@ -1030,20 +1274,38 @@ try {
     const bimProperties = page
       .locator('[data-testid="plan-cad-properties"]')
       .first();
+    if (mobileViewport) {
+      await page.waitForTimeout(500);
+      await openCompactPanel(page, "inspector", 'aside[aria-label="Inspector"]');
+      await page.waitForTimeout(250);
+    }
     assert(
       "BIM properties panel visible after wall",
       (await bimProperties.isVisible().catch(() => false)) &&
         /(BIM|Wall)/.test(await bimProperties.innerText().catch(() => "")) &&
         /Height/.test(await bimProperties.innerText().catch(() => "")),
     );
+    if (mobileViewport) {
+      const inspectorToggle = page.locator('[data-testid="topnav-toggle-inspector"]').first();
+      if ((await inspectorToggle.getAttribute("aria-expanded")) === "true") {
+        await clickControl(inspectorToggle);
+        await page.waitForTimeout(250);
+      }
+      // The save confirmation toast occupies the lower-right compact canvas
+      // for its 2.5s lifetime. Let it dismiss before polygon/part placement so
+      // pointer events reach the viewport instead of the toast surface.
+      await page.mouse.move(100, 100);
+      await page.waitForTimeout(2800);
+      await dismissSceneSavedToast(page);
+    }
 
     await selectPlanCadTool(page, "door", "BIM Plan door ready for placement");
     {
       const box = await getCanvasBox(page);
       if (box) {
         await page.mouse.move(
-          box.x + box.width * 0.48,
-          box.y + box.height * 0.56,
+          box.x + box.width * (mobileViewport ? 0.58 : 0.48),
+          box.y + box.height * planWallY,
         );
         const measurementText = await page
           .locator('[data-testid="plan-cad-measurement"]')
@@ -1057,7 +1319,8 @@ try {
         );
       }
     }
-    await clickCanvas(page, canvas, 0.48, 0.56);
+    if (mobileViewport) await dispatchPlanViewportClick(page, 0.58, planWallY);
+    else await clickCanvas(page, canvas, 0.48, planWallY);
     await waitForPlanCadCount(
       page,
       "opening",
@@ -1070,22 +1333,36 @@ try {
       "window",
       "BIM Plan window ready for placement",
     );
-    await clickCanvas(page, canvas, 0.54, 0.56);
+    if (mobileViewport) await dispatchPlanViewportClick(page, 0.62, planWallY);
+    else await clickCanvas(page, canvas, 0.54, planWallY);
     await waitForPlanCadCount(
       page,
       "opening",
       2,
       "BIM Plan window creates opening",
     );
+    if (mobileViewport) {
+      await page.mouse.move(100, 100);
+      await page.waitForTimeout(2800);
+    }
+    if (mobileViewport) await dismissSceneSavedToast(page);
 
     await selectPlanCadTool(page, "room", "BIM Plan room ready for placement");
-    for (const [relX, relY] of [
+    if (mobileViewport) await dismissSceneSavedToast(page);
+    const roomPoints = mobileViewport ? [
+      [0.46, 0.82],
+      [0.70, 0.82],
+      [0.70, 0.92],
+      [0.46, 0.92],
+    ] : [
       [0.34, 0.42],
       [0.46, 0.42],
       [0.46, 0.52],
       [0.34, 0.52],
-    ]) {
-      await clickCanvas(page, canvas, relX, relY);
+    ];
+    for (const [relX, relY] of roomPoints) {
+      if (mobileViewport) await dispatchPlanViewportClick(page, relX, relY);
+      else await clickCanvas(page, canvas, relX, relY);
     }
     await page
       .locator('[data-testid="plan-cad-finish-polygon"]')
@@ -1099,13 +1376,20 @@ try {
     );
 
     await selectPlanCadTool(page, "zone", "BIM Plan zone ready for placement");
-    for (const [relX, relY] of [
+    const zonePoints = mobileViewport ? [
+      [0.72, 0.82],
+      [0.90, 0.82],
+      [0.90, 0.92],
+      [0.72, 0.92],
+    ] : [
       [0.54, 0.42],
       [0.66, 0.42],
       [0.66, 0.52],
       [0.54, 0.52],
-    ]) {
-      await clickCanvas(page, canvas, relX, relY);
+    ];
+    for (const [relX, relY] of zonePoints) {
+      if (mobileViewport) await dispatchPlanViewportClick(page, relX, relY);
+      else await clickCanvas(page, canvas, relX, relY);
     }
     await page
       .locator('[data-testid="plan-cad-finish-polygon"]')
@@ -1117,6 +1401,11 @@ try {
       1,
       "BIM Plan zone polygon creates zone",
     );
+    if (mobileViewport) {
+      await page.mouse.move(100, 100);
+      await page.waitForTimeout(2800);
+    }
+    if (mobileViewport) await dismissSceneSavedToast(page);
 
     await selectPlanCadTool(
       page,
@@ -1128,7 +1417,7 @@ try {
       if (box) {
         await page.mouse.move(
           box.x + box.width * 0.72,
-          box.y + box.height * 0.56,
+          box.y + box.height * (mobileViewport ? 0.84 : 0.56),
         );
         const measurementText = await page
           .locator('[data-testid="plan-cad-measurement"]')
@@ -1142,7 +1431,8 @@ try {
         );
       }
     }
-    await clickCanvas(page, canvas, 0.72, 0.56);
+    if (mobileViewport) await dispatchPlanViewportClick(page, 0.72, 0.84);
+    else await clickCanvas(page, canvas, 0.72, 0.56);
     await waitForPlanCadCount(
       page,
       "item",

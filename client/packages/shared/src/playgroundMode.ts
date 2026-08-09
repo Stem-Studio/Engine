@@ -1,7 +1,7 @@
 // Playground mode — runtime gating for the public-site playground iframe.
 //
 // The public site at buildwithstem.com renders the editor inside an iframe at
-// `/playground` and points it at `/dashboard?mode=playground`. When this flag
+// `/playground` and points it at `/shell.html?mode=playground`. When this flag
 // is set, the editor restricts the user to four surfaces: the project
 // dashboard, the editor itself, the AI copilot panel, and the player. Every
 // other surface (settings, export, multiplayer setup, asset uploads, admin)

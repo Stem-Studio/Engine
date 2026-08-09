@@ -3,15 +3,17 @@
  *
  * Today this package exposes two things:
  *
- * 1. **Adapter selection** — one place that resolves whether API
- *    traffic targets the canonical Go backend (`mode: "remote"`) or
- *    the local Node reference server in `client/packages/local-backend/`
- *    (`mode: "local"`). The app pages call `createBackendAdapter()`
- *    once at boot and read the resulting `{server, mode, entrypoint}`.
+ * 1. **Adapter selection** — one place that records local or remote
+ *    deployment intent. No-flag OSS and Playground sessions resolve to
+ *    local mode; `?backend=remote` is an explicit opt-in. The app pages
+ *    call `createBackendAdapter()` once at boot and read the resulting
+ *    `{server, mode, entrypoint}`.
  *
  * 2. **The API surface itself** — exported via the
  *    `@stem/network/api/*` subpath, which is path-aliased in tsconfig
- *    and vite to the implementation files under `adapters/remote-go/`.
+ *    and vite to compatibility modules under `adapters/remote-go/`.
+ *    Despite that legacy directory name, Playground scene persistence
+ *    routes through the local `ProjectStore`.
  *    New code should import from `@stem/network/api/<domain>`; the
  *    legacy `@web-shared/api/<domain>` alias resolves to the same
  *    location for the 200+ existing import sites.

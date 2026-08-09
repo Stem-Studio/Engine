@@ -1,7 +1,6 @@
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 
-import {IS_OSS} from "../../../buildMode";
 
 export type Career = {
     Name: string;
@@ -123,22 +122,7 @@ export type SelectedAction = {
  * @returns Promise with array of NPC data
  */
 export const getNPCList = async (): Promise<NPCBackendData[]> => {
-    if (IS_OSS) return [];
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/NPC/List`),
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to list NPCs.");
-        }
-
-        return response.data.Data || [];
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Failed to list NPCs.";
-        console.error("Error listing NPCs:", errorMessage);
-        throw new Error(errorMessage);
-    }
+    return [];
 };
 
 /**

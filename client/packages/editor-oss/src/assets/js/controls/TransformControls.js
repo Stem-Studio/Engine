@@ -2964,6 +2964,10 @@ class TransformControlsPlane extends Mesh {
 			new MeshBasicMaterial( { visible: false, wireframe: true, side: DoubleSide, transparent: true, opacity: 0.1, toneMapped: false } ),
 		);
 		this.controls = controls;
+		// The plane is an interaction surface only. Object-level visibility keeps
+		// WebGPU from submitting it even if material visibility is bypassed.
+		// Raycaster intentionally still intersects invisible Object3D instances.
+		this.visible = false;
 
 		this.isTransformControlsPlane = true;
 

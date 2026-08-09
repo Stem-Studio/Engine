@@ -1,7 +1,4 @@
-// @stem/editor-oss — OSS-safe editor + player + runtime core.
-//
-// This package contains code that must run without any proprietary backend.
-// Anything imported here must be safe to publish under MIT to GitHub.
+// @stem/editor-oss — open-source editor + player + runtime core.
 //
 // Forbidden imports inside this package (enforced by ESLint
 // no-restricted-paths once configured):

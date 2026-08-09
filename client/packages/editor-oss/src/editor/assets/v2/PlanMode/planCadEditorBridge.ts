@@ -27,13 +27,21 @@ import type {
   PlanWallNode,
 } from "./planCadCore";
 import global from "@stem/editor-oss/global";
+import { cloneJsonCompatible } from "@stem/editor-oss/utils/cloneJsonCompatible";
 import { getLogger } from "@stem/editor-oss/utils/Logger";
+import {
+  findObjectDepthFirst,
+  traverseObjectDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
+import { hydratePlanCadModelObjects } from "./planCadModelAssets";
+import {
+  fetchPascalPlanCadPartCatalogs,
+  PASCAL_PLAN_CAD_PART_CATALOGS,
+} from "./planCadPascalCatalog";
 
 export const PLAN_CAD_SCENE_USER_DATA_KEY = "planCad";
 export const PLAN_CAD_ROOT_NAME = "BIM Plan";
 export const PLAN_CAD_SCHEMA = "stem.planCad.v1";
-const PLAN_CAD_OWNER_NODE_ID_KEY = "planCadOwnerNodeId";
-const PLAN_CAD_OWNER_NODE_TYPE_KEY = "planCadOwnerNodeType";
 
 export type PlanCadToolId =
   | "select"
@@ -81,7 +89,7 @@ interface PlanCadEditorLike {
     parent?: THREE.Object3D,
   ) => Promise<unknown> | unknown;
   removeObject?: (object: THREE.Object3D) => unknown;
-  select?: (object: THREE.Object3D, noFocus?: boolean) => unknown;
+  select?: (object: THREE.Object3D | null, noFocus?: boolean) => unknown;
   execute?: (command: unknown) => Promise<unknown> | unknown;
 }
 
@@ -94,7 +102,7 @@ interface PlanCadAppLike {
   call?: (eventName: string, ...args: unknown[]) => void;
 }
 
-export const PLAN_CAD_PART_CATALOGS: PlanCadPartCategory[] = [
+const PLAN_CAD_BUILT_IN_PART_CATALOGS: PlanCadPartCategory[] = [
   {
     id: "furniture",
     label: "Furniture",
@@ -279,11 +287,53 @@ export const PLAN_CAD_PART_CATALOGS: PlanCadPartCategory[] = [
   },
 ];
 
+export const PLAN_CAD_PART_CATALOGS: PlanCadPartCategory[] = [
+  ...PLAN_CAD_BUILT_IN_PART_CATALOGS,
+  ...PASCAL_PLAN_CAD_PART_CATALOGS,
+];
+
 export const PLAN_CAD_PART_PRESETS: PlanCadPartPreset[] =
   PLAN_CAD_PART_CATALOGS.flatMap((category) => category.presets);
 
+function replacePlanCadPartCatalogs(catalogs: PlanCadPartCategory[]) {
+  PLAN_CAD_PART_CATALOGS.splice(0, PLAN_CAD_PART_CATALOGS.length, ...catalogs);
+  PLAN_CAD_PART_PRESETS.splice(
+    0,
+    PLAN_CAD_PART_PRESETS.length,
+    ...PLAN_CAD_PART_CATALOGS.flatMap((category) => category.presets),
+  );
+}
+
+export function getPlanCadPartCatalogs() {
+  return PLAN_CAD_PART_CATALOGS;
+}
+
+export function getPlanCadPartPresets() {
+  return PLAN_CAD_PART_PRESETS;
+}
+
+export function findPlanCadPartPreset(presetId: string | null | undefined) {
+  return (
+    PLAN_CAD_PART_PRESETS.find((item) => item.id === presetId) ??
+    PLAN_CAD_PART_PRESETS[0] ??
+    null
+  );
+}
+
+export async function refreshPascalPlanCadPartCatalogs(
+  fetcher?: typeof fetch,
+) {
+  const pascalCatalogs = await fetchPascalPlanCadPartCatalogs(fetcher);
+  const nextCatalogs = [
+    ...PLAN_CAD_BUILT_IN_PART_CATALOGS,
+    ...pascalCatalogs,
+  ];
+  replacePlanCadPartCatalogs(nextCatalogs);
+  return getPlanCadPartCatalogs();
+}
+
 function cloneData<T>(data: T): T {
-  return JSON.parse(JSON.stringify(data)) as T;
+  return cloneJsonCompatible(data);
 }
 
 function stableStringify(value: unknown): string {
@@ -322,14 +372,17 @@ function getPlanCadNodeHash(node: PlanNode) {
 }
 
 function disposePlanObject(object: THREE.Object3D) {
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
     mesh.geometry?.dispose();
     const materials = Array.isArray(mesh.material)
       ? mesh.material
       : [mesh.material];
-    for (const material of materials) material.dispose();
+    for (const material of materials) {
+      if (material.userData?.isPlanCadSharedMaterial) continue;
+      material.dispose();
+    }
   });
 }
 
@@ -416,8 +469,8 @@ function applyPlanObjectMetadata(object: THREE.Object3D, node: PlanNode) {
   object.userData.isStemObject = true;
   object.userData.isSelectable = true;
   object.userData.isRuntimeOnly = true;
+  object.userData.isBatchable = false;
   object.userData.isPlanCadManaged = true;
-  object.userData.isTransformLocked = true;
   object.userData.managedBy = "BIM Plan";
   object.userData.sceneTreeBadge = "BIM";
   object.userData.sceneTreeDescription = "Managed by BIM Plan";
@@ -426,20 +479,6 @@ function applyPlanObjectMetadata(object: THREE.Object3D, node: PlanNode) {
   object.userData.editorVisibility = node.visible;
   object.userData.gameVisibility = false;
   object.visible = node.visible;
-}
-
-function applyPlanObjectDescendantMetadata(
-  object: THREE.Object3D,
-  node: PlanNode,
-) {
-  object.traverse((child) => {
-    if (child === object) return;
-    child.userData[PLAN_CAD_OWNER_NODE_ID_KEY] = node.id;
-    child.userData[PLAN_CAD_OWNER_NODE_TYPE_KEY] = node.type;
-    child.userData.isRuntimeOnly = true;
-    child.userData.isTransformLocked = true;
-    child.userData.managedBy = "BIM Plan";
-  });
 }
 
 function createPlanObjectForNode(node: PlanNode) {
@@ -561,9 +600,9 @@ export function createPlanCadRootObject(
   root.userData.isStemObject = true;
   root.userData.isSelectable = true;
   root.userData.isRuntimeOnly = true;
+  root.userData.isBatchable = false;
   root.userData.isPlanCadRoot = true;
   root.userData.isPlanCadManaged = true;
-  root.userData.isTransformLocked = true;
   root.userData.managedBy = "BIM Plan";
   root.userData.editorVisibility = true;
   root.userData.gameVisibility = false;
@@ -574,11 +613,18 @@ export function createPlanCadRootObject(
 export function findPlanCadRoot(
   scene?: THREE.Object3D | null,
 ): THREE.Object3D | null {
-  let result: THREE.Object3D | null = null;
-  scene?.traverse((object) => {
-    if (!result && object.userData?.isPlanCadRoot === true) result = object;
+  if (!scene) return null;
+  return findObjectDepthFirst(scene, (object) => object.userData?.isPlanCadRoot === true);
+}
+
+function findPlanCadRoots(scene: THREE.Object3D): THREE.Object3D[] {
+  const roots: THREE.Object3D[] = [];
+  traverseObjectDepthFirst(scene, (object) => {
+    if (object !== scene && object.userData?.isPlanCadRoot === true) {
+      roots.push(object);
+    }
   });
-  return result;
+  return roots;
 }
 
 export function findPlanCadNodeObject(
@@ -592,38 +638,36 @@ export function findPlanCadNodeObject(
   return null;
 }
 
-function findPlanCadDeletionNodeId(
+export function getPlanCadNodeIdFromObject(
   object?: THREE.Object3D | null,
 ): string | null {
   const planObject = findPlanCadNodeObject(object);
   const nodeId = planObject?.userData?.planNodeId;
   if (typeof nodeId === "string") return nodeId;
 
-  let result: string | null = null;
-  object?.traverse((child) => {
-    if (result) return;
-    const childNodeId = child.userData?.planNodeId;
-    if (typeof childNodeId === "string") {
-      result = childNodeId;
-      return;
-    }
-    const ownerNodeId = child.userData?.[PLAN_CAD_OWNER_NODE_ID_KEY];
-    if (typeof ownerNodeId === "string") {
-      result = ownerNodeId;
-    }
-  });
-  return result;
+  const ownerNodeId = object?.userData?.planCadOwnerNodeId;
+  return typeof ownerNodeId === "string" ? ownerNodeId : null;
 }
 
-export function findPlanCadNodeObjectById(
-  root: THREE.Object3D | null | undefined,
-  nodeId: string | null | undefined,
-): THREE.Object3D | null {
-  if (!root || !nodeId) return null;
-  let result: THREE.Object3D | null = null;
-  root.traverse((object) => {
-    if (!result && object.userData?.planNodeId === nodeId) result = object;
-  });
+function findPlanCadDeletionNodeId(
+  object?: THREE.Object3D | null,
+): string | null {
+  const directNodeId = getPlanCadNodeIdFromObject(object);
+  if (directNodeId) return directNodeId;
+
+  let result: string | null = null;
+  if (object) {
+    traverseObjectDepthFirst(object, (child) => {
+      if (result) return;
+      const childNodeId = child.userData?.planNodeId;
+      if (typeof childNodeId === "string") {
+        result = childNodeId;
+        return;
+      }
+      const ownerNodeId = child.userData?.planCadOwnerNodeId;
+      if (typeof ownerNodeId === "string") result = ownerNodeId;
+    });
+  }
   return result;
 }
 
@@ -645,11 +689,19 @@ export async function deleteManagedPlanCadObject(
   }
 
   const nodeId = findPlanCadDeletionNodeId(object);
-  if (typeof nodeId !== "string") return false;
+  if (!nodeId) return false;
 
   const nextData = deletePlanCadNodeData(data, nodeId);
   if (getPlanCadDataHash(nextData) === getPlanCadDataHash(data)) return false;
   return commitPlanCadSceneData(editor, nextData);
+}
+
+export function findPlanCadNodeObjectById(
+  root: THREE.Object3D | null | undefined,
+  nodeId: string | null | undefined,
+): THREE.Object3D | null {
+  if (!root || !nodeId) return null;
+  return findObjectDepthFirst(root, (object) => object.userData?.planNodeId === nodeId);
 }
 
 function getStoredPlanNodeHashes(root: THREE.Object3D): Record<string, string> {
@@ -679,9 +731,9 @@ export function rebuildPlanCadRootObject(
   options: { force?: boolean } = {},
 ) {
   root.userData.isRuntimeOnly = true;
+  root.userData.isBatchable = false;
   root.userData.isPlanCadRoot = true;
   root.userData.isPlanCadManaged = true;
-  root.userData.isTransformLocked = true;
   root.userData.managedBy = "BIM Plan";
 
   const state = planCadDataToState(data);
@@ -696,13 +748,12 @@ export function rebuildPlanCadRootObject(
   );
   const sceneNodeIds = new Set(sceneNodes.map((node) => node.id));
 
-  root.traverse((object) => {
-    if (object === root) return;
+  traverseObjectDepthFirst(root, (object) => {
     const nodeId = object.userData?.planNodeId;
     if (typeof nodeId === "string") {
       existingObjects.set(nodeId, object);
     }
-  });
+  }, { includeRoot: false });
 
   for (const [nodeId, object] of existingObjects) {
     const node = state.nodes[nodeId];
@@ -760,10 +811,6 @@ export function rebuildPlanCadRootObject(
 
   state.dirtyNodeIds = dirtyNodeIds;
   processDirtyPlanNodes(state, registry);
-  for (const node of sceneNodes) {
-    const object = objects.get(node.id);
-    if (object) applyPlanObjectDescendantMetadata(object, node);
-  }
 
   root.userData.planCad = {
     schema: data.schema,
@@ -790,6 +837,11 @@ function removePlanCadDataFromScene(scene: THREE.Object3D) {
   const nextUserData = { ...(scene.userData || {}) };
   delete nextUserData[PLAN_CAD_SCENE_USER_DATA_KEY];
   scene.userData = nextUserData;
+}
+
+function hydratePlanCadExternalModels(root: THREE.Object3D, data: PlanCadSceneData) {
+  const tasks = hydratePlanCadModelObjects(root, data);
+  if (tasks.length) void Promise.allSettled(tasks);
 }
 
 function setPlanCadDataOnScene(scene: THREE.Object3D, data: PlanCadSceneData) {
@@ -832,26 +884,72 @@ function getEditorFromTarget(
   return target.editor ?? undefined;
 }
 
+export function setPlanCadSceneSelection(
+  editorInput: PlanCadEditorLike | PlanCadAppLike | null | undefined,
+  nodeId: string | null,
+  options: { source?: unknown } = {},
+) {
+  const editor =
+    getEditorFromTarget(editorInput) ??
+    (global.app?.editor as PlanCadEditorLike | undefined);
+  const scene = editor?.scene as THREE.Object3D | undefined;
+  if (!scene) return false;
+
+  const data = getPlanCadSceneData(scene);
+  if (!data) return false;
+
+  const nextNodeId = nodeId && data.nodes[nodeId] ? nodeId : null;
+  if ((data.selectedNodeId ?? null) === nextNodeId) return false;
+
+  const nextData = { ...data, selectedNodeId: nextNodeId };
+  setPlanCadDataOnScene(scene, nextData);
+
+  const root = findPlanCadRoot(scene);
+  if (root?.userData?.planCad) {
+    root.userData.planCad = {
+      ...root.userData.planCad,
+      selectedNodeId: nextNodeId,
+      dataHash: getPlanCadDataHash(nextData),
+    };
+  }
+
+  const source = options.source ?? editor;
+  global.app?.call?.("planCadChanged", source, nextData);
+  global.app?.call?.("objectChanged", source, scene);
+  return true;
+}
+
 export interface PlanCadSceneSyncResult {
   data: PlanCadSceneData | null;
   root: THREE.Object3D | null;
   changed: boolean;
 }
 
-export async function syncPlanCadScene(
-  editorInput?: PlanCadEditorLike | PlanCadAppLike | null,
-  options: { force?: boolean; selectNode?: boolean; source?: unknown } = {},
-): Promise<PlanCadSceneSyncResult> {
-  const editor =
-    getEditorFromTarget(editorInput) ??
-    (global.app?.editor as PlanCadEditorLike | undefined);
-  const scene = editor?.scene as THREE.Object3D | undefined;
-  if (!editor || !scene) return { data: null, root: null, changed: false };
+const planCadSceneSyncQueues = new WeakMap<THREE.Object3D, Promise<unknown>>();
 
+async function syncPlanCadSceneNow(
+  editor: PlanCadEditorLike,
+  scene: THREE.Object3D,
+  options: { force?: boolean; selectNode?: boolean; source?: unknown },
+): Promise<PlanCadSceneSyncResult> {
   const app = global.app;
   const data = getPlanCadSceneData(scene);
-  let root = findPlanCadRoot(scene);
+  const roots = findPlanCadRoots(scene);
+  let root = roots[0] ?? null;
   let changed = false;
+
+  // Multiple UI owners can request scene synchronization during the same
+  // scene-load turn. Keep one canonical generated root and remove stale copies
+  // left by older builds or an interrupted concurrent load.
+  for (let index = 1; index < roots.length; index += 1) {
+    const duplicate = roots[index]!;
+    disposePlanObject(duplicate);
+    // This is internal render-state repair, not a user deletion. Removing it
+    // directly avoids the objectRemoved handler interpreting the duplicate as
+    // a request to delete the canonical Plan/CAD scene data.
+    duplicate.parent?.remove(duplicate);
+    changed = true;
+  }
 
   if (!data) {
     if (root) {
@@ -873,6 +971,8 @@ export async function syncPlanCadScene(
     changed = true;
   }
 
+  if (root) hydratePlanCadExternalModels(root, data);
+
   if (root && options.selectNode) {
     const selectedObject = findPlanCadNodeObjectById(
       root,
@@ -888,6 +988,34 @@ export async function syncPlanCadScene(
   return { data, root, changed };
 }
 
+export function syncPlanCadScene(
+  editorInput?: PlanCadEditorLike | PlanCadAppLike | null,
+  options: { force?: boolean; selectNode?: boolean; source?: unknown } = {},
+): Promise<PlanCadSceneSyncResult> {
+  const editor =
+    getEditorFromTarget(editorInput) ??
+    (global.app?.editor as PlanCadEditorLike | undefined);
+  const scene = editor?.scene as THREE.Object3D | undefined;
+  if (!editor || !scene) {
+    return Promise.resolve({ data: null, root: null, changed: false });
+  }
+
+  const previous = planCadSceneSyncQueues.get(scene);
+  const current = previous
+    ? previous
+        .catch(() => undefined)
+        .then(() => syncPlanCadSceneNow(editor, scene, options))
+    : syncPlanCadSceneNow(editor, scene, options);
+  planCadSceneSyncQueues.set(scene, current);
+  const clearQueue = () => {
+    if (planCadSceneSyncQueues.get(scene) === current) {
+      planCadSceneSyncQueues.delete(scene);
+    }
+  };
+  void current.then(clearQueue, clearQueue);
+  return current;
+}
+
 class PlanCadSceneDataCommand {
   type = "PlanCadSceneDataCommand";
   name = "Set BIM Plan data";
@@ -899,9 +1027,10 @@ class PlanCadSceneDataCommand {
   constructor(
     private readonly editor: PlanCadEditorLike,
     data: PlanCadSceneData | null,
+    oldData?: PlanCadSceneData | null,
   ) {
     this.object = editor?.scene;
-    this.oldData = getPlanCadSceneData(this.object);
+    this.oldData = oldData !== undefined ? (oldData ? cloneData(oldData) : null) : getPlanCadSceneData(this.object);
     this.newData = data ? cloneData(data) : null;
   }
 
@@ -942,14 +1071,14 @@ class PlanCadSceneDataCommand {
   }
 
   undo() {
-    void this.apply(this.oldData);
-    return { message: "PlanCadSceneDataCommand: reverted", status: "success" };
+    return this.apply(this.oldData);
   }
 }
 
 export async function commitPlanCadSceneData(
   editorInput: PlanCadEditorLike | PlanCadAppLike | null | undefined,
   data: PlanCadSceneData | null,
+  options: { oldData?: PlanCadSceneData | null } = {},
 ) {
   const editor =
     getEditorFromTarget(editorInput) ??
@@ -962,7 +1091,7 @@ export async function commitPlanCadSceneData(
     });
     return false;
   }
-  const command = new PlanCadSceneDataCommand(editor, data);
+  const command = new PlanCadSceneDataCommand(editor, data, options.oldData);
   try {
     if (typeof editor.execute === "function") {
       await editor.execute(command);
@@ -981,8 +1110,7 @@ export async function commitPlanCadSceneData(
 function isManagedPlanCadObject(object?: THREE.Object3D | null) {
   return (
     !!object?.userData?.isPlanCadManaged ||
-    typeof object?.userData?.planNodeId === "string" ||
-    typeof object?.userData?.[PLAN_CAD_OWNER_NODE_ID_KEY] === "string"
+    typeof object?.userData?.planNodeId === "string"
   );
 }
 
@@ -1036,19 +1164,34 @@ export function installPlanCadSceneSync(
   on("objectChanged.PlanCadSceneSync", (...args: unknown[]) => {
     const [source, object] = args as [unknown, THREE.Object3D | undefined];
     syncAfterSceneDataChange(source, object);
-    resetManagedObject(source, object);
   });
   on("objectRemoved.PlanCadSceneSync", (...args: unknown[]) => {
     const [source, object] = args as [unknown, THREE.Object3D | undefined];
-    if (object?.userData?.isPlanCadRoot && getPlanCadSceneData(editor.scene)) {
-      void commitPlanCadSceneData(editor, null);
-      return;
-    }
-    if (object && isManagedPlanCadObject(object)) {
-      void deleteManagedPlanCadObject(editor, object);
+    if (object?.userData?.isPlanCadRoot) {
+      const scene = editor.scene;
+      if (!scene) return;
+      const oldData = getPlanCadSceneData(scene);
+      if (oldData) {
+        removePlanCadDataFromScene(scene);
+        app?.call?.("objectChanged", source ?? editor, scene);
+        app?.call?.("planCadChanged", source ?? editor, null);
+        void commitPlanCadSceneData(editor, null, { oldData });
+      }
       return;
     }
     resetManagedObject(source, object);
+  });
+  on("objectSelected.PlanCadSceneSync", (...args: unknown[]) => {
+    const [source, object] = args as [
+      unknown,
+      THREE.Object3D | THREE.Object3D[] | null | undefined,
+    ];
+    const selectedObject = Array.isArray(object) ? null : object;
+    setPlanCadSceneSelection(
+      editor,
+      getPlanCadNodeIdFromObject(selectedObject),
+      { source },
+    );
   });
 
   runSync({ force: false });
@@ -1059,6 +1202,7 @@ export function installPlanCadSceneSync(
     on("editorCleared.PlanCadSceneSync", null);
     on("objectChanged.PlanCadSceneSync", null);
     on("objectRemoved.PlanCadSceneSync", null);
+    on("objectSelected.PlanCadSceneSync", null);
   };
 }
 
@@ -1199,9 +1343,8 @@ export function createPlanCadPart(
   options: PlanCadToolOptions = {},
 ) {
   return mutatePlanCadData(data, (state, activeLevelId) => {
-    const preset =
-      PLAN_CAD_PART_PRESETS.find((item) => item.id === options.partPresetId) ??
-      PLAN_CAD_PART_PRESETS[0]!;
+    const preset = findPlanCadPartPreset(options.partPresetId);
+    if (!preset) return null;
     const item = createPlanItemToolNode(activeLevelId, {
       name: preset.label,
       placement: preset.placement,

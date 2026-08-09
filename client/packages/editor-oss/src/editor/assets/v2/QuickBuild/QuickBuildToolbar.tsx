@@ -66,6 +66,7 @@ import {
   findNearestQuickBuildObjectNearPoint,
   getQuickBuildBrushPoints,
   getQuickBuildPlacementCandidates,
+  getQuickBuildSceneCounts,
   QuickBuildBrushMode,
   rebuildQuickBuildLiveBatch,
   refreshQuickBuildAdjacency,
@@ -82,22 +83,22 @@ import {
 import type { QuickBuildTexturePreset } from "./quickBuildTexturePacks";
 import {
   BuilderAnchorPill as AnchorPill,
-  BuilderModeLabel as ModeLabel,
+  BuilderModeLabel as BaseModeLabel,
   BuilderPanelDivider as PanelDivider,
   BuilderSwatch as Swatch,
-  BuilderToolButton as ToolButton,
-  BuilderToolGroupButton as ToolGroupButton,
+  BuilderToolButton as BaseToolButton,
+  BuilderToolGroupButton as BaseToolGroupButton,
   BuilderToolLabel as ToolLabel,
   BuilderToolMenuChevron as ToolMenuChevron,
-  BuilderToolMenuGroup as ToolMenuGroup,
+  BuilderToolMenuGroup as BaseToolMenuGroup,
   BuilderToolMenuIcon as ToolMenuIcon,
   BuilderToolMenuItem as ToolMenuItem,
   BuilderToolMenuLabel as ToolMenuLabel,
   BuilderToolMenuSheet as ToolMenuSheet,
   BuilderToolMenuShortcut as ToolMenuShortcut,
   BuilderToolMenuText as ToolMenuText,
-  BuilderToolbar as Toolbar,
-  BuilderToolsCluster as ToolsCluster,
+  BuilderToolbar as BaseToolbar,
+  BuilderToolsCluster as BaseToolsCluster,
   builderToolbarToolColors,
   builderToolbarTokens,
   focusVisibleRing,
@@ -112,6 +113,11 @@ import type Editor from "@stem/editor-oss/editor/Editor";
 import global from "@stem/editor-oss/global";
 import { showToast } from "@stem/editor-oss/showToast";
 import { getLogger } from "@stem/editor-oss/utils/Logger";
+import {
+  findObjectByUuidDepthFirst,
+  traverseObjectDepthFirst,
+  updateObjectMatrixWorldDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
 
 type QuickBuildToolId = "select" | "erase" | QuickBuildStampKind;
 
@@ -137,6 +143,11 @@ type QuickBuildBrushTool = {
 };
 
 type TexturePackStatus = "loading" | "loaded" | "unavailable" | "error";
+type QuickBuildPlacementStatusTone = "ready" | "blocked" | "working";
+type QuickBuildPlacementStatus = {
+  tone: QuickBuildPlacementStatusTone;
+  label: string;
+};
 
 const QUICK_BUILD_SCENE_REFRESH_DEBOUNCE_MS = 250;
 const QUICK_BUILD_LIVE_REFRESH_GRACE_MS =
@@ -595,40 +606,35 @@ function quickBuildCellKey(point: THREE.Vector3, cellSize: number) {
   return `${roundNumber(snapped.x)}:${roundNumber(snapped.z)}`;
 }
 
-function countStackableQuickBuildObjectsInCell(
+function collectStackableQuickBuildCellCounts(
   scene: THREE.Object3D | null,
-  point: THREE.Vector3,
   cellSize: number,
 ) {
-  if (!scene) return 0;
-  const targetKey = quickBuildCellKey(point, cellSize);
-  let count = 0;
+  const counts = new Map<string, number>();
+  if (!scene) return counts;
+  const worldPosition = new THREE.Vector3();
   for (const object of collectQuickBuildObjects(scene)) {
     if (object.visible === false) continue;
     const metadata = getQuickBuildMetadata(object);
     if (!metadata || !isQuickBuildStackableKind(metadata.kind)) continue;
-    const worldPosition = new THREE.Vector3();
     object.getWorldPosition(worldPosition);
-    if (quickBuildCellKey(worldPosition, cellSize) === targetKey) count += 1;
+    const key = quickBuildCellKey(worldPosition, cellSize);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  return count;
+  return counts;
 }
 
 function getQuickBuildPlacementSeed(
-  scene: THREE.Object3D | null,
   kind: QuickBuildStampKind,
   point: THREE.Vector3,
   cellSize: number,
+  existingCellCounts: ReadonlyMap<string, number>,
   localCellCounts: Map<string, number>,
 ) {
   const cellKey = quickBuildCellKey(point, cellSize);
   const localIndex = localCellCounts.get(cellKey) ?? 0;
   localCellCounts.set(cellKey, localIndex + 1);
-  const existingCount = countStackableQuickBuildObjectsInCell(
-    scene,
-    point,
-    cellSize,
-  );
+  const existingCount = existingCellCounts.get(cellKey) ?? 0;
   return `${kind}:${cellKey}:${existingCount + localIndex}`;
 }
 
@@ -646,10 +652,10 @@ function getQuickBuildObjectPlacementPoint(
 }
 
 function getQuickBuildResolvedPlacementPoint(
-  scene: THREE.Object3D | null,
   kind: QuickBuildStampKind,
   point: THREE.Vector3,
   cellSize: number,
+  existingCellCounts: ReadonlyMap<string, number>,
   localCellCounts: Map<string, number>,
 ) {
   const snapped = snapQuickBuildPoint(point, cellSize);
@@ -658,7 +664,7 @@ function getQuickBuildResolvedPlacementPoint(
     kind,
     point,
     cellSize,
-    getQuickBuildPlacementSeed(scene, kind, snapped, cellSize, localCellCounts),
+    getQuickBuildPlacementSeed(kind, snapped, cellSize, existingCellCounts, localCellCounts),
   );
 }
 
@@ -687,7 +693,7 @@ function movePreviewObjectToPoint(
   object: THREE.Object3D,
   point: THREE.Vector3Like,
 ) {
-  object.updateMatrixWorld(true);
+  updateObjectMatrixWorldDepthFirst(object, true);
   const boundingBox = new THREE.Box3().setFromObject(object);
   const objBottom = boundingBox.min.y;
   if (!isFinite(objBottom)) {
@@ -696,7 +702,7 @@ function movePreviewObjectToPoint(
     const deltaY = point.y - objBottom;
     object.position.set(point.x, object.position.y + deltaY, point.z);
   }
-  object.updateMatrixWorld(true);
+  updateObjectMatrixWorldDepthFirst(object, true);
 }
 
 function roundNumber(value: number) {
@@ -737,7 +743,7 @@ function objectRenderDiagnostics(
 ) {
   if (!object) return null;
 
-  object.updateWorldMatrix(true, true);
+  updateObjectMatrixWorldDepthFirst(object, true);
   const worldPosition = new THREE.Vector3();
   object.getWorldPosition(worldPosition);
   const box = new THREE.Box3().setFromObject(object);
@@ -767,7 +773,7 @@ function objectRenderDiagnostics(
   let mappedMaterialCount = 0;
   let batchableMeshCount = 0;
 
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
 
@@ -847,11 +853,7 @@ function findSceneObjectByUuid(
   scene: THREE.Object3D | null | undefined,
   uuid: string,
 ): THREE.Object3D | null {
-  let result: THREE.Object3D | null = null;
-  scene?.traverse((object) => {
-    if (!result && object.uuid === uuid) result = object;
-  });
-  return result;
+  return scene ? findObjectByUuidDepthFirst(scene, uuid) : null;
 }
 
 function getBakeSourceUuids(batches: THREE.Object3D[]) {
@@ -1073,6 +1075,7 @@ function createQuickBuildObjectsForPoints(
 ): THREE.Object3D[] {
   const cellSize = getQuickBuildToolSnap(app, kind);
   const scene = getQuickBuildScene(app);
+  const existingCellCounts = collectStackableQuickBuildCellCounts(scene, cellSize);
   const localCellCounts = new Map<string, number>();
   const rotationY = getQuickBuildRotationRadians(rotationSteps);
   return points.map((point) => {
@@ -1084,10 +1087,10 @@ function createQuickBuildObjectsForPoints(
     app.editor?.moveObjectToPoint(
       object,
       getQuickBuildResolvedPlacementPoint(
-        scene,
         kind,
         point,
         cellSize,
+        existingCellCounts,
         localCellCounts,
       ),
     );
@@ -1331,7 +1334,7 @@ async function applyQuickBuildTextureToSelection(
 }
 
 function disposePreviewObject(object: THREE.Object3D) {
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
 
@@ -1346,7 +1349,7 @@ function disposePreviewObject(object: THREE.Object3D) {
 }
 
 function setPreviewValidity(object: THREE.Object3D, valid: boolean) {
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
 
@@ -1389,7 +1392,7 @@ function createEraseHighlightMaterial(material: THREE.Material) {
 
 function applyQuickBuildEraseHighlight(object: THREE.Object3D) {
   const records: QuickBuildEraseHighlightRecord[] = [];
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
 
@@ -1579,6 +1582,10 @@ export const QuickBuildToolbar = ({
     stampCount: 0,
     bakedBatchCount: 0,
   });
+  const [placementStatus, setPlacementStatus] =
+    useState<QuickBuildPlacementStatus | null>(null);
+  const [isCompactLandscape, setIsCompactLandscape] = useState(false);
+  const [utilitiesOpen, setUtilitiesOpen] = useState(false);
   const [showHint, setShowHint] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -1589,6 +1596,11 @@ export const QuickBuildToolbar = ({
   });
   const activeToolRef = useRef(activeTool);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const previousOpenToolGroupIdRef = useRef<string | null>(null);
+  // A keyboard-opened menu should honor the direction that opened it: Down
+  // enters at the first item, while Up enters at the last item. Pointer and
+  // click activation retain the familiar first-item behavior.
+  const pendingToolGroupFocusIndexRef = useRef<number | null>(null);
   const brushModeRef = useRef(brushMode);
   const brushRadiusRef = useRef(brushRadius);
   const brushAnchorRef = useRef<THREE.Vector3 | null>(brushAnchor);
@@ -1599,6 +1611,8 @@ export const QuickBuildToolbar = ({
   const selectedTexturePresetRef = useRef<QuickBuildTexturePreset | null>(null);
   const previewGroupRef = useRef<THREE.Group | null>(null);
   const previewKeyRef = useRef("");
+  const placementStatusKeyRef = useRef("");
+  const placementStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLiveBatchRefreshAtRef = useRef(0);
   const eraseHighlightRef = useRef<{
     target: THREE.Object3D;
@@ -1660,7 +1674,47 @@ export const QuickBuildToolbar = ({
           ? formatQuickBuildTexturePresetCredit(selectedTexturePreset)
           : "Texture applies to the selected Quick Build object and future matching stamps";
 
-  const clearPreview = useCallback(() => {
+  useLayoutEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia(
+      "(max-width: 960px) and (max-height: 600px) and (orientation: landscape)",
+    );
+    const sync = () => setIsCompactLandscape(media.matches);
+    sync();
+    media.addEventListener?.("change", sync);
+    return () => media.removeEventListener?.("change", sync);
+  }, []);
+
+  const updatePlacementStatus = useCallback(
+    (next: QuickBuildPlacementStatus | null) => {
+      const nextKey = next ? `${next.tone}:${next.label}` : "";
+      if (placementStatusKeyRef.current === nextKey) return;
+      placementStatusKeyRef.current = nextKey;
+      setPlacementStatus(next);
+    },
+    [],
+  );
+
+  const showTransientPlacementStatus = useCallback(
+    (next: QuickBuildPlacementStatus, durationMs = 1200) => {
+      if (placementStatusTimerRef.current !== null) {
+        clearTimeout(placementStatusTimerRef.current);
+      }
+      updatePlacementStatus(next);
+      const expectedKey = `${next.tone}:${next.label}`;
+      placementStatusTimerRef.current = setTimeout(() => {
+        placementStatusTimerRef.current = null;
+        if (placementStatusKeyRef.current === expectedKey) {
+          updatePlacementStatus(null);
+        }
+      }, durationMs);
+    },
+    [updatePlacementStatus],
+  );
+
+  const removePreviewGroup = useCallback(() => {
     const preview = previewGroupRef.current;
     previewKeyRef.current = "";
     if (!preview) return;
@@ -1669,6 +1723,21 @@ export const QuickBuildToolbar = ({
     disposePreviewObject(preview);
     previewGroupRef.current = null;
   }, []);
+
+  const clearPreview = useCallback(() => {
+    removePreviewGroup();
+    updatePlacementStatus(null);
+  }, [removePreviewGroup, updatePlacementStatus]);
+
+  useEffect(
+    () => () => {
+      if (placementStatusTimerRef.current !== null) {
+        clearTimeout(placementStatusTimerRef.current);
+        placementStatusTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const clearEraseHighlight = useCallback(() => {
     const highlighted = eraseHighlightRef.current;
@@ -1766,14 +1835,39 @@ export const QuickBuildToolbar = ({
         baseCellSize,
         rotationY,
       );
+      const validCount = candidates.filter((candidate) => candidate.valid).length;
+      const blockedCount = candidates.length - validCount;
+      const firstBlockedReason = candidates.find((candidate) => !candidate.valid)?.reason;
+      const blockedLabel =
+        firstBlockedReason === "overlap"
+          ? "overlap"
+          : firstBlockedReason === "duplicate"
+            ? "occupied"
+            : "blocked";
+      const nextPlacementStatus: QuickBuildPlacementStatus =
+        candidates.length === 0
+          ? { tone: "blocked", label: "No placement cells" }
+          : validCount === 0
+            ? { tone: "blocked", label: `Blocked · ${blockedLabel}` }
+            : blockedCount > 0
+              ? {
+                  tone: "ready",
+                  label: `${validCount} ready · ${blockedCount} blocked`,
+                }
+              : { tone: "ready", label: `${validCount} ready` };
+      updatePlacementStatus(nextPlacementStatus);
+      const existingCellCounts = collectStackableQuickBuildCellCounts(
+        scene,
+        cellSize,
+      );
       const previewCellCounts = new Map<string, number>();
       const previewPlacements = candidates.map((candidate) => ({
         candidate,
         placementPoint: getQuickBuildResolvedPlacementPoint(
-          scene,
           tool,
           candidate.point,
           cellSize,
+          existingCellCounts,
           previewCellCounts,
         ),
       }));
@@ -1793,7 +1887,8 @@ export const QuickBuildToolbar = ({
       });
       if (previewKeyRef.current === previewKey) return;
 
-      clearPreview();
+      removePreviewGroup();
+      updatePlacementStatus(nextPlacementStatus);
       previewKeyRef.current = previewKey;
       const previewGroup = new THREE.Group();
       previewGroup.name = "Quick Build Preview";
@@ -1812,7 +1907,7 @@ export const QuickBuildToolbar = ({
         previewGroupRef.current = previewGroup;
       }
     },
-    [clearPreview],
+    [clearPreview, removePreviewGroup, updatePlacementStatus],
   );
 
   const refreshLiveBatch = useCallback(
@@ -1836,9 +1931,10 @@ export const QuickBuildToolbar = ({
   const refreshSceneSummary = useCallback(() => {
     const app = global.app as EngineRuntime | undefined;
     const scene = app ? getQuickBuildScene(app) : null;
+    const counts = getQuickBuildSceneCounts(scene);
     setSceneSummary({
-      stampCount: collectQuickBuildObjects(scene).length,
-      bakedBatchCount: collectQuickBuildBakeObjects(scene).length,
+      stampCount: counts.stampCount,
+      bakedBatchCount: counts.bakedBatchCount,
     });
   }, []);
 
@@ -2106,6 +2202,48 @@ export const QuickBuildToolbar = ({
     };
   }, [openToolGroupId]);
 
+  // Keep grouped tool menus keyboard-safe: opening moves focus into the menu
+  // and closing returns it to the invoking trigger.
+  useLayoutEffect(() => {
+    const previousGroupId = previousOpenToolGroupIdRef.current;
+    let deferredFocusFrame: number | null = null;
+    if (openToolGroupId) {
+      const items = Array.from(
+        toolbarRef.current?.querySelectorAll<HTMLElement>(
+          `[data-testid="quick-build-menu-${openToolGroupId}"] [role="menuitemradio"]`,
+        ) ?? [],
+      );
+      const pendingIndex = pendingToolGroupFocusIndexRef.current;
+      pendingToolGroupFocusIndexRef.current = null;
+      const targetIndex =
+        pendingIndex === null
+          ? 0
+          : pendingIndex < 0
+            ? items.length - 1
+            : pendingIndex;
+      const focusTarget = () => items[targetIndex]?.focus();
+      // React commits the menu and browser keyboard activation can restore
+      // focus to the trigger after the commit. Re-assert once on the next
+      // frame so keyboard entry is stable in real browsers as well as tests.
+      focusTarget();
+      if (typeof window !== "undefined" && window.requestAnimationFrame) {
+        deferredFocusFrame = window.requestAnimationFrame(focusTarget);
+      }
+    } else if (previousGroupId) {
+      toolbarRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-testid="quick-build-group-${previousGroupId}"]`,
+        )
+        ?.focus();
+    }
+    previousOpenToolGroupIdRef.current = openToolGroupId;
+    return () => {
+      if (deferredFocusFrame !== null) {
+        window.cancelAnimationFrame?.(deferredFocusFrame);
+      }
+    };
+  }, [openToolGroupId]);
+
   useEffect(() => {
     if (!textureTargetKind || texturePackStatus !== "loaded") return;
     if (compatibleTexturePresets.length === 0) return;
@@ -2289,8 +2427,14 @@ export const QuickBuildToolbar = ({
             },
           );
           clearEraseHighlight();
+          updatePlacementStatus({ tone: "working", label: "Erasing…" });
           void eraseQuickBuildObject(app, eraseTarget).then((didErase) => {
-            if (didErase) refreshLiveBatch();
+            if (didErase) {
+              refreshLiveBatch();
+              showTransientPlacementStatus({ tone: "ready", label: "Erased" });
+            } else {
+              updatePlacementStatus({ tone: "blocked", label: "Erase failed" });
+            }
           });
         } else {
           logQuickBuild(
@@ -2301,6 +2445,7 @@ export const QuickBuildToolbar = ({
             },
             "warn",
           );
+          updatePlacementStatus({ tone: "blocked", label: "No object at cell" });
         }
         return;
       }
@@ -2348,8 +2493,10 @@ export const QuickBuildToolbar = ({
                   })),
                 },
               );
+              updatePlacementStatus({ tone: "blocked", label: "Already painted" });
               return;
             }
+            updatePlacementStatus({ tone: "working", label: "Painting…" });
             void paintQuickBuildObject(app, matchingRoot, texturePreset)
               .then((didPaint) => {
                 logQuickBuild(
@@ -2368,9 +2515,18 @@ export const QuickBuildToolbar = ({
                   },
                   didPaint ? "info" : "warn",
                 );
+                if (didPaint) {
+                  showTransientPlacementStatus({ tone: "ready", label: "Painted" });
+                } else {
+                  updatePlacementStatus({
+                    tone: "blocked",
+                    label: "Blocked · paint unavailable",
+                  });
+                }
                 refreshLiveBatch();
               })
               .catch(() => {
+                updatePlacementStatus({ tone: "blocked", label: "Texture load failed" });
                 showToast({
                   type: "error",
                   body: "Could not load Quick Build texture.",
@@ -2394,6 +2550,7 @@ export const QuickBuildToolbar = ({
             },
             "warn",
           );
+          updatePlacementStatus({ tone: "blocked", label: "Blocked · occupied" });
           return;
         }
       }
@@ -2403,6 +2560,10 @@ export const QuickBuildToolbar = ({
         !brushAnchorRef.current
       ) {
         setBrushAnchorDraft(snapped);
+        updatePlacementStatus({
+          tone: "ready",
+          label: `${activeBrushMode === "line" ? "Line" : "Rectangle"} start set`,
+        });
         return;
       }
 
@@ -2435,6 +2596,7 @@ export const QuickBuildToolbar = ({
           renderer: rendererDiagnostics(app),
         })),
       });
+      updatePlacementStatus({ tone: "working", label: "Placing…" });
       void placeQuickBuildObjects(
         app,
         tool,
@@ -2448,9 +2610,13 @@ export const QuickBuildToolbar = ({
             setBrushAnchorDraft(null);
             clearPreview();
             refreshLiveBatch();
+            showTransientPlacementStatus({ tone: "ready", label: "Placed" });
+          } else {
+            updatePlacementStatus({ tone: "blocked", label: "Blocked · no free cells" });
           }
         })
         .catch(() => {
+          updatePlacementStatus({ tone: "blocked", label: "Placement failed" });
           showToast({
             type: "error",
             body: "Could not load Quick Build texture.",
@@ -2462,8 +2628,10 @@ export const QuickBuildToolbar = ({
       clearPreview,
       refreshLiveBatch,
       setBrushAnchorDraft,
+      showTransientPlacementStatus,
       updateEraseHighlight,
       updatePreview,
+      updatePlacementStatus,
     ],
   );
 
@@ -2861,12 +3029,13 @@ export const QuickBuildToolbar = ({
   };
 
   return (
-    <Toolbar
+    <>
+      <Toolbar
       ref={toolbarRef}
-      $bottom="18px"
       data-testid="quick-build-toolbar"
       data-quick-build-ui="true"
       data-active-tool={activeTool}
+      $menuOpen={!!openToolGroupId || (isCompactLandscape && utilitiesOpen)}
       style={
         pinnedCodeEditorWidth > 0
           ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
@@ -2910,8 +3079,8 @@ export const QuickBuildToolbar = ({
               key={tool.id}
               text={`${tool.label}${formatQuickBuildShortcut(tool)}`}
               height="auto"
-              triggerWidth="54px"
-              triggerHeight="34px"
+              triggerWidth="48px"
+              triggerHeight="32px"
             >
               <ToolButton
                 type="button"
@@ -2972,8 +3141,8 @@ export const QuickBuildToolbar = ({
               <Tooltip
                 text={`${group.label}: ${group.tools.map((tool) => `${tool.label}${formatQuickBuildShortcut(tool)}`).join(", ")}`}
                 height="auto"
-                triggerWidth="92px"
-                triggerHeight="40px"
+                triggerWidth="74px"
+                triggerHeight="34px"
               >
                 <ToolGroupButton
                   type="button"
@@ -2984,6 +3153,23 @@ export const QuickBuildToolbar = ({
                   data-testid={`quick-build-group-${group.id}`}
                   $selected={selected}
                   $color={groupActiveTool.color}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+                      event.preventDefault();
+                      pendingToolGroupFocusIndexRef.current = 0;
+                      setOpenToolGroupId(group.id);
+                    } else if (
+                      event.key === "ArrowUp" ||
+                      event.key === "ArrowLeft"
+                    ) {
+                      event.preventDefault();
+                      pendingToolGroupFocusIndexRef.current = -1;
+                      setOpenToolGroupId(group.id);
+                    } else if (event.key === "Escape" && isOpen) {
+                      event.preventDefault();
+                      setOpenToolGroupId(null);
+                    }
+                  }}
                   onPointerDown={(event) => {
                     if (!event.isPrimary || event.button !== 0) return;
                     event.stopPropagation();
@@ -3006,7 +3192,38 @@ export const QuickBuildToolbar = ({
                 role="menu"
                 aria-label={`${group.label} quick build tools`}
                 aria-hidden={!isOpen}
+                data-testid={`quick-build-menu-${group.id}`}
                 $open={isOpen}
+                onKeyDown={(event) => {
+                  const items = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                      '[role="menuitemradio"]',
+                    ),
+                  );
+                  const currentIndex = items.indexOf(
+                    document.activeElement as HTMLButtonElement,
+                  );
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setOpenToolGroupId(null);
+                    return;
+                  }
+                  if (items.length === 0) return;
+                  let nextIndex = currentIndex;
+                  if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+                    nextIndex = (currentIndex + 1 + items.length) % items.length;
+                  } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+                    nextIndex = (currentIndex - 1 + items.length) % items.length;
+                  } else if (event.key === "Home") {
+                    nextIndex = 0;
+                  } else if (event.key === "End") {
+                    nextIndex = items.length - 1;
+                  } else {
+                    return;
+                  }
+                  event.preventDefault();
+                  items[nextIndex]?.focus();
+                }}
               >
                 {group.tools.map((tool) => {
                   const Icon = tool.Icon;
@@ -3020,6 +3237,7 @@ export const QuickBuildToolbar = ({
                       key={`${tool.id}-${tool.variantId ?? "default"}`}
                       type="button"
                       role="menuitemradio"
+                      tabIndex={isOpen ? 0 : -1}
                       aria-checked={optionSelected}
                       aria-pressed={optionSelected}
                       aria-label={`${tool.label} tool${formatQuickBuildShortcut(tool)}`}
@@ -3059,12 +3277,26 @@ export const QuickBuildToolbar = ({
         $color={activeToolDefinition?.color}
         aria-hidden="true"
       />
+      <UtilityToggle
+        type="button"
+        aria-label="Quick Build utility controls"
+        aria-expanded={utilitiesOpen}
+        data-testid="quick-build-utilities-toggle"
+        $open={utilitiesOpen}
+        onClick={() => setUtilitiesOpen((open) => !open)}
+      >
+        <VscSymbolColor size={14} />
+        <UtilityToggleLabel $open={utilitiesOpen}>
+          {utilitiesOpen ? "Close" : "More"}
+        </UtilityToggleLabel>
+      </UtilityToggle>
+      <UtilitiesCluster $open={!isCompactLandscape || utilitiesOpen}>
       <PanelDivider />
       <Tooltip
         text={textureTooltip}
         height="auto"
-        triggerWidth="168px"
-        triggerHeight="34px"
+        triggerWidth="140px"
+        triggerHeight="32px"
       >
         <TextureSelectShell
           data-testid="quick-build-texture-select"
@@ -3117,8 +3349,8 @@ export const QuickBuildToolbar = ({
               key={tool.id}
               text={`${tool.label} brush`}
               height="auto"
-              triggerWidth="28px"
-              triggerHeight="34px"
+              triggerWidth="26px"
+              triggerHeight="32px"
             >
               <BrushButton
                 type="button"
@@ -3141,8 +3373,8 @@ export const QuickBuildToolbar = ({
         <Tooltip
           text={`Radius ${brushRadius} ([ / ])`}
           height="auto"
-          triggerWidth="54px"
-          triggerHeight="34px"
+          triggerWidth="50px"
+          triggerHeight="32px"
         >
           <RadiusControl>
             <RadiusButton
@@ -3170,8 +3402,8 @@ export const QuickBuildToolbar = ({
       <Tooltip
         text={`Rotate stamp ${placementRotationDegrees}deg (R / Shift+R)`}
         height="auto"
-        triggerWidth="72px"
-        triggerHeight="34px"
+        triggerWidth="66px"
+        triggerHeight="32px"
       >
         <RotationControl aria-label="Quick build placement rotation">
           <RotationButton
@@ -3233,18 +3465,219 @@ export const QuickBuildToolbar = ({
           </BakeStatus>
         )}
       </BakeGroup>
+      </UtilitiesCluster>
       {brushAnchor && (
         <AnchorPill>
           {brushMode === "line" ? "Line" : "Rect"} start
         </AnchorPill>
       )}
-    </Toolbar>
+      </Toolbar>
+      {placementStatus && (
+        <PlacementStatusPill
+          data-testid="quick-build-placement-status"
+          data-tone={placementStatus.tone}
+          role="status"
+          aria-live="polite"
+          $tone={placementStatus.tone}
+        >
+          {placementStatus.label}
+        </PlacementStatusPill>
+      )}
+    </>
   );
 };
 
+// Quick Build is intentionally a single compact rail in landscape. The shared
+// builder toolbar defaults to a wrapping card for CAD/Plan, but wrapping every
+// Quick Build control makes the viewport feel hidden on shorter screens. Keep
+// the rail scrollable at narrow widths while allowing the optional coach mark
+// to float above it without changing its height.
+const Toolbar = styled(BaseToolbar).attrs({
+  // Keep the rail inside the playable center lane when editor side panels are
+  // open. It remains horizontally scrollable when the lane is narrower than
+  // the complete tool set.
+  $maxWidth: "min(1220px, calc(100vw - 560px))",
+  $mobileBreakpoint: "760px",
+})<{ $menuOpen: boolean }>`
+  width: max-content;
+  max-width: min(1220px, calc(100vw - 560px));
+  min-height: 48px;
+  height: 48px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-x: ${({$menuOpen}) => ($menuOpen ? "visible" : "auto")};
+  overflow-y: visible;
+  scrollbar-width: thin;
+  scrollbar-color: ${builderToolbarTokens.borderSubtle} transparent;
+
+  & > * {
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 760px) {
+    width: calc(100vw - 12px);
+    max-width: calc(100vw - 12px);
+    height: 48px;
+  }
+
+  @media (min-width: 761px) and (max-width: 1180px) {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+
+  /* In supported landscape phone/tablet workspaces the hierarchy drawer is
+   * 360px wide and the action rail owns the right ~62px. Keep Quick Build in
+   * the playable center lane instead of painting over either control surface.
+   * The rail remains horizontally scrollable inside that lane. */
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    left: min(360px, 88vw);
+    transform: none;
+    width: calc(100vw - min(360px, 88vw) - 68px);
+    max-width: calc(100vw - min(360px, 88vw) - 68px);
+  }
+`;
+
+const ModeLabel = styled(BaseModeLabel).attrs({$width: "62px"})`
+  font-size: 11px;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    display: none;
+  }
+`;
+
+const ToolsCluster = styled(BaseToolsCluster).attrs({
+  $columns: "48px 48px repeat(4, 74px)",
+})`
+  grid-auto-rows: 32px;
+  gap: 4px;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    grid-template-columns: 36px 36px repeat(4, 58px);
+  }
+`;
+
+const ToolButton = styled(BaseToolButton)`
+  width: 48px;
+  height: 32px;
+  grid-template-rows: 15px 10px;
+  gap: 0;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    width: 36px;
+  }
+`;
+
+const ToolMenuGroup = styled(BaseToolMenuGroup).attrs({$width: "74px"})`
+  width: 74px;
+  height: 32px;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    width: 58px;
+  }
+`;
+
+const ToolGroupButton = styled(BaseToolGroupButton).attrs({
+  $width: "74px",
+  $labelMaxWidth: "42px",
+})`
+  width: 74px;
+  height: 32px;
+  grid-template-columns: 14px minmax(0, 1fr) 10px;
+  gap: 2px;
+  padding: 0 4px 0 5px;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    width: 58px;
+    grid-template-columns: 12px minmax(0, 1fr) 8px;
+    gap: 1px;
+    padding: 0 3px;
+
+    ${ToolLabel} {
+      font-size: 8px;
+    }
+  }
+`;
+
+const UtilityToggle = styled.button<{ $open: boolean }>`
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  min-width: 48px;
+  border: 1px solid
+    ${({$open}) =>
+      $open
+        ? builderToolbarTokens.accentGoldBorderStrong
+        : builderToolbarTokens.borderSubtle};
+  border-radius: 8px;
+  background: ${({$open}) =>
+    $open
+      ? builderToolbarTokens.accentGoldSurface
+      : builderToolbarTokens.surfaceSubtle};
+  color: ${({$open}) =>
+    $open
+      ? builderToolbarTokens.accentGoldText
+      : builderToolbarTokens.textSecondary};
+  cursor: pointer;
+  padding: 0 7px;
+
+  ${focusVisibleRing}
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    display: inline-flex;
+    width: 42px;
+    min-width: 42px;
+    padding: 0;
+    gap: 2px;
+  }
+`;
+
+const UtilityToggleLabel = styled.span<{ $open: boolean }>`
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    font-size: 8px;
+    display: ${({$open}) => ($open ? "none" : "inline")};
+  }
+`;
+
+const UtilitiesCluster = styled.div<{ $open: boolean }>`
+  display: contents;
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    display: ${({$open}) => ($open ? "flex" : "none")};
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    width: 100%;
+    max-width: 100%;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid ${builderToolbarTokens.borderMuted};
+    border-radius: 10px;
+    background: var(--theme-container-minor-dark);
+    box-shadow: 0 18px 42px ${builderToolbarTokens.shadowStrong};
+    /* Keep tool-group menus above this optional drawer when their trigger is
+     * opened while the utility controls are expanded. */
+    z-index: 3;
+  }
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    & + * {
+      flex: 0 0 auto;
+    }
+  }
+`;
+
 const UtilityButton = styled.button`
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 32px;
   border: 1px solid ${builderToolbarTokens.borderSubtle};
   border-radius: 8px;
   background: ${builderToolbarTokens.surfaceSubtle};
@@ -3270,22 +3703,25 @@ const UtilityButton = styled.button`
 `;
 
 const OutputButton = styled(UtilityButton)`
-  width: 92px;
+  width: 76px;
   grid-auto-flow: column;
   grid-auto-columns: max-content;
-  gap: 6px;
-  padding: 0 10px;
+  gap: 4px;
+  padding: 0 6px;
 `;
 
 const OutputButtonLabel = styled.span`
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   line-height: 1;
 `;
 
 const CoachMark = styled.div`
+  position: absolute;
+  left: 70px;
+  bottom: calc(100% + 6px);
   min-height: 34px;
-  max-width: 304px;
+  max-width: 260px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 24px;
   align-items: center;
@@ -3295,6 +3731,12 @@ const CoachMark = styled.div`
   background: ${builderToolbarTokens.accentGoldSurface};
   color: ${builderToolbarTokens.accentGoldTextSoft};
   padding: 6px 6px 6px 10px;
+
+  @media (max-width: 760px) {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
 `;
 
 const CoachMarkText = styled.span`
@@ -3323,23 +3765,80 @@ const CoachMarkClose = styled.button`
   ${focusVisibleRing}
 `;
 
+const PlacementStatusPill = styled.div<{
+  $tone: QuickBuildPlacementStatusTone;
+}>`
+  position: fixed;
+  left: 50%;
+  top: calc(100vh - 72px);
+  transform: translateX(-50%);
+  max-width: min(320px, calc(100vw - 24px));
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid
+    ${({$tone}) =>
+      $tone === "blocked"
+        ? builderToolbarTokens.errorBorder
+        : $tone === "working"
+          ? builderToolbarTokens.borderSubtle
+          : builderToolbarTokens.accentGoldBorder};
+  border-radius: 999px;
+  background: ${({$tone}) =>
+    $tone === "blocked"
+      ? builderToolbarTokens.errorSurface
+      : $tone === "working"
+        ? builderToolbarTokens.surfaceSubtle
+        : builderToolbarTokens.accentGoldSurface};
+  color: ${({$tone}) =>
+    $tone === "blocked"
+      ? builderToolbarTokens.errorText
+      : $tone === "working"
+        ? builderToolbarTokens.textSecondary
+        : builderToolbarTokens.accentGoldText};
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 3;
+
+  @media (max-width: 760px) {
+    left: 50%;
+    max-width: calc(100vw - 24px);
+  }
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    left: calc(min(360px, 88vw) + 8px);
+    transform: none;
+    top: calc(100vh - 72px);
+  }
+`;
+
 const ActiveDot = styled.span<{ $active: boolean; $color?: string }>`
   width: 6px;
-  height: 34px;
+  height: 32px;
   border-radius: 999px;
   background: ${({ $color }) => $color || builderToolbarTokens.activeFallback};
   opacity: ${({ $active }) => ($active ? 1 : 0)};
+
+  @media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    display: none;
+  }
 `;
 
 const TextureSelectShell = styled.div<{
   $active: boolean;
   $status: TexturePackStatus;
 }>`
-  width: 168px;
-  flex: 0 0 168px;
-  height: 34px;
+  width: 140px;
+  flex: 0 0 140px;
+  height: 32px;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 26px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   border: 1px solid
@@ -3369,8 +3868,8 @@ const TexturePreviewThumb = styled.span<{
   $active: boolean;
   $status: TexturePackStatus;
 }>`
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -3428,7 +3927,7 @@ const TexturePreviewImage = styled.img`
 
 const TextureSelect = styled.select`
   min-width: 0;
-  height: 30px;
+  height: 28px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -3452,15 +3951,15 @@ const TextureSelect = styled.select`
 
 const BakeGroup = styled.div`
   display: grid;
-  grid-template-columns: 92px 92px auto;
-  gap: 6px;
+  grid-template-columns: 76px 76px auto;
+  gap: 4px;
   align-items: center;
   flex: 0 0 auto;
 `;
 
 const BakeStatus = styled.span`
   min-width: 74px;
-  height: 34px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3478,15 +3977,15 @@ const BakeStatus = styled.span`
 
 const BrushGroup = styled.div`
   display: grid;
-  grid-template-columns: repeat(4, 28px) 54px;
-  gap: 6px;
+  grid-template-columns: repeat(4, 26px) 50px;
+  gap: 4px;
   align-items: center;
   flex: 0 0 auto;
 `;
 
 const BrushButton = styled.button<{ $selected: boolean }>`
-  width: 28px;
-  height: 34px;
+  width: 26px;
+  height: 32px;
   border: 1px solid
     ${({ $selected }) =>
       $selected
@@ -3515,10 +4014,10 @@ const BrushButton = styled.button<{ $selected: boolean }>`
 `;
 
 const RadiusControl = styled.div`
-  width: 54px;
-  height: 34px;
+  width: 50px;
+  height: 32px;
   display: grid;
-  grid-template-columns: 16px 18px 16px;
+  grid-template-columns: 15px 18px 15px;
   align-items: center;
   border: 1px solid ${builderToolbarTokens.borderSubtle};
   border-radius: 8px;
@@ -3526,8 +4025,8 @@ const RadiusControl = styled.div`
 `;
 
 const RadiusButton = styled.button`
-  width: 16px;
-  height: 32px;
+  width: 15px;
+  height: 30px;
   display: grid;
   place-items: center;
   border: 0;
@@ -3557,20 +4056,20 @@ const RadiusValue = styled.span`
 `;
 
 const RotationControl = styled.div`
-  width: 72px;
-  height: 34px;
+  width: 66px;
+  height: 32px;
   display: grid;
-  grid-template-columns: 18px 36px 18px;
+  grid-template-columns: 17px 32px 17px;
   align-items: center;
   border: 1px solid ${builderToolbarTokens.borderSubtle};
   border-radius: 8px;
   background: ${builderToolbarTokens.surfaceSubtle};
-  flex: 0 0 72px;
+  flex: 0 0 66px;
 `;
 
 const RotationButton = styled.button`
-  width: 18px;
-  height: 32px;
+  width: 17px;
+  height: 30px;
   display: grid;
   place-items: center;
   border: 0;

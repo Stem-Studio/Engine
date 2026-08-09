@@ -15,7 +15,7 @@ export enum BehaviorThrottlePriority {
     /** Never throttle - critical for gameplay (player movement, core mechanics) */
     CRITICAL = 'CRITICAL',
     /** Rarely throttle - important for responsiveness (AI, interactions) */
-    HIGH = 'HIGH', 
+    HIGH = 'HIGH',
     /** Moderately throttle - visible but not critical (animations, effects) */
     MEDIUM = 'MEDIUM',
     /** Aggressively throttle - background/ambient (environment, audio) */
@@ -31,15 +31,19 @@ export interface IThrottleDecision {
 }
 
 export interface IVisibilityChecker {
+    beginFrame?(camera: THREE.Camera): void;
+    endFrame?(): void;
     isVisible(object: THREE.Object3D, camera: THREE.Camera): boolean;
     clearCache(): void;
     dispose(): void;
 }
 
 export interface IDistanceThrottler {
+    beginFrame?(camera: THREE.Camera): void;
+    endFrame?(): void;
     shouldThrottle(object: THREE.Object3D, camera: THREE.Camera, frameCount: number): IThrottleDecision;
     /** Returns the raw distance-based throttle factor (1 = close, farFactor, veryFarFactor) without applying modulo */
-    getDistanceFactor(object: THREE.Object3D, camera: THREE.Camera): number;
+    getDistanceFactor(object: THREE.Object3D, camera: THREE.Camera, frameCount?: number): number;
     updateConfig(config: IThrottleConfig): void;
     /** Attach a spatial grid for O(1) distance lookups */
     setSpatialGrid?(grid: ISpatialGrid | null): void;
@@ -70,8 +74,20 @@ export interface IBehaviorThrottler {
         deltaTime: number
     ): IThrottleDecision;
 
+    /**
+     * Allocation-free hot-loop predicate. Use shouldUpdateBehavior() when
+     * callers need diagnostic reason strings or priority details.
+     */
+    shouldUpdateBehaviorFast?(
+        behavior: Behavior,
+        camera: THREE.Camera,
+        frameCount: number,
+        deltaTime: number
+    ): boolean;
+
     /** Call once per frame before processing behaviors to update adaptive throttle */
-    beginFrame?(): void;
+    beginFrame?(camera?: THREE.Camera): void;
+    endFrame?(): void;
     configure(config: Partial<IThrottleConfig>): void;
     getMetrics(): IPerformanceMetrics;
     /** Attach a spatial grid for O(1) distance lookups in throttle checks */
@@ -89,10 +105,10 @@ export interface IThrottleConfig {
     readonly enableFrustumCulling: boolean;
     readonly enableDistanceThrottling: boolean;
     readonly enablePerformanceReporting: boolean;
-    
+
     // Global throttling enable/disable - when false, ALL behaviors update every frame
     readonly throttlingEnabled: boolean;
-    
+
     // Priority-based throttling factors
     readonly priorityThrottleFactors: {
         [BehaviorThrottlePriority.CRITICAL]: number;
@@ -105,4 +121,4 @@ export interface IThrottleConfig {
 
 export interface IConfigValidator {
     validate(config: Partial<IThrottleConfig>): IThrottleConfig;
-} 
+}

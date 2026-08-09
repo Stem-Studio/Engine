@@ -122,6 +122,16 @@ describe("LambdaQueryRegistry", () => {
             expect(results).toHaveLength(2);
         });
 
+        it("should accept reusable iterable type ids with duplicates", () => {
+            const obj = new Object3D();
+            const typeIds = ["velocity", "velocity", "collider"];
+
+            registry.setArchetype(obj, typeIds);
+            typeIds.length = 0;
+
+            expect(registry.query({required: ["velocity", "collider"]})).toEqual([obj]);
+        });
+
         it("should handle unknown types in query gracefully", () => {
             const obj = new Object3D();
             registry.setArchetype(obj, new Set(["velocity"]));

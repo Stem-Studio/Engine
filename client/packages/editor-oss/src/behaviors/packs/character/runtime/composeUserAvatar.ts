@@ -3,6 +3,7 @@ import {Box3, Color, Group, Mesh, Object3D, Vector3} from "three";
 import {getAsset, getAssetRevision} from "@stem/network/api/asset";
 import ModelLoader from "../../../../assets/js/loaders/ModelLoader";
 import type {UserAvatarPart} from "@stem/network/api/avatarCreator";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 /**
  * Per-category scale factor applied to a loaded part before parenting it under
@@ -99,7 +100,7 @@ async function resolvePartUrl(assetId: string): Promise<string | null> {
 function applyTintToGroup(group: Object3D, hex: string): void {
     const color = safeColor(hex);
     if (!color) return;
-    group.traverse((node: Object3D) => {
+    traverseObjectDepthFirst(group, node => {
         const mesh = node as Mesh;
         const material = mesh?.material;
         if (!material) return;
@@ -114,7 +115,7 @@ function applyTintToGroup(group: Object3D, hex: string): void {
 function applySkinTone(root: Object3D, hex: string): void {
     const color = safeColor(hex);
     if (!color) return;
-    root.traverse((node: Object3D) => {
+    traverseObjectDepthFirst(root, node => {
         const name = (node.name || "").toLowerCase();
         const isSkinNode = name.includes("skin") || name.includes("body");
         if (!isSkinNode) return;

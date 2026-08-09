@@ -36,6 +36,14 @@ const SETTINGS = [
             {label: SHAPE_LABEL.CONVEX, value: "btConvexHullShape"},
         ],
     },
+    {
+        title: "Continuous collision",
+        key: "ccd",
+        options: [
+            {label: "Off", value: false},
+            {label: "On", value: true},
+        ],
+    },
 ];
 
 export const ObjectSettings = ({selectedObj, closeSettings}: Props) => {
@@ -43,6 +51,7 @@ export const ObjectSettings = ({selectedObj, closeSettings}: Props) => {
     const [physicsEnabledState, setPhysicsEnabledState] = useState(selectedObj.userData?.physics?.enabled ?? true);
     const [shape, setShape] = useState(selectedObj.userData?.physics?.shape);
     const [physicsType, setPhysicsType] = useState(selectedObj.userData?.physics?.ctype);
+    const [ccd, setCcd] = useState(selectedObj.userData?.physics?.ccd === true);
 
     const handlePhysicsChange = (value: number | string | boolean, name: keyof PhysicsConfig) => {
         const sceneSelectedObj = app?.editor?.objectByUuid(selectedObj.uuid);
@@ -91,6 +100,9 @@ export const ObjectSettings = ({selectedObj, closeSettings}: Props) => {
         if (name === "ctype") {
             setPhysicsType(value);
         }
+        if (name === "ccd") {
+            setCcd(value === true);
+        }
         sceneSelectedObj.userData.physics = selectedObj.userData.physics;
 
         app?.call(`objectChanged`, sceneSelectedObj, sceneSelectedObj); // use sceneSelectedObj to update because it contains actual object state
@@ -136,7 +148,7 @@ export const ObjectSettings = ({selectedObj, closeSettings}: Props) => {
                         <div className="title">{title}</div>
                         {options.map(option => 
                             <OptionButton
-                                $selected={option.value === shape || option.value === physicsType}
+                                $selected={option.value === shape || option.value === physicsType || (key === "ccd" && option.value === ccd)}
                                 className="reset-css"
                                 key={option.label}
                                 onClick={() => handlePhysicsChange(option.value, key as keyof PhysicsConfig)}

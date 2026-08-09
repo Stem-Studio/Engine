@@ -82,6 +82,35 @@ describe("createAsset", () => {
         expect(result.id).toBe("new-1");
     });
 
+    it("passes deferred scene sync only to assetSource-backed creates", async () => {
+        const created = makeAsset("new-1");
+        const mockSource = {
+            createAsset: vi.fn().mockResolvedValue(created),
+            kind: "scene" as const,
+            id: "test-source",
+        };
+
+        await createAsset({
+            assetSource: mockSource as any,
+            deferAssetSourceSceneSync: true,
+            type: "behavior",
+            name: "Test",
+            data: "{}",
+            format: "json",
+            contentType: "application/json",
+        });
+
+        expect(mockSource.createAsset).toHaveBeenCalledWith({
+            type: "behavior",
+            name: "Test",
+            data: "{}",
+            format: "json",
+            contentType: "application/json",
+            deferSceneSync: true,
+        });
+        expect(createAssetWithData).not.toHaveBeenCalled();
+    });
+
     it("creates standalone asset when no assetSource", async () => {
         const created = makeAsset("standalone-1");
         vi.mocked(createAssetWithData).mockResolvedValue(created as any);

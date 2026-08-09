@@ -1,7 +1,6 @@
 import React from "react";
 
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 import {ContentItem} from "../../../common/ContentItem";
 import {NumericInputRow} from "../../../common/NumericInputRow";
 import {PanelCheckbox} from "../../../common/PanelCheckbox";
@@ -40,15 +39,11 @@ const PlayerProfileSectionComponent = ({
 }: PlayerProfileProps) => {
     // Playground builds don't ship the Colyseus multiplayer sidecar, so
     // enabling these checkboxes wouldn't actually connect anywhere. The
-    // standalone OSS dev script still boots the sidecar — keep the toggle
+    // standalone dev script still boots the sidecar — keep the toggle
     // visible there.
     const showMultiplayer = !isPlaygroundMode();
-    // The "Use Avatar / Enable user accounts / Allow Guests" checkboxes
-    // all depend on Firebase auth, which is stubbed out in OSS, so they
-    // can't do anything useful in any OSS build (playground or
-    // self-hosted) until a fork wires up its own account backend.
-    const showAccountToggles = !IS_OSS;
-    // If nothing inside the section will render (OSS playground hides
+    const showAccountToggles = false;
+    // If nothing inside the section will render (playground mode hides
     // both groups), drop the whole "Player Settings" heading too — an
     // empty section just adds visual noise.
     if (!showMultiplayer && !showAccountToggles) {

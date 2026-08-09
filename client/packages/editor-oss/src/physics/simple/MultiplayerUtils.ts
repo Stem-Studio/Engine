@@ -5,9 +5,13 @@ import type SpawnPointBehavior from "@stem/editor-oss/behaviors/packs/spawnpoint
 import global from "@stem/editor-oss/global";
 import {TemplateType} from '@stem/editor-oss/types/TemplateType';
 import {cloneObject, setObjectTemplate} from "@stem/editor-oss/utils/ObjectUtils";
+import {
+    findObjectByUuidDepthFirst,
+    traverseObjectDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
 import TagUtil from "@stem/editor-oss/utils/TagUtil";
 import {CollisionFlag, IPhysics} from "../common/types";
-import {PhysicsUtil} from "../PhysicsUtil";
+import {PhysicsRuntimeUtil as PhysicsUtil} from "../PhysicsRuntimeUtil";
 
 export class MultiplayerUtils {
     private static readonly SPAWN_POINT_BEHAVIOR_ID = "spawnpoint";
@@ -42,8 +46,17 @@ export class MultiplayerUtils {
         if (!Array.isArray(object.userData.synchronizeChildren)) return true;
         let valid = true;
         for (const childName of object.userData.synchronizeChildren) {
-            if (object.getObjectsByProperty("name", childName).length > 0) {
-                console.warn(`isValidObjectForChildrenSync: ${object.uuid}/${object.name} -> non-unique child name in setting: ${childName}`);
+            let matchCount = 0;
+            traverseObjectDepthFirst(object, child => {
+                if (child.name === childName) {
+                    matchCount++;
+                }
+            }, {includeRoot: false});
+
+            if (matchCount > 1) {
+                console.warn(
+                    `isValidObjectForChildrenSync: ${object.uuid}/${object.name} -> non-unique child name in setting: ${childName}`,
+                );
                 valid = false;
             }
         }
@@ -110,7 +123,7 @@ export class MultiplayerUtils {
         playerUuid?: string,
         slot?: number,
     ): Promise<Object3D> {
-        const playerPrefab = scene.getObjectByProperty("uuid", playerPrefabUuid);
+        const playerPrefab = findObjectByUuidDepthFirst(scene, playerPrefabUuid);
         if (!playerPrefab) {
             console.warn(`MP.clonePlayerObject: object prefab is not in the scene: ${playerPrefabUuid}`);
             throw new Error(`player prefab is not in the scene: ${playerPrefabUuid}`);
@@ -137,13 +150,13 @@ export class MultiplayerUtils {
         } else {
             //local player - new object, add to the world
             setObjectTemplate(playerObject, TemplateType.UUID, playerPrefabUuid);
-            await PhysicsUtil.addObjectShapeToPhysics(playerObject, physics, playerPrefab);
+            const {PhysicsUtil: ShapePhysicsUtil} = await import("../PhysicsUtil");
+            await ShapePhysicsUtil.addObjectShapeToPhysics(playerObject, physics, playerPrefab);
         }
 
         //enable haviors on new player ONLY if template is tagged as player
         if (MultiplayerUtils.isMultiplayerTemplate(playerPrefab)) {
-            playerObject.traverse((obj) => {
-                //if(obj.uuid === playerObject.uuid) return; //skip root object
+            traverseObjectDepthFirst(playerObject, obj => {
                 if (obj.userData?.behaviors) {
                     //initialize behaviors
                     void global.app?.game?.initializeObject(obj);

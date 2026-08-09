@@ -39,7 +39,7 @@ The extension stores the following data in the glTF file:
 ### Exporting with Animation Graph
 
 ```typescript
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter";
 import {EARTHAnimationGraphExporterPlugin} from "./extensions/EARTHAnimationGraphExporterPlugin";
 
 const exporter = new GLTFExporter();
@@ -67,7 +67,7 @@ exporter.parse(
 ### Loading with Animation Graph
 
 ```typescript
-import {GLTFLoader} from "three/examples/jsm/loaders/GLTFLoader";
+import {GLTFLoader} from "three/addons/loaders/GLTFLoader";
 import {EARTHAnimationGraphLoaderPlugin} from "./extensions/EARTHAnimationGraphLoaderPlugin";
 
 const loader = new GLTFLoader();

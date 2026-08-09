@@ -1,7 +1,7 @@
 import {useCallback} from "react";
 import * as THREE from "three";
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter.js";
-import * as WebGLTextureUtils from "three/examples/jsm/utils/WebGLTextureUtils.js";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
+import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 
 import {getAsset} from "@stem/network/api/asset";
 import {resolveAssetRevisionId} from "../../../asset-management/AssetResolutionContext";
@@ -17,6 +17,7 @@ import {showToast} from "../../../showToast";
 import Converter from "../../../utils/Converter";
 import {ElementsUtils} from "../../../utils/ElementsUtils";
 import {ModelUtils} from "../../../utils/ModelUtils";
+import {getChildIndexPath, getObjectByChildIndexPath} from "./removeObjectClonePath";
 
 interface ModelUpdateArgs {
     parent: THREE.Object3D<THREE.Object3DEventMap>;
@@ -92,8 +93,7 @@ export const useRemoveObject = () => {
                 return;
             }
 
-            const removalMarker = crypto.randomUUID();
-            objectToRemove.userData.__removalMarker = removalMarker;
+            const removalPath = getChildIndexPath(parent, objectToRemove);
 
             const exportTarget = parent.clone(true);
 
@@ -102,13 +102,7 @@ export const useRemoveObject = () => {
             exportTarget.scale.set(1, 1, 1);
 
             exportTarget.updateMatrixWorld(true);
-            let clonedToRemove: THREE.Object3D<THREE.Object3DEventMap> | null = null;
-
-            exportTarget.traverse(obj => {
-                if (obj.userData?.__removalMarker === removalMarker) {
-                    clonedToRemove = obj;
-                }
-            });
+            const clonedToRemove = removalPath ? getObjectByChildIndexPath(exportTarget, removalPath) : null;
 
             if (!clonedToRemove) {
                 console.warn("Cloned object to remove not found!");
@@ -117,7 +111,6 @@ export const useRemoveObject = () => {
                 console.log("Object removed from export clone");
             }
 
-            delete objectToRemove.userData.__removalMarker;
             exportTarget.updateMatrixWorld(true);
 
             // -------------------------------------------------

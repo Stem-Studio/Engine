@@ -86,14 +86,15 @@ func GetConfig(path string) (config *ConfigModel, err error) {
 
 // AiCreditsConfigModel defines the credit cost per AI feature.
 type AiCreditsConfigModel struct {
-	ImageGenCost  int `toml:"image_gen_cost"`
-	ObjectGenCost int `toml:"object_gen_cost"`
-	CopilotCost   int `toml:"copilot_cost"`
-	DefaultAmount int `toml:"default_amount"`
+	ImageGenCost       int `toml:"image_gen_cost"`
+	ObjectGenCost      int `toml:"object_gen_cost"`
+	CopilotCost        int `toml:"copilot_cost"`
+	DefaultAmount      int `toml:"default_amount"`
 	CreditsRefreshRate int `toml:"credits_refresh_rate"` // in seconds
 }
 
-// StripeConfigModel is the Stripe payment config section in `config.toml`.
+// StripeConfigModel is retained for backward config compatibility. The
+// open-source server does not implement billing and ignores every value.
 type StripeConfigModel struct {
 	SecretKey             string `toml:"secret_key"`
 	WebhookSecret         string `toml:"webhook_secret"`
@@ -115,7 +116,7 @@ type ConfigModel struct {
 	Log       LogConfigModel         `toml:"log"`
 	History   HistoryConfigModel     `toml:"history"`
 	AiCredits AiCreditsConfigModel   `toml:"ai_credits"`
-	Stripe    StripeConfigModel      `toml:"stripe"`
+	Stripe    StripeConfigModel      `toml:"stripe"` // Deprecated: ignored by the open-source server.
 	Redis     RedisConfigModel       `toml:"redis"`
 }
 
@@ -132,10 +133,10 @@ type HistoryConfigModel struct {
 
 // ServerConfigModel is the server config section in `config.toml`.
 type ServerConfigModel struct {
-	Port               string `toml:"port"`
-	KeepAliveEnabled   bool   `toml:"keep_alive_enabled"`
-	KeepAliveTimeout   int    `toml:"keep_alive_timeout"`   // seconds
-	KeepAliveInterval  int    `toml:"keep_alive_interval"`  // seconds for heartbeat
+	Port              string `toml:"port"`
+	KeepAliveEnabled  bool   `toml:"keep_alive_enabled"`
+	KeepAliveTimeout  int    `toml:"keep_alive_timeout"`  // seconds
+	KeepAliveInterval int    `toml:"keep_alive_interval"` // seconds for heartbeat
 }
 
 // DatabaseConfigModel is the database config section in `config.toml`.
@@ -157,15 +158,15 @@ type AuthorityConfigModel struct {
 }
 
 type LakeFSConfigModel struct {
-	Host            				string `toml:"host"`
-	AccessKeyId     				string `toml:"access_key_id"`
-	SecretAccessKey 				string `toml:"secret_access_key"`
-	StorageAccessKeyId 			string `toml:"storage_access_key_id"`
-	StorageSecretAccessKey	string `toml:"storage_secret_access_key"`
-	StorageScheme   				string `toml:"storage_scheme"`
-	StorageBucket   				string `toml:"storage_bucket"`
-	StorageEndpoint 				string `toml:"storage_endpoint"`
-	StorageRegion   				string `toml:"storage_region"`
+	Host                   string `toml:"host"`
+	AccessKeyId            string `toml:"access_key_id"`
+	SecretAccessKey        string `toml:"secret_access_key"`
+	StorageAccessKeyId     string `toml:"storage_access_key_id"`
+	StorageSecretAccessKey string `toml:"storage_secret_access_key"`
+	StorageScheme          string `toml:"storage_scheme"`
+	StorageBucket          string `toml:"storage_bucket"`
+	StorageEndpoint        string `toml:"storage_endpoint"`
+	StorageRegion          string `toml:"storage_region"`
 }
 
 type ApiProxyMapConfigModel struct {

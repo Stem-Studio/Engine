@@ -1,5 +1,12 @@
 # GitHub CI + GitHub Pages deploy
 
+> **Status: Superseded for the current release scope (2026-07-30).**
+> Preserve this as deployment-infrastructure history. GitHub Pages and remote
+> scene loading are not acceptance paths for the active local Playground
+> optimization program. See the
+> [planning index](./README.md) and
+> [AAA Web Engine Quality Program](./2026-07-30-aaa-engine-quality-program.md).
+
 ## Goal
 
 1. A CI pipeline that runs the project's tests on GitHub — on every pull

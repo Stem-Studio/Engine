@@ -1,8 +1,8 @@
-import moment from "moment";
-
 import {getAuthProvider} from "../../../auth";
 import {getRemoteDocStore} from "../../../data";
 import {IUser} from "../../types";
+
+const unixSeconds = () => Math.floor(Date.now() / 1000);
 
 /**
  * Generate or retrieve persistent guest user data
@@ -76,7 +76,7 @@ export async function registerAnonymousPlayer(): Promise<IUser | null> {
             await store.setDoc("users", authUser.uid, {
                 ...user,
                 isAnonymous: true,
-                memberSince: moment().unix(),
+                memberSince: unixSeconds(),
             });
             console.log("🔐 [AuthUtils] Anonymous user created in remote store");
         } else {

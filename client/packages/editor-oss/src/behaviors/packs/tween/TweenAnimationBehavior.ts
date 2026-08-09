@@ -10,6 +10,37 @@ enum ANIMATION_TYPES {
     PLAY_ONCE = "Play Once",
 }
 
+const EASING_FUNCTIONS: Record<string, (amount: number) => number> = {
+    linear: Easing.Linear.None,
+    quadIn: Easing.Quadratic.In,
+    quadOut: Easing.Quadratic.Out,
+    quadInOut: Easing.Quadratic.InOut,
+    cubicIn: Easing.Cubic.In,
+    cubicOut: Easing.Cubic.Out,
+    cubicInOut: Easing.Cubic.InOut,
+    quartIn: Easing.Quartic.In,
+    quartOut: Easing.Quartic.Out,
+    quartInOut: Easing.Quartic.InOut,
+    quintIn: Easing.Quintic.In,
+    quintOut: Easing.Quintic.Out,
+    quintInOut: Easing.Quintic.InOut,
+    sineIn: Easing.Sinusoidal.In,
+    sineOut: Easing.Sinusoidal.Out,
+    sineInOut: Easing.Sinusoidal.InOut,
+    backIn: Easing.Back.In,
+    backOut: Easing.Back.Out,
+    backInOut: Easing.Back.InOut,
+    circIn: Easing.Circular.In,
+    circOut: Easing.Circular.Out,
+    circInOut: Easing.Circular.InOut,
+    bounceIn: Easing.Bounce.In,
+    bounceOut: Easing.Bounce.Out,
+    bounceInOut: Easing.Bounce.InOut,
+    elasticIn: Easing.Elastic.In,
+    elasticOut: Easing.Elastic.Out,
+    elasticInOut: Easing.Elastic.InOut,
+};
+
 interface TweenAnimationConfig {
     startPosition: THREE.Vector3;
     startQuaternion: THREE.Quaternion;
@@ -260,37 +291,7 @@ class TweenAnimationBehavior extends BehaviorBase {
     }
 
     private getEasingFunction(easingName: string) {
-        const easingMap: Record<string, (amount: number) => number> = {
-            linear: Easing.Linear.None,
-            quadIn: Easing.Quadratic.In,
-            quadOut: Easing.Quadratic.Out,
-            quadInOut: Easing.Quadratic.InOut,
-            cubicIn: Easing.Cubic.In,
-            cubicOut: Easing.Cubic.Out,
-            cubicInOut: Easing.Cubic.InOut,
-            quartIn: Easing.Quartic.In,
-            quartOut: Easing.Quartic.Out,
-            quartInOut: Easing.Quartic.InOut,
-            quintIn: Easing.Quintic.In,
-            quintOut: Easing.Quintic.Out,
-            quintInOut: Easing.Quintic.InOut,
-            sineIn: Easing.Sinusoidal.In,
-            sineOut: Easing.Sinusoidal.Out,
-            sineInOut: Easing.Sinusoidal.InOut,
-            backIn: Easing.Back.In,
-            backOut: Easing.Back.Out,
-            backInOut: Easing.Back.InOut,
-            circIn: Easing.Circular.In,
-            circOut: Easing.Circular.Out,
-            circInOut: Easing.Circular.InOut,
-            bounceIn: Easing.Bounce.In,
-            bounceOut: Easing.Bounce.Out,
-            bounceInOut: Easing.Bounce.InOut,
-            elasticIn: Easing.Elastic.In,
-            elasticOut: Easing.Elastic.Out,
-            elasticInOut: Easing.Elastic.InOut,
-        };
-        return easingMap[easingName] || Easing.Linear.None;
+        return EASING_FUNCTIONS[easingName] || Easing.Linear.None;
     }
 }
 

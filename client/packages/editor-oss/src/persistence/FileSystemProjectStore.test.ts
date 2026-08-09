@@ -27,6 +27,7 @@ class MemoryFileHandle {
         readonly name: string,
         private readonly read: () => string | undefined,
         private readonly write: (value: string) => void,
+        private readonly shouldFailClose: () => boolean = () => false,
     ) {}
 
     async getFile(): Promise<File> {
@@ -35,13 +36,23 @@ class MemoryFileHandle {
         return new File([data], this.name, {type: "application/json"});
     }
 
-    async createWritable(): Promise<{write(data: Blob | string): Promise<void>; close(): Promise<void>}> {
+    async createWritable(): Promise<{write(data: Blob | string | BufferSource): Promise<void>; close(): Promise<void>}> {
         let pending = "";
         return {
-            write: async (data: Blob | string) => {
-                pending = typeof data === "string" ? data : await data.text();
+            write: async (data: Blob | string | BufferSource) => {
+                if (typeof data === "string") {
+                    pending = data;
+                } else if (data instanceof Blob) {
+                    pending = await data.text();
+                } else {
+                    const bytes = ArrayBuffer.isView(data)
+                        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+                        : new Uint8Array(data);
+                    pending = String.fromCharCode(...bytes);
+                }
             },
             close: async () => {
+                if (this.shouldFailClose()) throw new Error(`injected close failure for ${this.name}`);
                 this.write(pending);
             },
         };
@@ -52,6 +63,7 @@ class MemoryDirectoryHandle {
     readonly kind = "directory" as const;
     readonly files = new Map<string, string>();
     readonly subdirs = new Map<string, MemoryDirectoryHandle>();
+    failNextCloseFor: RegExp | null = null;
 
     constructor(readonly name = "projects") {}
 
@@ -60,7 +72,16 @@ class MemoryDirectoryHandle {
             throw notFound(`file ${name}`);
         }
         if (!this.files.has(name)) this.files.set(name, "");
-        return new MemoryFileHandle(name, () => this.files.get(name), v => this.files.set(name, v));
+        return new MemoryFileHandle(
+            name,
+            () => this.files.get(name),
+            v => this.files.set(name, v),
+            () => {
+                if (!this.failNextCloseFor?.test(name)) return false;
+                this.failNextCloseFor = null;
+                return true;
+            },
+        );
     }
 
     async getDirectoryHandle(name: string, options?: {create?: boolean}): Promise<MemoryDirectoryHandle> {
@@ -166,5 +187,33 @@ describe("FileSystemProjectStore", () => {
             /* no b.glb on disk */
         );
         await expect(store.loadAssets("project-1")).rejects.toThrow();
+    });
+
+    it("keeps the prior reloadable generation when staging a replacement asset fails", async () => {
+        const id = "durable-project";
+        const oldBody = sampleBody("Last Known Good", id);
+        await store.commitProject(oldBody, [{
+            assetId: "old-asset",
+            revisionId: "r1",
+            type: "model",
+            format: "glb",
+            name: "Old",
+            data: btoa("OLD"),
+        }]);
+
+        const projectDir = dir.subdirs.get(id)!;
+        projectDir.failNextCloseFor = /\.new-asset\./;
+        const replacement = sampleBody("Replacement", id);
+        await expect(store.commitProject(replacement, [{
+            assetId: "new-asset",
+            revisionId: "r2",
+            type: "model",
+            format: "glb",
+            name: "New",
+            data: btoa("NEW"),
+        }])).rejects.toThrow(/injected close failure/);
+
+        expect((await store.load(id)).meta.name).toBe("Last Known Good");
+        expect((await store.loadAssets(id)).map(asset => asset.assetId)).toEqual(["old-asset"]);
     });
 });

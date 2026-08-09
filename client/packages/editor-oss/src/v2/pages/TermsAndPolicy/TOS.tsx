@@ -1,5 +1,3 @@
-// Written by scripts/export-oss.ts. Operators are expected to provide
-// their own terms when deploying publicly.
 import React from "react";
 
 export const TOS: React.FC = () => (

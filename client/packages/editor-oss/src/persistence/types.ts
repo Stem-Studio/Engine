@@ -45,7 +45,7 @@ export interface ProjectBody {
 /**
  * A binary asset (model, image, audio) stored alongside a project.
  *
- * OSS has no asset service: model/image/audio payloads are synthesized as
+ * The local runtime has no hosted asset service: model/image/audio payloads are synthesized as
  * inline `data:` URLs that only live in memory. To make a saved project
  * reload-safe, those payloads are persisted next to the project body — in
  * IndexedDB for browser-storage projects, or in a `<projectId>/`
@@ -55,7 +55,7 @@ export interface ProjectBody {
  * embedded inline in the scene JSON (`scene.userData.behaviorConfigs`).
  */
 export interface StoredAsset {
-    /** Synthetic OSS asset id (e.g. `oss-asset-…`). */
+    /** Synthetic local asset id (e.g. `oss-asset-…`). */
     assetId: string;
     /** Head revision id for the asset (e.g. `oss-rev-…`). */
     revisionId: string;

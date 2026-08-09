@@ -202,7 +202,7 @@ export const Create = ({
             imageToken = uploadRes.image_token;
         }
 
-        // This OSS build has no server-side generation jobs (see
+        // This app has no server-side generation jobs (see
         // handle_jobs_oss.go), so every provider — desktop and playground —
         // runs the synchronous polling flow below and imports the resulting
         // GLB URL directly. The provider task endpoints return a `task_id`.
@@ -258,7 +258,7 @@ export const Create = ({
 
         // The polling flow produced a GLB URL. Import it and hand back a
         // ready-to-place object. uploadModelFromUrl fetches the provider CDN
-        // directly in this OSS build (no asset-download proxy ships here).
+        // directly because no asset-download proxy ships here.
         if (res.model) {
             const uploaded = await uploadModelFromUrl({
                 url: res.model,
@@ -376,7 +376,7 @@ export const Create = ({
 
                     if (names && Array.isArray(names)) {
                         for (const name of names) {
-                            
+
                             const command = new AttachBehaviorCommand(model, name);
                             command.execute();
                         }
@@ -456,13 +456,13 @@ export const Create = ({
 
     return (
         <Menu>
-            {loading ? 
+            {loading ?
                 <LoadingWrapper>
                     <img src={loadingIcon}
                         alt="loading"
                     />
                 </LoadingWrapper>
-             : 
+             :
                 <>
                     {step === AI_BUILDER_STEPS.PROMPT &&
                         <PromptStep
@@ -486,7 +486,7 @@ export const Create = ({
                             setImageFile={setImageFile}
                         />
                     }
-                    {(step === AI_BUILDER_STEPS.GENERATE || step === AI_BUILDER_STEPS.SEARCH) && 
+                    {(step === AI_BUILDER_STEPS.GENERATE || step === AI_BUILDER_STEPS.SEARCH) &&
                         <GenerationStepsList
                             generationSteps={
                                 step === AI_BUILDER_STEPS.GENERATE ? generationSteps : defaultGenerationSteps
@@ -510,7 +510,7 @@ export const Create = ({
                         />
                     }
 
-                    {step === AI_BUILDER_STEPS.FINALIZATION && 
+                    {step === AI_BUILDER_STEPS.FINALIZATION &&
                         <Finalization
                             followUpMessage={followUpMessage}
                             handleFinished={handleFinished}

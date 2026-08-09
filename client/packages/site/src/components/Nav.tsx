@@ -1,6 +1,6 @@
 import {NavLink} from "react-router-dom";
 
-import {GITHUB_URL} from "../content/links";
+import {GITHUB_URL, PLAYGROUND_ROUTE} from "../content/links";
 
 export function Nav() {
     return (
@@ -11,7 +11,7 @@ export function Nav() {
                     StemStudio
                 </NavLink>
                 <nav className="nav-links" aria-label="Primary">
-                    <NavLink to="/playground" className="nav-link">
+                    <NavLink to={PLAYGROUND_ROUTE} className="nav-link">
                         Playground
                     </NavLink>
                     <NavLink to="/docs" className="nav-link">
@@ -30,7 +30,7 @@ export function Nav() {
                     >
                         GitHub
                     </a>
-                    <NavLink to="/playground" className="btn btn-primary">
+                    <NavLink to={PLAYGROUND_ROUTE} className="btn btn-primary">
                         Open Playground →
                     </NavLink>
                 </div>

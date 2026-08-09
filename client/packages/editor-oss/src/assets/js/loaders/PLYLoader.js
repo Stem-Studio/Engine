@@ -1,6 +1,6 @@
 
 import {Mesh, MeshBasicMaterial, MeshStandardMaterial, Group, TextureLoader} from "three";
-import {PLYLoader as PLYLoaderImpl} from "three/examples/jsm/loaders/PLYLoader.js";
+import {PLYLoader as PLYLoaderImpl} from "three/addons/loaders/PLYLoader.js";
 
 import BaseLoader from "./BaseLoader";
 import {remapGeometryUVs, findRegionByName} from "../../../atlas/UVRemapper";

@@ -33,6 +33,20 @@ authentication, no cloud project store, no telemetry. Every feature you
 see in the UI runs against local state or against a service the user
 explicitly configured.
 
+### Active product path: Playground
+
+Treat Playground mode as the deployed product and the performance/UX baseline.
+Run `bun run dev:editor` and open `http://localhost:5173/playground` (the
+embedded editor enters through `/dashboard?mode=playground`). Playground scene
+loads, saves, play transitions, and project listings must stay on the active
+local `ProjectStore`.
+
+The remote scene API mode is not deployed. Generated remote API clients,
+`RemoteProjectStore`, and remote-shaped DTOs remain compatibility or future
+integration seams; they are not permission to add a network fallback. Do not
+assume remote gallery, publishing, collaboration, revision, or share-link
+services are available when implementing or testing the engine.
+
 ## Architecture at a glance
 
 ```text
@@ -48,15 +62,15 @@ client/packages/
   network/            HTTP/WS adapters. The remote-go adapter in here is
                       the only thing that talks to the AI server. Other
                       paths read/write the local ProjectStore directly.
-  shared/             Cross-package types, build-mode flags, queryClient,
+  shared/             Cross-package types, queryClient,
                       Sentry, AppContainer shell.
-  play/               The Player-only runtime — the entry point a built
-                      game uses when it ships standalone.
+  play/               The player route used to run a local project and by
+                      the static application build.
   marketing/          Marketing pages used by the dashboard shell.
 
-server/               Go HTTP/WS server. The AI subset (`cmd/ai-server`)
-                      is the only binary that ships here — it proxies AI
-                      provider calls using the BYOK keys.
+server/               Optional local Go HTTP/WS server. The AI subset
+                      (`cmd/ai-server`) proxies AI provider calls using
+                      BYOK keys.
 
 stemstudio-multiplayer/  Colyseus server. Auto-started by `bun run dev`.
 stemstudio-copilot/      Optional ACP/MCP bridge for forks that want
@@ -66,11 +80,12 @@ docs/                  Engine subsystem docs and planning.
 scripts/               Build, export, and Playwright smokes.
 ```
 
-`__BUILD_MODE__` is fixed to `oss` in this build, and the `IS_OSS` /
-`IS_INTEGRATED` flags in `@web-shared/buildMode` flow from that. Code that
-checks `IS_OSS` is the seam where this build deliberately diverges from
-features that would require a hosted backend — auth, cloud asset storage,
-telemetry, hosted multiplayer. Keep those gates intact when refactoring.
+`IS_OSS` is always true in this repository. `IS_INTEGRATED` remains exported
+as a false compatibility constant for older imports; do not add new build-mode
+branches.
+
+Playground mode is a runtime surface, not another build flavor. Its
+session-scoped gate lives in `client/packages/shared/src/playgroundMode.ts`.
 
 ## Persistence
 
@@ -108,14 +123,13 @@ When you add a new feature that needs to write data, route it through
   (e.g. at import/attach time) where `init(game)` is never called. A
   common bug class: a behavior caches `const erth = this.erth` (or
   `game`) _only_ inside `init()`, then dereferences that module-local in
-  an editor hook — yielding `Cannot read properties of undefined (reading
-'asset')` and silently failing to load textures/assets. Always read
-  engine handles from `this.erth` / `this.gameObject` directly, or
-  re-derive the locals at the top of _every_ lifecycle entry point —
-  never assume `init()` already ran. Note `this.gameObject` exposes
-  `uuid`/`position`/`rotation`/`scale`/`visible`/`physics`/`_internal.three`
-  only — there is **no** `gameObject.game`; in the editor `game` is
-  typically `undefined`, so guard any `game.renderer.*` access.
+  an editor hook. The result is an undefined-handle error and assets fail
+  to load. Always read engine handles from `this.erth` /
+  `this.gameObject` directly, or re-derive the locals at the top of
+  _every_ lifecycle entry point; never assume `init()` already ran.
+  `this.gameObject` exposes `uuid`, transforms, `visible`, `physics`, and
+  `_internal.three`, but there is **no** `gameObject.game`. In the editor,
+  `game` is typically `undefined`, so guard any `game.renderer.*` access.
 - Lifecycle docs, catalog, and authoring guide: `docs/built-in-behaviors.md`.
 
 ## Lambdas (ECS)
@@ -157,11 +171,13 @@ proxy that fronts the BYOK keys.
   ships with no concrete provider; an OSS fork can register one through
   `setCopilotProviderFactory`. When no provider is registered the
   Copilot panel hides itself.
-- The Go AI server (`server/cmd/ai-server`) is what the editor's
-  `network/adapters/remote-go` calls. It accepts BYOK keys from env or
-  the dashboard's BYOK panel and proxies to Anthropic / OpenAI / Meshy /
-  Tripo / Rodin / ElevenLabs / Anything World. **It is not a hosted
-  service** — it runs on the user's machine.
+- Playground AI is browser-direct and does not require the Go server.
+- The optional Go AI server (`server/cmd/ai-server`) is what the editor's
+  `network/adapters/remote-go` AI calls target in the all-services local
+  workflow. It accepts BYOK keys from env or the dashboard's BYOK panel and
+  proxies to Anthropic / OpenAI / Meshy / Tripo / Rodin / ElevenLabs /
+  Anything World. **It is not a hosted service** — it runs on the user's
+  machine.
 - Inline `exec` and the script-tool import pipeline
   (`editor-oss/src/agent/script-tool/`) work without any AI provider.
 - The dashboard exposes "Import stemscript folder" which stages a folder
@@ -176,12 +192,11 @@ a sidecar. Client code lives in
 across the wire; touching either side without thinking about both will
 diverge them.
 
-## Build modes
+## Open-source assumptions
 
-This build is OSS-only. The original codebase ships in two flavours from
-the same tree (integrated + OSS); only the OSS slice was exported here.
-Code paths gated on `IS_OSS === true` are always-on in this build, and
-the corresponding integrated-only files are absent from the tree.
+This repository is open-source only. Code paths gated on `IS_OSS === true`
+are always-on here, and files for hosted account/cloud/gallery integrations
+are absent from the tree.
 
 When you add a feature that would require a hosted backend (account
 management, hosted scene library, telemetry), gate it behind a new
@@ -198,9 +213,9 @@ bun run lint
 bun run test          # Vitest (jsdom). NOT `bun test` — that runs Bun's
                       # native runner, which lacks the jsdom env and fails.
 bun run vite-build
-bun run build-server   # builds the Go AI proxy
+bun run build:ai-server # builds the optional Go AI proxy
 
-# End-to-end smokes — require `bun run dev` running on :5173
+# Playground/editor smokes — require `bun run dev:editor` on :5173
 node scripts/playwright/oss-smoke.mjs
 node scripts/playwright/oss-filesystem-roundtrip.mjs
 node scripts/playwright/oss-open-folder-banner.mjs
@@ -221,6 +236,8 @@ The smokes cover the engine round-trip:
 If you change anything that those smokes touch (the persistence layer,
 the dashboard shell, the AiCopilot panel mount, the script-tool import
 pipeline, or Builder Studio), re-run the relevant listed smokes. They are fast.
+Run optional-service checks with `bun run dev` only when the change touches the
+AI proxy or multiplayer sidecar.
 
 ## Planning convention
 
@@ -279,8 +296,6 @@ Pause and ask before:
 - Engine forward (character runtime / generated controllers): **-Z**.
 - Mixamo assets face **+Z** by default — the `character` behavior's
   `invertForwardDirection` attribute is the 180° fix for stock Mixamo.
-- BlazePose → Three.js conversion: `Vector3(lm.x, -lm.y, -lm.z)` (only Y
-  and Z flipped, X stays). See `assets/js/animations/poseFit.ts`.
 
 <!-- dgc-policy-v11 -->
 

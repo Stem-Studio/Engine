@@ -1,13 +1,8 @@
 import {useEffect, useState} from "react";
 import styled from "styled-components";
 
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {useHomepageContext} from "@stem/editor-oss/context";
-import {
-    getOSSPersistenceMode,
-    getProjectStore,
-    reconnectFilesystemFolder,
-} from "@stem/editor-oss/persistence";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
+import {getOSSPersistenceMode} from "@stem/editor-oss/persistence/mode";
 
 const Banner = styled.div`
     display: flex;
@@ -48,16 +43,24 @@ export const ReconnectFolderBanner = () => {
     const {setShouldRefreshDashboard} = useHomepageContext();
 
     useEffect(() => {
-        if (!IS_OSS) return;
-        try {
-            const desired = getOSSPersistenceMode();
-            if (desired !== "filesystem") return;
-            const actual = getProjectStore().kind;
-            if (actual !== "filesystem") setNeedsReconnect(true);
-        } catch {
-            // store hasn't been registered yet — handled by AppContainer's
-            // rehydrateProjectStore() effect; component will re-render after.
-        }
+        const desired = getOSSPersistenceMode();
+        if (desired !== "filesystem") return;
+
+        let cancelled = false;
+        void import("@stem/editor-oss/persistence/projectStoreFactory")
+            .then(({getProjectStore}) => {
+                if (cancelled) return;
+                try {
+                    const actual = getProjectStore().kind;
+                    if (actual !== "filesystem") setNeedsReconnect(true);
+                } catch {
+                    // store hasn't been registered yet — handled by AppContainer's
+                    // rehydrateProjectStore() effect; component will re-render after.
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     if (!needsReconnect) return null;
@@ -65,6 +68,7 @@ export const ReconnectFolderBanner = () => {
     const handleClick = async () => {
         setBusy(true);
         setHint(null);
+        const {reconnectFilesystemFolder} = await import("@stem/editor-oss/persistence/bootstrap");
         const result = await reconnectFilesystemFolder();
         setBusy(false);
         if (result === "reconnected") {

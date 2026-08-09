@@ -3,6 +3,10 @@
  * When multiple files share the same base name, the highest-priority format wins.
  */
 const FORMAT_PRIORITY: readonly string[] = [
+    "usd",
+    "usda",
+    "usdc",
+    "usdz",
     "3ds",
     "stl",
     "ply",
@@ -17,9 +21,8 @@ const FORMAT_PRIORITY: readonly string[] = [
 /**
  * Formats that cannot be processed into usable 3D models.
  * - .blend: BlendLoader.js is a placeholder that returns an empty Group
- * - .usd/.usda/.usdc: USDZLoader expects zipped USD, not raw USD text/binary
  */
-const UNPROCESSABLE_EXTENSIONS = new Set(["blend", "usd", "usda", "usdc"]);
+const UNPROCESSABLE_EXTENSIONS = new Set(["blend"]);
 
 const getExtension = (filename: string): string => {
     const name = filename.split("/").pop() || filename;
@@ -39,7 +42,7 @@ export const isUnprocessableFormat = (filename: string): boolean => {
 
 /**
  * Deduplicates model files by base name, keeping only the highest-priority format per model.
- * Filters out unprocessable formats (.blend, .usd, .usda, .usdc).
+ * Filters out unprocessable formats.
  *
  * @param files - Array of file-like objects with a `name` property
  * @returns Deduplicated array with one file per unique base name

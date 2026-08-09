@@ -19,29 +19,9 @@ import {
     TorusKnotGeometry,
     TubeGeometry,
 } from "three";
-import {ParametricGeometry} from "three/examples/jsm/geometries/ParametricGeometry.js";
-import {TextGeometry} from "three/examples/jsm/geometries/TextGeometry.js";
-
-type TypedArray =
-    | Float32Array
-    | Float64Array
-    | Int8Array
-    | Uint8Array
-    | Uint8ClampedArray
-    | Int16Array
-    | Uint16Array
-    | Int32Array
-    | Uint32Array
-    | BigInt64Array
-    | BigUint64Array;
-
-interface TypedArrayViewShim {
-    byteOffset?: number;
-    byteLength?: number;
-    length?: number;
-    BYTES_PER_ELEMENT?: number;
-    buffer?: ArrayBuffer;
-}
+import {ParametricGeometry} from "three/addons/geometries/ParametricGeometry.js";
+import {TextGeometry} from "three/addons/geometries/TextGeometry.js";
+import {hashGeometry} from "./geometryHash";
 
 /**
  * Type guard to check if a geometry is a BoxGeometry
@@ -221,45 +201,6 @@ function isTorusKnotGeometry(geometry: BufferGeometry): geometry is TorusKnotGeo
  */
 function isTubeGeometry(geometry: BufferGeometry): geometry is TubeGeometry {
     return geometry instanceof TubeGeometry;
-}
-
-/**
- * Computes a hash for a geometry based on its position and index attributes.
- * @param geometry - The geometry to hash
- * @returns The computed hash string
- */
-function hashGeometry(geometry: BufferGeometry): string {
-    const positionAttr = geometry.attributes.position;
-    if (!positionAttr) {
-        return "";
-    }
-
-    const fnv1a = (typed: TypedArray | ArrayBufferView): string => {
-        const anyView = typed as TypedArrayViewShim;
-        const byteOffset = anyView.byteOffset ?? 0;
-        const byteLength =
-            anyView.byteLength ?? (anyView.length ? anyView.length * (anyView.BYTES_PER_ELEMENT || 1) : 0);
-        const buffer = anyView.buffer || (typed as TypedArrayViewShim).buffer;
-        const view = new Uint8Array(buffer as ArrayBuffer, byteOffset, byteLength);
-        let hash = 0x811c9dc5;
-        for (let i = 0; i < view.length; i++) {
-            hash ^= view[i]!;
-            hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-        }
-        hash >>>= 0;
-        return hash.toString(16).padStart(8, "0");
-    };
-
-    const positionHash = fnv1a(positionAttr.array);
-    let indexHash = "";
-    if (geometry.index && geometry.index.array) {
-        try {
-            indexHash = fnv1a(geometry.index.array);
-        } catch {
-            indexHash = "";
-        }
-    }
-    return indexHash ? `${positionHash}_${indexHash}` : positionHash;
 }
 
 /**

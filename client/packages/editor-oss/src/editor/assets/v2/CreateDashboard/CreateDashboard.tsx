@@ -1,10 +1,12 @@
-import {useEffect, useMemo, useState} from "react";
+import {lazy, Suspense, useEffect, useMemo, useState} from "react";
 import {HiOutlineBookOpen} from "react-icons/hi2";
 import {TbDeviceGamepad2} from "react-icons/tb";
 import {useLocation, useNavigate, useSearchParams} from "react-router-dom";
 
 import {useTemplateIds} from "@stem/network/api/templates/hooks";
-import {useAppGlobalContext, useAuthorizationContext, useHomepageContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import global from "@stem/editor-oss/global";
 import {ROUTES} from "@web-shared/routes";
 import {trackPageView} from "@stem/editor-oss/utils/productAnalytics";
@@ -12,7 +14,6 @@ import {openEditorRoute} from "../../../../v2/pages/editorHandoff";
 import {SearchInput} from "../common/SearchInput";
 import scenePlaceholder from "../icons/stem-studio-project-placeholder.png";
 import {FileData} from "../types/file";
-import {AdminPanel} from "./AdminPanel/AdminPanel";
 import {PAGES} from "./constants";
 import {
     BrowseSearchInputWrap,
@@ -30,23 +31,28 @@ import {CreateDashboardView} from "./CreateDashboardView/CreateDashboardView";
 import {DashboardFTUEModal, type DashboardFTUEAction} from "./DashboardFTUEModal/DashboardFTUEModal";
 import searchIcon from "./DashboardLayout/DashboardHeader/icons/search.svg";
 import {DashboardLayout} from "./DashboardLayout/DashboardLayout";
-import {GameOverview} from "./GameOverview/GameOverview";
 import {
     combineUniqueProjects,
     sortByMostRecentCreation,
     sortByMostRecentUpdate,
     sortProjectsByMetric,
 } from "./projectSorting";
-import {MyAvatarsView} from "./MyAvatarsView/MyAvatarsView";
 import {ImportStemscriptBanner} from "./ImportStemscriptBanner";
 import {OpenFolderBanner} from "./OpenFolderBanner";
 import {ReconnectFolderBanner} from "./ReconnectFolderBanner";
 import {RemixDashboardView} from "./RemixDashboardView/RemixDashboardView";
 import {CTABanners} from "./SceneList/CTABanners/CTABanners";
 import {GamesSections} from "./SceneList/GamesSections/GamesSections";
-import {SettingsPage} from "./SettingsPage/SettingsPage";
 import {TutorialsSearchSection} from "./TutorialsSearchSection/TutorialsSearchSection";
-import {fetchPublishedScenes} from "@stem/network/api/scene";
+import {fetchPublishedScenes} from "@stem/network/api/scene/list";
+// Keep dashboard theme tokens in the dashboard entry chunk. Lazy-loaded
+// panels must not determine whether the shell receives its color variables.
+import "../../../../ui/Config.css";
+
+const AdminPanel = lazy(() => import("./AdminPanel/AdminPanel").then(module => ({default: module.AdminPanel})));
+const GameOverview = lazy(() => import("./GameOverview/GameOverview").then(module => ({default: module.GameOverview})));
+const MyAvatarsView = lazy(() => import("./MyAvatarsView/MyAvatarsView").then(module => ({default: module.MyAvatarsView})));
+const SettingsPage = lazy(() => import("./SettingsPage/SettingsPage").then(module => ({default: module.SettingsPage})));
 
 export interface IGamesSection {
     label: SECTION;
@@ -644,7 +650,9 @@ export const CreateDashboard = () => {
     if (isGameOverviewRoute) {
         return (
             <DashboardLayout>
-                <GameOverview key={location.pathname} />
+                <Suspense fallback={null}>
+                    <GameOverview key={location.pathname} />
+                </Suspense>
             </DashboardLayout>
         );
     }
@@ -705,8 +713,16 @@ export const CreateDashboard = () => {
                 />
             )}
             <DashboardLayout>
-                {activePage === PAGES.SETTINGS && <SettingsPage />}
-                {activePage === PAGES.ADMIN_PANEL && <AdminPanel />}
+                {activePage === PAGES.SETTINGS && (
+                    <Suspense fallback={null}>
+                        <SettingsPage />
+                    </Suspense>
+                )}
+                {activePage === PAGES.ADMIN_PANEL && (
+                    <Suspense fallback={null}>
+                        <AdminPanel />
+                    </Suspense>
+                )}
                 {activePage !== PAGES.SETTINGS && activePage !== PAGES.ADMIN_PANEL && (
                     <WidthWrapper>
                         {isDiscoverEmpty ? (
@@ -779,7 +795,9 @@ export const CreateDashboard = () => {
                                 ) : activePage === PAGES.REMIX ? (
                                     <RemixDashboardView />
                                 ) : activePage === PAGES.AVATARS ? (
-                                    <MyAvatarsView />
+                                    <Suspense fallback={null}>
+                                        <MyAvatarsView />
+                                    </Suspense>
                                 ) : (
                                     <>
                                         {activePage === PAGES.BROWSE && (

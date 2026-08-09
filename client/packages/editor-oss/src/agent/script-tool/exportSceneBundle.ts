@@ -26,6 +26,11 @@ import type {LambdaComponentData, LambdaConfig, LambdaInstanceData} from "../../
 import {getModelId} from "../../model/util";
 import {PhysicsUtil} from "../../physics/PhysicsUtil";
 import {backendUrlFromPath} from "../../utils/UrlUtils";
+import {cloneJsonCompatible, jsonCompatibleEquals} from "../../utils/cloneJsonCompatible";
+import {
+    findObjectByNameDepthFirst,
+    traverseObjectDepthFirst,
+} from "../../utils/SceneTraverser";
 
 import {isDefaultSceneObject} from "./defaultSceneObjects";
 
@@ -209,7 +214,7 @@ const round = (value: number): number => Math.round(value * 1000) / 1000;
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
     Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-const deepEqual = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+const deepEqual = (left: unknown, right: unknown): boolean => jsonCompatibleEquals(left, right);
 
 const stripDefaults = <T>(value: T, defaults: unknown): T | undefined => {
     if (value === undefined) {
@@ -358,7 +363,7 @@ const isAssetRef = (value: unknown): value is AssetRef => {
     );
 };
 
-const cloneJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const cloneJson = <T>(value: T): T => cloneJsonCompatible(value);
 
 const normalizePathLikeValue = (value: string): string | null => {
     const trimmed = value.trim();
@@ -877,47 +882,63 @@ const classifyExportableObjects = (
     notes: Set<string>,
 ): ExportableObject[] => {
     const exportables: ExportableObject[] = [];
+    const stack: Array<{object: Object3D; insideModel: boolean}> = [];
+    for (let i = root.children.length - 1; i >= 0; i--) {
+        const child = root.children[i];
+        if (child) {
+            stack.push({object: child, insideModel: false});
+        }
+    }
 
-    const visit = (object: Object3D, insideModel: boolean) => {
-        if (object.userData?.isRuntimeOnly) return;
+    const pushChildren = (object: Object3D, insideModel: boolean) => {
+        for (let i = object.children.length - 1; i >= 0; i--) {
+            const child = object.children[i];
+            if (child) {
+                stack.push({object: child, insideModel});
+            }
+        }
+    };
+
+    while (stack.length > 0) {
+        const {object, insideModel} = stack.pop()!;
+        if (object.userData?.isRuntimeOnly) continue;
         if (isDefaultSceneObject(object)) {
-            object.children.forEach(child => visit(child, false));
-            return;
+            pushChildren(object, false);
+            continue;
         }
 
         const modelId = getModelId(object);
         if (modelId) {
             exportables.push({object, kind: "model"});
-            return;
+            continue;
         }
 
         if (insideModel) {
-            return;
+            continue;
         }
 
         if ((object as {isLight?: boolean}).isLight || (object as {isCamera?: boolean}).isCamera) {
             notes.add(`Skipped non-default ${object.type} "${object.name || object.uuid}" because the Script Tool export only recreates the default camera and default lights.`);
-            return;
+            continue;
         }
 
         if (object.type === "Group") {
             exportables.push({object, kind: "group"});
-            object.children.forEach(child => visit(child, false));
-            return;
+            pushChildren(object, false);
+            continue;
         }
 
         const primitiveType = getPrimitiveType(object);
         if (primitiveType) {
             exportables.push({object, kind: "primitive", primitiveType});
-            object.children.forEach(child => visit(child, false));
-            return;
+            pushChildren(object, false);
+            continue;
         }
 
         notes.add(`Skipped unsupported object "${object.name || object.uuid}" (${object.type}) because it is neither a model instance, a group, nor a supported primitive.`);
-        object.children.forEach(child => visit(child, false));
-    };
+        pushChildren(object, false);
+    }
 
-    root.children.forEach(child => visit(child, false));
     return exportables;
 };
 
@@ -1149,7 +1170,7 @@ const collectLegacyAssetCandidates = (scene: Object3D): LegacyAssetCandidate[] =
     collectLegacyAssetCandidatesFromValue(scene.userData?.behaviors, "scene.userData.behaviors", candidates, visited);
     collectLegacyAssetCandidatesFromValue(scene.userData?.lambdaInstances, "scene.userData.lambdaInstances", candidates, visited);
 
-    scene.traverse(object => {
+    traverseObjectDepthFirst(scene, object => {
         collectLegacyAssetCandidatesFromValue(object.userData?.behaviors, `${object.name || object.uuid}.userData.behaviors`, candidates, visited);
         collectLegacyAssetCandidatesFromValue(object.userData?.lambdaComponents, `${object.name || object.uuid}.userData.lambdaComponents`, candidates, visited);
         collectLegacyAssetCandidatesFromValue(object.userData?.materialSettings, `${object.name || object.uuid}.userData.materialSettings`, candidates, visited);
@@ -1603,7 +1624,7 @@ export const exportCurrentSceneBundle = async (
         const gravityDiffers = typeof resolvedGravity === "number" && resolvedGravity !== DEFAULT_PHYSICS_GRAVITY;
         if (engineDiffers || gravityDiffers) {
             const engineValue = typeof resolvedEngine === "string" ? resolvedEngine : DEFAULT_PHYSICS_ENGINE;
-            // Emit the engine as a bare positional token (`physics engine jolt`)
+            // Emit the engine as a bare positional token (`physics engine rapier`)
             // to match human-authored scripts; gravity stays as a named param.
             const tokens = ["physics engine", engineValue];
             if (gravityDiffers) {
@@ -1699,7 +1720,7 @@ export const exportCurrentSceneBundle = async (
             stemscriptLines.push(postProcessingCommand);
         }
 
-        const defaultCamera = scene.getObjectByName("DefaultCamera") as (Object3D & {isCamera?: boolean; fov?: number; near?: number; far?: number}) | null;
+        const defaultCamera = findObjectByNameDepthFirst(scene, "DefaultCamera") as (Object3D & {isCamera?: boolean; fov?: number; near?: number; far?: number}) | null;
         if (defaultCamera?.isCamera) {
             const cameraData = defaultCamera.userData?.cameraData || {};
             const cameraCommand = buildCommandIfAny("camera \"DefaultCamera\"", {
@@ -1719,7 +1740,7 @@ export const exportCurrentSceneBundle = async (
             }
         }
 
-        const directional = scene.getObjectByName("Directional Light");
+        const directional = findObjectByNameDepthFirst(scene, "Directional Light");
         if (directional) {
             const lightTarget = directional.name || "Directional Light";
             const lightData = directional as Object3D & {

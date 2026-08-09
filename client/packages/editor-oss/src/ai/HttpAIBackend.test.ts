@@ -79,7 +79,7 @@ describe("HttpAIBackend.setProviderKey", () => {
         expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it("returns false when there is no key store (integrated mode)", async () => {
+    it("returns false when there is no key store", async () => {
         const backend = new HttpAIBackend();
         const ok = await backend.setProviderKey("anthropic", "sk-test");
         expect(ok).toBe(false);

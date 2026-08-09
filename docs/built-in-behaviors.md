@@ -59,7 +59,7 @@ in `Behavior.ts`.
 | `init(game)` | Once at instantiation. Async-friendly. Target not yet attached. |
 | `onStart()` | When attached to the object (target available). Prefer over the deprecated `onAdded()`. |
 | `update(deltaTime)` | Every frame in play mode. |
-| `fixedUpdate(dt)` | Fixed timestep, for physics-coupled logic. |
+| `fixedUpdate(dt)` | Once per authoritative fixed simulation step, after physics and collision processing. The rate and maximum catch-up steps come from the active quality policy. |
 | `onAttributesUpdated()` | An attribute changed (e.g. the user edited a field). |
 | `onPaused()` / `onResumed()` / `onReset()` | Pause / resume / game reset. |
 | `onEvent(msg, data)` | A custom event was delivered to this behavior. |
@@ -441,8 +441,8 @@ responsible for creating the behavior asset, matching config fields to the UI,
 and keeping associated helper files/imports in sync. Edit through the designer
 unless you intentionally switch that asset to hand-authored code.
 
-In the OSS playground, behavior edits are latest-only: the local adapter keeps a
-single effective version for each behavior asset. In a server-backed install,
+In local playground mode, behavior edits are latest-only: the local adapter keeps a
+single effective version for each behavior asset. In a self-hosted server-backed install,
 each save creates an immutable asset revision; the history icon on behavior
 cards opens revision history, lets you diff, switch, or roll back, and stores
 the selected revision in the scene's asset resolution context.
@@ -509,7 +509,7 @@ their defaults:
 
 ## Verification
 
-Behavior changes are exercised by the OSS smokes (they save → reload → play and
+Behavior changes are exercised by the local smokes (they save → reload → play and
 import a real game):
 
 ```bash

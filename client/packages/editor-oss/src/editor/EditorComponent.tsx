@@ -1,6 +1,5 @@
 import React from "react";
 
-import {IS_OSS} from "@stem/editor-oss";
 import "./css/Editor.css";
 import * as THREE from "three";
 import {PiecewiseBezier} from "three.quarks";
@@ -33,15 +32,7 @@ import type {InitialSelection, CodeEditorPopoutPayload} from "./assets/v2/Assets
 import {RevisionListProps} from "./assets/v2/AssetsLibrary/RevisionSection/RevisionList";
 import {RevisionPopup} from "./assets/v2/AssetsLibrary/RevisionSection/RevisionPopup";
 import {UPLOAD_FILE_TYPE, UploadViewProps, UploadView} from "./assets/v2/AssetsLibrary/UploadView/UploadView";
-// AvatarCreator + MediaPipe are gated behind a build-time IS_OSS check so
-// Vite tree-shakes them out of OSS bundles entirely. In OSS the component is
-// a no-op; routes that try to render it just see nothing.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const AvatarCreator: any = IS_OSS
-    ? React.lazy(async () => ({default: (() => null) as unknown as React.ComponentType<unknown>}))
-    : React.lazy(() =>
-        import("./assets/v2/AvatarCreator/AvatarCreator").then(m => ({default: m.AvatarCreator})),
-    );
+const AvatarCreator = (() => null) as React.ComponentType<{mode: "user" | "game"}>;
 import {PopoutEditorWindow, PopoutIndicator, PopoutEditorEntry} from "./assets/v2/BehaviorEditorPopout";
 import {CollaboratorsModal} from "./assets/v2/CollaboratorsModal/CollaboratorsModal";
 import {CSGOrderDialog} from "./assets/v2/common/CSGOrderDialog";
@@ -64,13 +55,18 @@ import {TopNav} from "./assets/v2/TopNav/TopNav";
 import {VFXEditor} from "./assets/v2/VFXEditor/VFXEditor";
 import {StemEditorModal} from "./stem-editor/StemEditorModal";
 import {StemUpdatePrompt} from "./stem-editor/StemUpdatePrompt";
+import {
+    COMPACT_WORKSPACE_QUERY,
+    type CompactWorkspacePanel,
+    resolveCompactWorkspaceShortcut,
+    toggleCompactWorkspacePanel as resolvePanelToggle,
+} from "./responsiveWorkspace";
 
 const FTUE_STORAGE_KEY = "erth-ftue-seen";
 const CODE_EDITOR_PINNED_KEY = "erth-code-editor-pinned";
 const CODE_EDITOR_WIDTH_KEY = "erth-code-editor-width";
 const CODE_EDITOR_OPEN_KEY = "erth-code-editor-open";
 const DEFAULT_PINNED_WIDTH = 50; // percent
-
 const {t} = i18n;
 
 interface IEditorComponentProps {
@@ -225,11 +221,18 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
         pendingStemUpdate: null as {assetId: string; revisionId: string} | null,
         csgDialogData: null as {objects: THREE.Object3D[]; operation: CSGOperation} | null,
         cadModeActive: false,
+        orientationBlocked:
+            typeof window !== "undefined" &&
+            window.matchMedia("(max-width: 600px)").matches &&
+            window.innerHeight >= window.innerWidth,
+        isCompactWorkspace: typeof window !== "undefined" && window.matchMedia(COMPACT_WORKSPACE_QUERY).matches,
+        compactWorkspacePanel: null as CompactWorkspacePanel,
     };
     editor: Editor | null | undefined = null;
     popoutFocusCallbacks: Map<string, () => void> = new Map();
     pendingFTUE: boolean = false;
     aiFocusedInteractionLockApplied: boolean = false;
+    compactWorkspaceMediaQuery: MediaQueryList | null = null;
 
     /**
      * Push the camera's projection so world origin lands at the center of
@@ -298,6 +301,11 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
     };
 
     componentDidMount() {
+        this.compactWorkspaceMediaQuery = window.matchMedia(COMPACT_WORKSPACE_QUERY);
+        this.compactWorkspaceMediaQuery.addEventListener("change", this.handleCompactWorkspaceChange);
+        this.handleCompactWorkspaceChange(this.compactWorkspaceMediaQuery);
+        window.addEventListener("keydown", this.handleWorkspacePanelShortcut);
+
         const app = global.app as EngineRuntime | undefined;
         if (app) {
             this.editor = app.editor;
@@ -352,6 +360,8 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
     }
 
     componentWillUnmount() {
+        this.compactWorkspaceMediaQuery?.removeEventListener("change", this.handleCompactWorkspaceChange);
+        window.removeEventListener("keydown", this.handleWorkspacePanelShortcut);
         const app = global.app as EngineRuntime | undefined;
         if (app) {
             const acpClient = getCopilotProvider();
@@ -404,6 +414,45 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
         this.setState({
             libraryPanelOpened: value,
         });
+    };
+
+    handleCompactWorkspaceChange = (event: MediaQueryListEvent | MediaQueryList) => {
+        this.setState({
+            isCompactWorkspace: event.matches,
+            compactWorkspacePanel: event.matches ? null : this.state.compactWorkspacePanel,
+        });
+    };
+
+    toggleCompactWorkspacePanel = (panel: Exclude<CompactWorkspacePanel, null>) => {
+        this.setState((previous: typeof this.state) => ({
+            compactWorkspacePanel: resolvePanelToggle(previous.compactWorkspacePanel, panel),
+        }));
+    };
+
+    closeCompactWorkspacePanel = () => {
+        this.setState({compactWorkspacePanel: null});
+    };
+
+    handleOrientationBlockingChange = (blocked: boolean) => {
+        if (blocked !== this.state.orientationBlocked) {
+            this.setState({orientationBlocked: blocked});
+        }
+    };
+
+    handleWorkspacePanelShortcut = (event: KeyboardEvent) => {
+        if (!this.state.isCompactWorkspace || !this.props.advancedMode) return;
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+
+        const result = resolveCompactWorkspaceShortcut(
+            this.state.compactWorkspacePanel,
+            event.key,
+            event.altKey,
+        );
+        if (result.handled) {
+            event.preventDefault();
+            this.setState({compactWorkspacePanel: result.panel});
+        }
     };
 
     setPlayerStarted = (value: boolean) => {
@@ -803,10 +852,23 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
                 <HUDStartGameMenuContextProvider>
                     <HUDInGameMenuContextProvider>
                         <CopilotPreviewProvider app={global.app as EngineRuntime}>
-                        <MobileOrientationOverlay policy="requireLandscape" />
+                        <MobileOrientationOverlay
+                            policy="requireLandscape"
+                            applyOnNarrowViewport
+                            onBlockingChange={this.handleOrientationBlockingChange}
+                        />
+                        <div
+                            aria-hidden={this.state.orientationBlocked || undefined}
+                            inert={this.state.orientationBlocked}
+                            style={{display: "contents"}}
+                        >
                         <TopNav
                             playerStarted={playerStarted}
                             workspaceMode={!this.props.advancedMode}
+                            showWorkspacePanelToggles={this.props.advancedMode && this.state.isCompactWorkspace}
+                            activeWorkspacePanel={this.state.compactWorkspacePanel}
+                            onToggleHierarchy={() => this.toggleCompactWorkspacePanel("hierarchy")}
+                            onToggleInspector={() => this.toggleCompactWorkspacePanel("inspector")}
                         />
 
                         <AiCopilot
@@ -834,10 +896,16 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
                                     />
                                 )}
                                 {this.props.advancedMode && (
-                                    <LeftPanel openAssetsLibrary={() => this.setState({showAssetsLibrary: true})} />
+                                    <LeftPanel
+                                        openAssetsLibrary={() => this.setState({showAssetsLibrary: true})}
+                                        drawerMode={this.state.isCompactWorkspace}
+                                        isOpen={!this.state.isCompactWorkspace || this.state.compactWorkspacePanel === "hierarchy"}
+                                        onRequestClose={this.closeCompactWorkspacePanel}
+                                    />
                                 )}
 
-                                {this.props.advancedMode && effectiveShowRightPanel && !showStemPublishPanel && (
+                                {this.props.advancedMode && effectiveShowRightPanel && !showStemPublishPanel &&
+                                    (!this.state.isCompactWorkspace || this.state.compactWorkspacePanel === "inspector") && (
                                     <RightPanel
                                         openUIPanel={() => this.showHUDEditView(true)}
                                         showModelAnimationCombiner={() =>
@@ -851,6 +919,8 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
                                                 ? this.state.aiCopilotWidth
                                                 : 0
                                         }
+                                        drawerMode={this.state.isCompactWorkspace}
+                                        onRequestClose={this.closeCompactWorkspacePanel}
                                     />
                                 )}
 
@@ -1039,6 +1109,7 @@ class EditorComponent extends React.Component<IEditorComponentProps> {
                         {elements.map((n, i) => (
                             <div key={i}>{n}</div>
                         ))}
+                        </div>
                         </CopilotPreviewProvider>
                     </HUDInGameMenuContextProvider>
                 </HUDStartGameMenuContextProvider>

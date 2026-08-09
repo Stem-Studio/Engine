@@ -226,8 +226,6 @@ export const DEFAULT_QUALITY_SETTINGS: IQualitySettings = {
     rendering: {
         pixelRatio: 1.0,
         shadowQuality: 'medium',
-        shadowMapSize: 1024,
-        shadowCascades: 2,
         antialiasing: 'fxaa',
         antialiasingQuality: 'medium',
         postProcessing: true,
@@ -248,11 +246,8 @@ export const DEFAULT_QUALITY_SETTINGS: IQualitySettings = {
     physics: {
         updateRate: 30,
         substeps: 1,
-        collisionQuality: 'medium',
-        maxActiveBodies: 200,
-        sleepThreshold: 0.5,
-        continuousCollisionDetection: false,
-        asyncComputation: false,
+        maxStepsPerFrame: 3,
+        solverIterations: 4,
     },
     behavior: {
         updateRate: 30,
@@ -279,11 +274,10 @@ export const DEFAULT_QUALITY_SETTINGS: IQualitySettings = {
         maxPlayers: 25,
     },
     scheduler: {
-        enabled: true,
+        enabled: false,
         frameBudgetMs: 14,
         fixedTimestepHz: 30,
         maxFixedStepsPerFrame: 3,
-        enableTimeSlicing: true,
         spatialGridCellSize: 30,
         renderPressureThreshold: 0.5,
         deltaTimePressureThreshold: 1.25,

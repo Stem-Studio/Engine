@@ -1,4 +1,4 @@
-import seedrandom from "seedrandom";
+import seedrandom from "seedrandom/seedrandom.js";
 import { describe, expect, it } from "vitest";
 
 import { EndlessTerrainGridHeight } from "./EndlessTerrainGridHeight";
@@ -84,6 +84,17 @@ describe("TerrainPlacementWorker", () => {
         waterPercentage: 15,
         verticalOffset: 0,
     };
+
+    it("preserves the existing ARC4 terrain sequence", () => {
+        const rng = seedrandom("7:6:-4:0");
+
+        expect([rng(), rng(), rng(), rng()]).toEqual([
+            0.5565891732010092,
+            0.3116485881235938,
+            0.03311567342181757,
+            0.04694432360374761,
+        ]);
+    });
 
     it("matches the enhanced grid height used by the renderer", () => {
         const chunkX = 6;

@@ -381,6 +381,7 @@ export const DEFAULT_SCALE = {x: 1, y: 1, z: 1};
 export enum PhysicsEngineType {
     Ammo = "ammo",
     Rapier = "rapier",
-    Jolt = "jolt",
-    PhysX = "physx",
 }
+
+export const isPhysicsEngineType = (value: unknown): value is PhysicsEngineType =>
+    Object.values(PhysicsEngineType).includes(value as PhysicsEngineType);

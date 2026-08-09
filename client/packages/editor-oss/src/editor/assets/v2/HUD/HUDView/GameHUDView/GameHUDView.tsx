@@ -19,7 +19,6 @@ import {
     UI_ITEM_BUTTON_TYPES,
 } from "../../HUDEditView/types";
 import JoinRoom from "../JoinRoom";
-import {PerformanceOverlay} from "../PerformanceOverlay/PerformanceOverlay";
 import {InGameData} from "../types";
 
 interface Props {
@@ -220,8 +219,6 @@ export const GameHUDView = ({gameData, isGameOver}: Props) => {
                 <Grid $fullWidth>{canJoinRoom && <JoinRoom roomId={editor.roomId} />}</Grid>
             }
             
-            {/* Performance Overlay - always available during play mode */}
-            <PerformanceOverlay />
         </>
     );
 };

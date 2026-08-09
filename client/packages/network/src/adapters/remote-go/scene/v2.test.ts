@@ -32,9 +32,9 @@ beforeEach(() => {
     vi.clearAllMocks();
 });
 
-// NOTE: tests for `createSceneRevision` were removed — that path exercises the
-// hosted server revision API (409-retry, server-assigned ids), which does not
-// exist in the OSS build (the adapter generates local `oss-rev-*` ids).
+// NOTE: tests for `createSceneRevision` were removed — that path exercises a
+// remote server revision API (409-retry, server-assigned ids), while this
+// adapter generates local `oss-rev-*` ids.
 
 describe("sceneSettingsToCreateRequest", () => {
     it("maps PascalCase SceneSettings to v2 createScene request fields", () => {

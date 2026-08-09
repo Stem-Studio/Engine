@@ -1,0 +1,71 @@
+{
+  "generatedAt": "2026-07-07T18:21:07.299Z",
+  "repoRoot": "/Users/n/erth/de-shadoweditor-oss",
+  "buckets": [
+    {
+      "id": "00-direct-copilot-test-fix",
+      "title": "DirectCopilot Test Baseline Fix",
+      "file": "docs/planning/pr-split-patches/00-direct-copilot-test-fix.patch",
+      "pathCount": 1,
+      "untrackedCount": 0,
+      "bytes": 1437
+    },
+    {
+      "id": "01-behavior-packs",
+      "title": "Behavior Pack Refactors",
+      "file": "docs/planning/pr-split-patches/01-behavior-packs.patch",
+      "pathCount": 44,
+      "untrackedCount": 15,
+      "bytes": 133433
+    },
+    {
+      "id": "02-quick-build",
+      "title": "Quick Build Tools",
+      "file": "docs/planning/pr-split-patches/02-quick-build.patch",
+      "pathCount": 12,
+      "untrackedCount": 17,
+      "bytes": 360206
+    },
+    {
+      "id": "03-mesh-cad",
+      "title": "Mesh CAD Action Bar",
+      "file": "docs/planning/pr-split-patches/03-mesh-cad.patch",
+      "pathCount": 13,
+      "untrackedCount": 4,
+      "bytes": 65129
+    },
+    {
+      "id": "04-bim-plan",
+      "title": "BIM Plan",
+      "file": "docs/planning/pr-split-patches/04-bim-plan.patch",
+      "pathCount": 11,
+      "untrackedCount": 18,
+      "bytes": 298154
+    },
+    {
+      "id": "05-docs-site-misc",
+      "title": "Builder Studio Docs, Site, And Misc Wiring",
+      "file": "docs/planning/pr-split-patches/05-docs-site-misc.patch",
+      "pathCount": 20,
+      "untrackedCount": 11,
+      "bytes": 875180
+    },
+    {
+      "id": "90-shared-hunk-required",
+      "title": "Shared Files Requiring Hunk-Level Split",
+      "file": "docs/planning/pr-split-patches/90-shared-hunk-required.patch",
+      "pathCount": 6,
+      "untrackedCount": 2,
+      "bytes": 170200
+    },
+    {
+      "id": "99-owner-decision",
+      "title": "Owner Decision Bucket",
+      "file": "docs/planning/pr-split-patches/99-owner-decision.patch",
+      "pathCount": 22,
+      "untrackedCount": 1,
+      "bytes": 134030
+    }
+  ],
+  "unassignedUntracked": []
+}

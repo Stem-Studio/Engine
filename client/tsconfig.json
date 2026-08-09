@@ -38,9 +38,6 @@
             "ammo": [
                 "assets/js/ammo/ammo.wasm.d.ts"
             ],
-            "autolod": [
-                "packages/shared/src/package/autolod/packages/core/src"
-            ],
             "src/api/*": [
                 "packages/network/src/adapters/remote-go/*"
             ],

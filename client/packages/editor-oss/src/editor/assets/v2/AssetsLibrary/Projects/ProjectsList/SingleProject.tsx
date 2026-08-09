@@ -12,11 +12,12 @@ import {
     SceneNameContainer,
 } from "./Projectslist.style";
 import {useLibrariesContext} from "@stem/editor-oss/context";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {InfoCard} from "../../../common/InfoCard/InfoCard";
 import {InfoIcon} from "../../../common/InfoCard/InfoIcon";
 import gamePlaceholder from "../../../icons/stem-studio-project-placeholder.png";
 import {FileData} from "../../../types/file";
+import {formatAssetCount} from "./projectAssetCount";
 
 export const SingleProject = ({onSceneClick, item}: {onSceneClick: (item: FileData) => void; item: FileData}) => {
     const librariesContext = useLibrariesContext();
@@ -24,8 +25,8 @@ export const SingleProject = ({onSceneClick, item}: {onSceneClick: (item: FileDa
     const [isInfoCardVisible, setIsInfoCardVisible] = useState(false);
     const thumbnail = getThumbnail(item.Thumbnail);
 
-    const assetsCountValue = item.AssetsCount;
-    const additionalText = `${assetsCountValue} Assets`;
+    const assetsCountValue = item.AssetsCount ?? 0;
+    const additionalText = formatAssetCount(assetsCountValue);
     return (
         <>
             <ListItem
@@ -47,7 +48,7 @@ export const SingleProject = ({onSceneClick, item}: {onSceneClick: (item: FileDa
                             <InfoCard
                                 item={item}
                                 thumbnail={thumbnail || gamePlaceholder}
-                                assetsCount={`${assetsCountValue} Assets`}
+                                assetsCount={formatAssetCount(assetsCountValue)}
                                 isCardVisible={isInfoCardVisible}
                                 close={() => setIsInfoCardVisible(false)}
                                 inLibrary

@@ -88,13 +88,12 @@ export const focusVisibleRing = css`
 `;
 
 export const BuilderToolbar = styled.div<{
-  $bottom?: string;
   $maxWidth?: string;
   $mobileBreakpoint?: string;
 }>`
   position: absolute;
   z-index: 101;
-  bottom: ${({ $bottom }) => $bottom ?? "78px"};
+  bottom: 78px;
   left: 50%;
   transform: translateX(-50%);
   width: auto;
@@ -253,11 +252,9 @@ export const BuilderToolMenuSheet = styled.div<{ $open: boolean }>`
   box-shadow: 0 18px 42px ${builderToolbarTokens.shadowStrong};
   opacity: ${({ $open }) => ($open ? 1 : 0)};
   pointer-events: ${({ $open }) => ($open ? "auto" : "none")};
-  visibility: ${({ $open }) => ($open ? "visible" : "hidden")};
   transition:
     opacity 120ms ease,
-    transform 120ms ease,
-    visibility 120ms ease;
+    transform 120ms ease;
   z-index: 4;
 `;
 

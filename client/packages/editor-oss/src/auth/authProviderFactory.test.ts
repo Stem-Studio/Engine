@@ -1,23 +1,15 @@
 /**
- * Tests for the auth provider factory's mode-aware resolution. The factory
- * is the single seam that decides whether OSS dummy auth or integrated
- * Firebase auth is active. Getting this wrong leaks the OSS dummy token
- * `stemstudio-token` to the cloud server, which rejects every request
- * with 401 / "incorrect number of segments" (Firebase admin SDK can't
- * parse the dummy as a JWT). These tests pin the contract in both modes.
+ * Tests for the OSS auth provider factory. The default provider is the local
+ * dummy identity accepted by the ai-server, while tests and embedders can
+ * still inject a custom provider through `setAuthProvider()`.
  */
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import type {IAuthProvider, IAuthUser} from "./IAuthProvider";
 
-const importFresh = async (isOSS: boolean) => {
+const importFresh = async () => {
     vi.resetModules();
-    vi.doMock("../mode/buildMode", () => ({
-        IS_OSS: isOSS,
-        IS_INTEGRATED: !isOSS,
-        BUILD_MODE: isOSS ? "oss" : "integrated",
-    }));
     return import("./authProviderFactory");
 };
 
@@ -42,23 +34,21 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-    vi.doUnmock("../mode/buildMode");
+    vi.clearAllMocks();
 });
 
-describe("getAuthProvider — OSS mode", () => {
+describe("getAuthProvider", () => {
     it("falls back to NullAuthProvider when no provider is registered", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(true);
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         setAuthProvider(undefined);
         const provider = getAuthProvider();
-        // Behavioral check (instanceof would fail because vi.resetModules
-        // gives the factory its own copy of NullAuthProvider).
         const user = provider.getCurrentUser();
         expect(user).not.toBeNull();
         expect(user!.uid).toBe("stemstudio-local-user");
     });
 
-    it("returns the OSS dummy user with stemstudio-token", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(true);
+    it("returns the local user with stemstudio-token", async () => {
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         setAuthProvider(undefined);
         const user = getAuthProvider().getCurrentUser();
         expect(user).not.toBeNull();
@@ -67,7 +57,7 @@ describe("getAuthProvider — OSS mode", () => {
     });
 
     it("honors an explicitly registered provider over the default", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(true);
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         const customUser: IAuthUser = {
             uid: "custom",
             email: "x@x",
@@ -75,67 +65,25 @@ describe("getAuthProvider — OSS mode", () => {
             photoURL: null,
             isAnonymous: false,
             emailVerified: true,
-            getIdToken: async () => "real-token",
+            getIdToken: async () => "custom-token",
         };
         setAuthProvider(stubProvider({getCurrentUser: () => customUser}));
         const token = await getAuthProvider().getCurrentUser()!.getIdToken();
-        expect(token).toBe("real-token");
-    });
-});
-
-describe("getAuthProvider — integrated mode", () => {
-    it("throws when no provider has been registered", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(false);
-        setAuthProvider(undefined);
-        expect(() => getAuthProvider()).toThrow(/@stem\/auth-firebase/);
+        expect(token).toBe("custom-token");
     });
 
-    it("does NOT silently fall back to NullAuthProvider", async () => {
-        // The whole point of the guard: forwarding the OSS dummy token to
-        // a Firebase-backed integrated server triggers
-        // "incorrect number of segments" 401 on every request. Pin that
-        // the factory will not let this happen.
-        const {getAuthProvider, setAuthProvider} = await importFresh(false);
-        setAuthProvider(undefined);
-        expect(() => getAuthProvider()).toThrow();
-        // Verify the error mentions the bootstrap so the dev knows
-        // which call is missing.
-        try {
-            getAuthProvider();
-        } catch (err) {
-            expect((err as Error).message).toContain("@stem/auth-firebase");
-        }
-    });
-
-    it("returns the registered provider after bootstrap", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(false);
-        const firebaseUser: IAuthUser = {
-            uid: "firebase-uid",
-            email: "user@example.com",
-            displayName: "User",
-            photoURL: null,
-            isAnonymous: false,
-            emailVerified: true,
-            getIdToken: async () => "eyJhbGc.fakeJWT.payload",
-        };
-        setAuthProvider(stubProvider({getCurrentUser: () => firebaseUser}));
-        const token = await getAuthProvider().getCurrentUser()!.getIdToken();
-        expect(token).toMatch(/^eyJ/);
-        expect(token).not.toBe("stemstudio-token");
-    });
-
-    it("setAuthProvider(undefined) re-arms the throw — next get() fails again", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(false);
+    it("setAuthProvider(undefined) resets to the local default", async () => {
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         setAuthProvider(stubProvider());
-        expect(() => getAuthProvider()).not.toThrow();
+        expect(getAuthProvider().getCurrentUser()).toBeNull();
         setAuthProvider(undefined);
-        expect(() => getAuthProvider()).toThrow();
+        expect(getAuthProvider().getCurrentUser()?.uid).toBe("stemstudio-local-user");
     });
 });
 
 describe("integration with NullAuthProvider", () => {
-    it("OSS dummy user satisfies the IAuthUser shape", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(true);
+    it("local dummy user satisfies the IAuthUser shape", async () => {
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         setAuthProvider(undefined);
         const user = getAuthProvider().getCurrentUser()!;
         expect(user.uid).toBe("stemstudio-local-user");
@@ -144,8 +92,8 @@ describe("integration with NullAuthProvider", () => {
         expect(typeof user.getIdToken).toBe("function");
     });
 
-    it("OSS signInAnonymously is a no-op that returns the same dummy user", async () => {
-        const {getAuthProvider, setAuthProvider} = await importFresh(true);
+    it("signInAnonymously is a no-op that returns the same dummy user", async () => {
+        const {getAuthProvider, setAuthProvider} = await importFresh();
         setAuthProvider(undefined);
         const provider = getAuthProvider();
         const current = provider.getCurrentUser();

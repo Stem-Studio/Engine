@@ -190,6 +190,7 @@ vi.mock("../../utils/TagUtil", () => ({
 vi.mock("../../editor/assets/v2/RightPanel/sections/MaterialRenderingSection/types", () => ({}));
 
 import global from "../../global";
+import {applyMaterialValueOverridesToObject} from "../../editor/assets/v2/materials/materialUtils";
 import {ObjectHandlers} from "./ObjectHandlers";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -222,6 +223,25 @@ function createMockApp(scene: THREE.Scene, editor: ReturnType<typeof createMockE
         editor,
         call: vi.fn(),
     };
+}
+
+function createDeepGroupWithLeafMesh(name: string, depth = 12_000) {
+    const group = new THREE.Group();
+    group.name = name;
+    let cursor: THREE.Object3D = group;
+    for (let i = 0; i < depth; i++) {
+        const child = new THREE.Group();
+        cursor.add(child);
+        cursor = child;
+    }
+
+    const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial({color: 0x224466}),
+    );
+    cursor.add(mesh);
+
+    return {group, mesh};
 }
 
 /** Snapshot essential properties for corruption detection */
@@ -502,6 +522,18 @@ describe("ObjectHandlers: object property integrity", () => {
             expect(result.data.tileAmountX).toBe(2);
             expect(result.data.textures.base).toBe("asset-id");
         });
+
+        it("reads material settings from deep groups without recursive traversal", () => {
+            const {group} = createDeepGroupWithLeafMesh("DeepMaterialGetter");
+            scene.add(group);
+            const traverseSpy = vi.spyOn(group, "traverse");
+
+            const result = handlers.handleGetMaterialSettings({target: "DeepMaterialGetter"});
+
+            expect(result.status).toBe("success");
+            expect(traverseSpy).not.toHaveBeenCalled();
+            expect(result.data.material.color).toBe("#224466");
+        });
     });
 
     // ─── handleModifyObject ───────────────────────────────────────
@@ -673,6 +705,22 @@ describe("ObjectHandlers: object property integrity", () => {
             expect(mesh.scale.equals(scaleBefore)).toBe(true);
             expect(mesh.uuid).toBe(uuidBefore);
             assertSerializable(mesh);
+        });
+
+        it("accepts deep group material targets without recursive traversal", () => {
+            const {group} = createDeepGroupWithLeafMesh("DeepMatTarget");
+            scene.add(group);
+            const traverseSpy = vi.spyOn(group, "traverse");
+
+            const result = handlers.handleSetMaterial({target: "DeepMatTarget", color: "#00ff00"});
+
+            expect(result.status).toBe("success");
+            expect(traverseSpy).not.toHaveBeenCalled();
+            expect(applyMaterialValueOverridesToObject).toHaveBeenCalledWith(
+                group,
+                expect.objectContaining({color: "#00ff00"}),
+                null,
+            );
         });
     });
 

@@ -6,7 +6,7 @@ import {resolveAssetRevisionId} from "@stem/editor-oss/asset-management/AssetRes
 import {useAssetResolutionContext} from "@stem/editor-oss/context/AssetResolutionContext";
 import global from "@stem/editor-oss/global";
 import {seedScriptDependencyEntry} from "../../../script-runtime/scriptDependencyCache";
-import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../../script-runtime/scriptImports";
+import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../../script-runtime/scriptImportCore";
 import {
     getAssetRevisionData,
     useCreateAssetRevisionWithData,

@@ -1,15 +1,15 @@
 import {MathUtils, Mesh, MeshStandardMaterial, Object3D, Quaternion, Scene, Vector3} from "three";
-import {QuaternionLike, Vector3Like, Wrapping} from "three/webgpu";
+import type {QuaternionLike, Vector3Like, Wrapping} from "three";
 
 import {MULTIPLAYER_EVENTS} from "./MultiplayerEvents";
 import MultiplayerWorker from "./MultiplayerWorker.ts?worker";
 import EngineRuntime, {ApplicationMode} from "@stem/editor-oss/EngineRuntime";
-import {
+import {PhysicsShape} from "@stem/editor-oss/behaviors/state/IMultiplayerState";
+import type {
     ChatMessageReceivedListener,
     ClientDisconnectedListener,
     HostChangedListener,
     IMultiplayerState,
-    PhysicsShape,
     PlayerAddedOrRemovedListener,
     PlayerDataChangedListener,
     PrivateRoomInfo,
@@ -20,7 +20,7 @@ import {markLocalPlayerAvatar, markRemotePlayerAvatar} from "@stem/editor-oss/co
 import global from "@stem/editor-oss/global";
 import {loadModel} from "@stem/editor-oss/model/load-util";
 import {CollisionBehavior, IDispatcher, IPhysics} from "@stem/editor-oss/physics/common/types";
-import {PhysicsUtil} from "@stem/editor-oss/physics/PhysicsUtil";
+import {PhysicsRuntimeUtil as PhysicsUtil} from "@stem/editor-oss/physics/PhysicsRuntimeUtil";
 import {MultiplayerUtils} from "@stem/editor-oss/physics/simple/MultiplayerUtils";
 import {loadPrefab} from "@stem/editor-oss/prefab/util";
 import {showToast} from "@stem/editor-oss/showToast";
@@ -28,9 +28,10 @@ import {TemplateType} from "@stem/editor-oss/types/TemplateType";
 import Ajax from "@stem/editor-oss/utils/Ajax";
 import {confirm as showConfirm} from "@stem/editor-oss/utils/ElementsUtils";
 import {getObjectTemplate, getObjectTemplateType} from "@stem/editor-oss/utils/ObjectUtils";
+import {findObjectByUuidDepthFirst, traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 import {REACT_APP_MULTIPLAYER_SERVER_URL} from "../Constants";
-import {GameObject, Material, Player} from "../GameRoomState";
+import type {GameObject, Material, Player} from "../GameRoomState";
 
 enum ErrorAction {
     RETURN_TO_DASHBOARD = "RETURN_TO_DASHBOARD",
@@ -191,7 +192,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
                 return;
             }
 
-            const playerObj = this.scene.getObjectByProperty("uuid", player.uuid);
+            const playerObj = findObjectByUuidDepthFirst(this.scene, player.uuid);
             if (playerObj && !playerObj.visible) {
                 console.error("MP: CHECK: player is not visible", playerObj);
             } else if (!playerObj) {
@@ -229,7 +230,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     public setCurrentAnimation(objectUuid: string): void {
-        const object = this.scene.getObjectByProperty("uuid", objectUuid);
+        const object = findObjectByUuidDepthFirst(this.scene, objectUuid);
         if (!object) {
             return;
         }
@@ -345,7 +346,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
                 const {uuid, childUuid, position, quaternion, scale, visible, material} = data;
                 const object = this.remoteObjects.get(uuid);
                 if (object) {
-                    const child = object.getObjectByProperty("uuid", childUuid);
+                    const child = findObjectByUuidDepthFirst(object, childUuid);
                     if (child) {
                         this.updateObject(child, position, quaternion, scale, visible, material);
                     } else {
@@ -437,7 +438,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     private onObjectAnimationChanged(uuid: any, animation: any) {
-        const targetObj = this.scene.getObjectByProperty("uuid", uuid);
+        const targetObj = findObjectByUuidDepthFirst(this.scene, uuid);
         if (!targetObj) return;
         try {
             if (!animation) {
@@ -465,7 +466,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     private async onChildAdded(uuid: string, child: ObjectState) {
-        const object = this.scene.getObjectByProperty("uuid", uuid);
+        const object = findObjectByUuidDepthFirst(this.scene, uuid);
         if (!object) {
             console.warn("MP: onChildAdded: root not found in scene: " + uuid);
             return;
@@ -476,7 +477,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     //called by the MP worker
     private async addChildObject(object: Object3D, child: ObjectState | GameObject) {
         //check parent
-        const parentObject = object.getObjectByProperty("uuid", child.parent);
+        const parentObject = findObjectByUuidDepthFirst(object, child.parent);
         if (!parentObject) {
             console.warn(
                 `MP: parent not found in scene: ${object.uuid}/${object.name} -> ${child.uuid}/${child.name} -> ${child.parent}`,
@@ -511,12 +512,12 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     private onChildRemoved(uuid: any, childUuid: any) {
-        const object = this.scene.getObjectByProperty("uuid", uuid);
+        const object = findObjectByUuidDepthFirst(this.scene, uuid);
         if (!object) {
             console.warn("MP: onChildRemoved: root not found in scene: " + uuid);
             return;
         }
-        const childObject = object.getObjectByProperty("uuid", childUuid);
+        const childObject = findObjectByUuidDepthFirst(object, childUuid);
         if (!childObject) {
             console.warn("MP: onChildRemoved: child not found in root object: " + childUuid);
             return;
@@ -525,7 +526,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     private onObjectRemoved(uuid: any) {
-        let sceneObject = this.scene.getObjectByProperty("uuid", uuid);
+        const sceneObject = findObjectByUuidDepthFirst(this.scene, uuid);
         if (sceneObject) {
             console.debug("this.scene.remove(sceneObject)", sceneObject);
             global.app!.animationControl?.stopAnimation(sceneObject);
@@ -579,7 +580,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
             });
 
             const childObjectMap = new Map<string, Object3D>();
-            clonedObj?.traverse(child => {
+            traverseObjectDepthFirst(clonedObj, child => {
                 // Skip the root object (the client adding the new object
                 // does this as well).
                 if (child.uuid === clonedObj.uuid) {
@@ -752,7 +753,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
         this.behaviorData.setBehaviorData(uuid, behaviorId, key, value);
 
         //notify the behavior
-        const target = this.scene.getObjectByProperty("uuid", uuid);
+        const target = findObjectByUuidDepthFirst(this.scene, uuid);
         if (target) {
             const behaviors = global.app?.game?.behaviorManager?.getTargetBehaviorsById(target, behaviorId);
             if (behaviors && behaviors.length > 0) {
@@ -766,7 +767,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     }
 
     private async cloneObject(objectState: GameObject): Promise<Object3D> {
-        if (this.scene.getObjectByProperty("uuid", objectState.uuid)) {
+        if (findObjectByUuidDepthFirst(this.scene, objectState.uuid)) {
             console.warn("Object already added to the scene: " + objectState.uuid);
             throw new Error("Object already added to the scene");
         }
@@ -861,7 +862,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
     private async cloneUUID(objectState: GameObject): Promise<Object3D> {
         const templateUuid = objectState.template;
 
-        const objectTemplate = this.scene.getObjectByProperty("uuid", templateUuid);
+        const objectTemplate = findObjectByUuidDepthFirst(this.scene, templateUuid);
         if (!objectTemplate) {
             console.warn(`MP: object template is not in the scene: ${templateUuid}`);
             throw new Error("Object template is not in the scene");
@@ -893,8 +894,9 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
                 friction: 0,
             };
 
-            PhysicsUtil.updateShapeOffsetAndScale(clonedObject);
-            await PhysicsUtil.addObjectShapeToPhysics(clonedObject, this.physics, objectTemplate);
+            const {PhysicsUtil: ShapePhysicsUtil} = await import("@stem/editor-oss/physics/PhysicsUtil");
+            ShapePhysicsUtil.updateShapeOffsetAndScale(clonedObject);
+            await ShapePhysicsUtil.addObjectShapeToPhysics(clonedObject, this.physics, objectTemplate);
         }
 
         return clonedObject;
@@ -1147,7 +1149,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
             this.addObject(object);
         });
         //add player
-        const playerObject = this.scene.getObjectByProperty("uuid", this.playerUuid);
+        const playerObject = findObjectByUuidDepthFirst(this.scene, this.playerUuid);
         if (playerObject) {
             if (!this.localObjects.has(playerObject.uuid)) {
                 this.addObject(playerObject);
@@ -1215,7 +1217,7 @@ export default class SimpleMultiplayerClient implements IMultiplayerState {
         const gameObjectMap = new Map<string, Object3D>();
 
         // CHILDREN
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             // Skip the root object.
             if (child.uuid === object.uuid) return;
 

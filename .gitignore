@@ -286,8 +286,6 @@ stemstudio-importer/three-quake
 # Vendor build cloned repos
 vendor/ammo-build/ammo.js/
 vendor/rapier-build/rapier/
-vendor/jolt-physics-build/JoltPhysics.js/
-vendor/physx-build/physx-js-webidl/
 
 # MemPalace per-project files (issue #185)
 mempalace.yaml
@@ -300,3 +298,5 @@ webstorm/.intellijPlatform
 .dual-graph/
 .dual-graph-context/
 scripts/playwright/*-output/
+.omo/evidence
+tmp

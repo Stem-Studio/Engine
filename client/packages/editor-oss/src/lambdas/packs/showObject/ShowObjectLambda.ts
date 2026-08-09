@@ -1,6 +1,8 @@
 import { Object3D } from "three";
 
 import { LambdaBase } from "../../LambdaBase";
+import {deleteRuntimeUserDataValue} from "@stem/editor-oss/utils/userDataRuntime";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 const HIDE_OBJECT_PHYSICS_WAS_ENABLED_KEY = "__hideObjectPhysicsWasEnabled";
 const HIDE_OBJECT_PHYSICS_REMOVED_KEY = "__hideObjectPhysicsRemoved";
@@ -25,16 +27,14 @@ export default class ShowObjectLambda extends LambdaBase {
             }
         }
 
-        delete target.userData[HIDE_OBJECT_PHYSICS_WAS_ENABLED_KEY];
-        delete target.userData[HIDE_OBJECT_PHYSICS_REMOVED_KEY];
+        deleteRuntimeUserDataValue(target, HIDE_OBJECT_PHYSICS_WAS_ENABLED_KEY);
+        deleteRuntimeUserDataValue(target, HIDE_OBJECT_PHYSICS_REMOVED_KEY);
     }
 
     private applyVisibility(target: Object3D, includeChildren: boolean): void {
         this.showTarget(target);
         if (includeChildren) {
-            target.traverse(child => {
-                this.showTarget(child);
-            });
+            traverseObjectDepthFirst(target, child => this.showTarget(child), {includeRoot: false});
         }
     }
 

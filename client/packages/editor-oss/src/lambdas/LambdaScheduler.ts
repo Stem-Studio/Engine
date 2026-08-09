@@ -3,6 +3,8 @@ import { Camera, Object3D, Vector3 } from "three";
 import { VisibilityChecker } from "@stem/editor-oss/behaviors/performance/implementations/VisibilityChecker";
 import { IVisibilityChecker } from "@stem/editor-oss/behaviors/performance/interfaces/IThrottleStrategy";
 import type { FrameContext, ISpatialGrid } from "@stem/editor-oss/scheduler/types";
+import {setRuntimeUserDataValue} from "@stem/editor-oss/utils/userDataRuntime";
+import {FrameWorldMatrixCache} from "@stem/editor-oss/utils/FrameWorldMatrixCache";
 
 export interface LambdaSchedulerConfig {
     targetFPS: number;
@@ -42,13 +44,18 @@ export class LambdaScheduler {
     private _objPos = new Vector3();
     private _camCachedFrame: number = -1; // frame when _camPos was last computed
     private _cachedCameraUuid: string = "";
+    private _visibilityPreparedFrame: number = -1;
+    private _visibilityPreparedCameraUuid: string = "";
 
     private config: LambdaSchedulerConfig;
     private spatialGrid: ISpatialGrid | null = null;
     private throttleChangeLogCount = 0;
+    private objectHashCache = new WeakMap<Object3D, number>();
+    private readonly worldMatrixCache = new FrameWorldMatrixCache();
 
     constructor(config: Partial<LambdaSchedulerConfig> = {}) {
-        this.config = { ...DEFAULT_CONFIG, ...config };
+        this.config = this.normalizeConfig({ ...DEFAULT_CONFIG, ...config });
+        this.throttleFactor = this.config.defaultThrottleFactor;
         this.visibilityChecker = new VisibilityChecker();
     }
 
@@ -78,10 +85,15 @@ export class LambdaScheduler {
     }
 
     beginFrame(contextOrFrameCount?: FrameContext | number) {
-        const context: { frameCount?: number; frameDeadline?: number } | undefined =
+        this.worldMatrixCache.beginFrame();
+        const context: Partial<Pick<FrameContext, "frameCount" | "frameDeadline" | "frameStartTime">> | undefined =
             typeof contextOrFrameCount === "number"
             ? { frameCount: contextOrFrameCount }
             : contextOrFrameCount;
+
+        if (typeof contextOrFrameCount === "object" && contextOrFrameCount) {
+            this.spatialGrid = contextOrFrameCount.spatialGrid ?? null;
+        }
 
         if (context?.frameCount !== undefined) {
             this.frameCount = context.frameCount;
@@ -89,10 +101,9 @@ export class LambdaScheduler {
             this.frameCount++;
         }
 
-        // Use orchestrator deadline when available
-        this._frameDeadline = context?.frameDeadline ?? (performance.now() + this.config.frameBudgetMs);
-
-        const now = performance.now();
+        const now = context?.frameStartTime ?? performance.now();
+        // Use orchestrator deadline when available.
+        this._frameDeadline = context?.frameDeadline ?? (now + this.config.frameBudgetMs);
         this._frameStartTime = now;
         const previousThrottleFactor = this.throttleFactor;
         if (this.lastFrameTime > 0) {
@@ -105,8 +116,11 @@ export class LambdaScheduler {
             // Wider dead zone to avoid oscillation
             if (this.avgFrameTime > targetFrameTime * 1.2) {
                 this.throttleFactor = Math.min(this.throttleFactor + 1, 4);
-            } else if (this.avgFrameTime < targetFrameTime * 0.85 && this.throttleFactor > 1) {
-                this.throttleFactor = Math.max(1, this.throttleFactor - 1);
+            } else if (
+                this.avgFrameTime < targetFrameTime * 0.85 &&
+                this.throttleFactor > this.config.defaultThrottleFactor
+            ) {
+                this.throttleFactor = Math.max(this.config.defaultThrottleFactor, this.throttleFactor - 1);
             }
         }
         this.lastFrameTime = now;
@@ -144,7 +158,7 @@ export class LambdaScheduler {
 
         // 1. Distance/Visibility Check — cache camera position once per frame per camera
         if (this._camCachedFrame !== this.frameCount || this._cachedCameraUuid !== camera.uuid) {
-            camera.getWorldPosition(this._camPos);
+            this.readCameraPosition(camera);
             this._camCachedFrame = this.frameCount;
             this._cachedCameraUuid = camera.uuid;
         }
@@ -155,14 +169,7 @@ export class LambdaScheduler {
         if (gridDist !== null && gridDist !== undefined) {
             distSq = gridDist;
         } else {
-            // Fallback: compute world position
-            // Optimization: if matrixWorld is up to date, extract position directly to avoid recomputing
-            // (Note: getWorldPosition(target) calls updateMatrixWorld(true) internally which can be expensive)
-            if (object.matrixWorld && !object.matrixWorldNeedsUpdate) {
-                this._objPos.setFromMatrixPosition(object.matrixWorld);
-            } else {
-                object.getWorldPosition(this._objPos);
-            }
+            this.readObjectPosition(object);
             distSq = this._objPos.distanceToSquared(this._camPos);
         }
 
@@ -177,22 +184,79 @@ export class LambdaScheduler {
             }
         }
 
-        // Visibility Check (Frustum Culling)
-        // We do NOT stop completely to allow game logic (like AI moving behind you) to continue roughly
-        if (!this.visibilityChecker.isVisible(object, camera)) {
-            localThrottle = Math.max(localThrottle, 20);
+        // Stable interleave using object uuid hash (immune to add/remove index shifts)
+        const hash = this.getObjectHash(object);
+        const frameMod = this.frameCount % localThrottle;
+
+        // Cheap early out: if distance/adaptive throttling already skips this
+        // frame, avoid frustum cache lookups and bounding-sphere work.
+        if (localThrottle > 1 && hash % localThrottle !== frameMod) {
+            return 0;
         }
 
-        // Stable interleave using object uuid hash (immune to add/remove index shifts)
-        // Cache hash on the object to avoid recomputing every frame
-        let hash = object.userData._lambdaHash as number | undefined;
-        if (hash === undefined) {
-            hash = this.stableHash(object.uuid);
-            object.userData._lambdaHash = hash;
+        // Visibility Check (Frustum Culling)
+        // We do NOT stop completely to allow game logic (like AI moving behind you) to continue roughly.
+        this.prepareVisibilityFrame(camera);
+        if (!this.visibilityChecker.isVisible(object, camera)) {
+            localThrottle = Math.max(localThrottle, 20);
         }
         const shouldRun = hash % localThrottle === this.frameCount % localThrottle;
 
         return shouldRun ? Math.min(localThrottle, 3) : 0;
+    }
+
+    private readCameraPosition(camera: Camera): void {
+        if (this.worldMatrixCache.isCurrent(camera)) {
+            this._camPos.setFromMatrixPosition(camera.matrixWorld);
+            return;
+        }
+        camera.getWorldPosition(this._camPos);
+        this.worldMatrixCache.markCurrent(camera);
+    }
+
+    private readObjectPosition(object: Object3D): void {
+        if (this.worldMatrixCache.isCurrent(object)) {
+            this._objPos.setFromMatrixPosition(object.matrixWorld);
+            return;
+        }
+        object.getWorldPosition(this._objPos);
+        this.worldMatrixCache.markCurrent(object);
+    }
+
+    private getObjectHash(object: Object3D): number {
+        const cachedHash = this.objectHashCache.get(object);
+        if (cachedHash !== undefined) {
+            return cachedHash;
+        }
+
+        let hash = object.userData._lambdaHash;
+        if (typeof hash !== "number" || !Number.isFinite(hash)) {
+            hash = this.stableHash(object.uuid);
+            this.cacheObjectHash(object, hash);
+            return hash;
+        }
+
+        if (Object.prototype.propertyIsEnumerable.call(object.userData, "_lambdaHash")) {
+            this.cacheObjectHash(object, hash);
+        }
+        return hash;
+    }
+
+    private cacheObjectHash(object: Object3D, hash: number): void {
+        this.objectHashCache.set(object, hash);
+        setRuntimeUserDataValue(object, "_lambdaHash", hash);
+    }
+
+    private prepareVisibilityFrame(camera: Camera): void {
+        if (
+            this._visibilityPreparedFrame === this.frameCount &&
+            this._visibilityPreparedCameraUuid === camera.uuid
+        ) {
+            return;
+        }
+        this.visibilityChecker.beginFrame?.(camera);
+        this._visibilityPreparedFrame = this.frameCount;
+        this._visibilityPreparedCameraUuid = camera.uuid;
     }
 
     /**
@@ -212,10 +276,43 @@ export class LambdaScheduler {
      * @param patch
      */
     updateConfig(patch: Partial<LambdaSchedulerConfig>): void {
-        this.config = { ...this.config, ...patch };
+        const previousDefaultThrottleFactor = this.config.defaultThrottleFactor;
+        this.config = this.normalizeConfig({ ...this.config, ...patch });
+        if (this.config.defaultThrottleFactor > previousDefaultThrottleFactor) {
+            this.throttleFactor = Math.max(this.throttleFactor, this.config.defaultThrottleFactor);
+        } else if (this.throttleFactor < this.config.defaultThrottleFactor) {
+            this.throttleFactor = this.config.defaultThrottleFactor;
+        }
     }
 
     dispose() {
+        this.worldMatrixCache.reset();
+        this.visibilityChecker.endFrame?.();
         this.visibilityChecker.dispose();
+        this.objectHashCache = new WeakMap<Object3D, number>();
+    }
+
+    private normalizeConfig(config: LambdaSchedulerConfig): LambdaSchedulerConfig {
+        const farDistanceSq = this.positiveNumber(
+            config.farDistanceSq,
+            DEFAULT_CONFIG.farDistanceSq,
+        );
+        const veryFarDistanceSq =
+            Number.isFinite(config.veryFarDistanceSq) && config.veryFarDistanceSq >= farDistanceSq
+                ? config.veryFarDistanceSq
+                : Math.max(farDistanceSq, DEFAULT_CONFIG.veryFarDistanceSq);
+
+        return {
+            ...config,
+            targetFPS: this.positiveNumber(config.targetFPS, DEFAULT_CONFIG.targetFPS),
+            frameBudgetMs: this.positiveNumber(config.frameBudgetMs, DEFAULT_CONFIG.frameBudgetMs),
+            defaultThrottleFactor: Math.max(1, Math.min(4, Math.floor(config.defaultThrottleFactor || 1))),
+            farDistanceSq,
+            veryFarDistanceSq,
+        };
+    }
+
+    private positiveNumber(value: number, fallback: number): number {
+        return Number.isFinite(value) && value > 0 ? value : fallback;
     }
 }

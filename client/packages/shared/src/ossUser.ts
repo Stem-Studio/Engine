@@ -1,7 +1,7 @@
 /**
- * OSS / playground local-user identity.
+ * Open-source/playground local-user identity.
  *
- * In the OSS build there is no real authentication: AuthorizationContext
+ * In the open-source app there is no real authentication: AuthorizationContext
  * stamps a synthetic dbUser, and the network adapters synthesize asset/scene
  * records on read with a hard-coded owner id. Both sides must use the SAME
  * id, otherwise downstream UI gates that compare `item.userId === dbUser.id`

@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useRef, ReactNode } from "react";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import {createContext, useContext, useState, useRef, ReactNode} from "react";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
     AmbientLight,
     Color,
@@ -7,8 +7,7 @@ import {
     Object3D,
     PerspectiveCamera,
     Scene,
-    WebGPURenderer,
-} from "three/webgpu";
+} from "three";
 
 import { useAssetResolutionContext } from "./AssetResolutionContext";
 import {
@@ -49,6 +48,7 @@ export const useBatchLodGenerationContext = () => {
 
 const renderModelPreview = async (model: Object3D) => {
     try {
+        const {WebGPURenderer} = await import("three/webgpu");
         const renderer = new WebGPURenderer({
             antialias: true,
             alpha: false,

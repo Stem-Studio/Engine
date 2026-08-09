@@ -19,15 +19,7 @@ const PHYSICS_ENGINES = [
     },
     {
         key: PhysicsEngineType.Rapier,
-        value: "Rapier (Beta)",
-    },
-    {
-        key: PhysicsEngineType.Jolt,
-        value: "Jolt",
-    },
-    {
-        key: PhysicsEngineType.PhysX,
-        value: "PhysX",
+                value: "Rapier",
     },
 ];
 
@@ -45,7 +37,7 @@ export const PhysicsSection = ({
                 value={PHYSICS_ENGINES.find(item => item.key === engine)}
                 onChange={item => onChange({ ...settings, engine: item.key as PhysicsEngineType })}
                 $margin="0"
-                labelTooltip="Selects the runtime physics backend for simulation and collision solving. Ammo is the safest default, while the other engines may offer different performance or feature tradeoffs depending on your project."
+                labelTooltip="Selects the runtime physics backend for simulation and collision solving. Ammo is the compatibility default; Rapier is the alternative supported backend."
             />
             <NumericInputRow
                 label="Gravity"

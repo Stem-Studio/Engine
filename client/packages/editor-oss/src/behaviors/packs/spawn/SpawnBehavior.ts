@@ -1,20 +1,16 @@
 import * as THREE from "three";
 
-import CollisionDetector from "../../../behaviors/collisions/CollisionDetector";
 import EventBus, { IN_GAME_EVENTS } from "../../../behaviors/event/EventBus";
-import { IPhysics } from "../../../physics/common/types";
 import CameraUtils from "@stem/editor-oss/utils/CameraUtils";
 import { BehaviorBase } from "../../Behavior";
 import GameManager from "../../game/GameManager";
 
 class SpawnBehavior extends BehaviorBase {
 
-    private scene?: THREE.Scene;
     protected game: GameManager | null = null;
     private alreadySpawned: boolean = false;
-    private isActive: boolean = false;
-    private physics?: IPhysics;
-    private collisionDetector?: CollisionDetector;
+    private readonly playerBounds = new THREE.Box3();
+    private readonly spawnBounds = new THREE.Box3();
 
     private spawnData = {
         target: {} as THREE.Object3D,
@@ -22,7 +18,6 @@ class SpawnBehavior extends BehaviorBase {
 
     init(game: GameManager) {
         this.game = game;
-        this.scene = game.scene;
     }
 
     update() {
@@ -48,12 +43,13 @@ class SpawnBehavior extends BehaviorBase {
     private checkCollision(): void {
         if (!this.game || !this.target) return;
         if (this.alreadySpawned) return;
+        if (!this.attributes.stem) return;
 
         const player = this.game.player;
         if (!player) return;
 
-        const playerBox = new THREE.Box3().setFromObject(player);
-        const spawnBox = new THREE.Box3().setFromObject(this.target);
+        const playerBox = this.playerBounds.setFromObject(player);
+        const spawnBox = this.spawnBounds.setFromObject(this.target);
 
         if (playerBox.intersectsBox(spawnBox)) {
             this.onCollision();
@@ -92,11 +88,8 @@ class SpawnBehavior extends BehaviorBase {
     onReset() { }
 
     onEvent(msg: string, data: any): void {
-        if (msg === "trigger") {
-            this.isActive = data.actionType === "activate";
-            if (this.isActive) {
-                void this.spawnObject();
-            }
+        if (msg === "trigger" && data.actionType === "activate") {
+            void this.spawnObject();
         }
     }
 }

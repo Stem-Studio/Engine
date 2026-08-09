@@ -1,4 +1,3 @@
-import React from "react";
 import "../css/Input.css";
 import classNames from "classnames";
 

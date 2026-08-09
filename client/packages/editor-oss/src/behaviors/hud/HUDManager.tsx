@@ -24,6 +24,7 @@ class HUDManager implements IHUDManager {
     soundManager: SoundManager;
     private hudRoot: Root | null = null;
     engine: EngineRuntime | null = null;
+    private popstateHandler?: () => void;
 
     constructor(scene: Scene) {
         this.scene = scene;
@@ -36,6 +37,10 @@ class HUDManager implements IHUDManager {
     }
 
     create(emptyHUD = false) {
+        if (this.hudRoot || document.getElementById(this.containerId)) {
+            this.clear();
+        }
+
         const hudContainer = document.createElement("div");
         hudContainer.setAttribute("id", this.containerId);
         hudContainer.style.position = "absolute";
@@ -58,9 +63,12 @@ class HUDManager implements IHUDManager {
 
         this.engine?.container.append(hudContainer);
 
-        window.addEventListener("popstate", () => {
-            this.clear();
-        });
+        if (!this.popstateHandler && typeof window !== "undefined") {
+            this.popstateHandler = () => {
+                this.clear();
+            };
+            window.addEventListener("popstate", this.popstateHandler);
+        }
     }
 
     clear() {
@@ -72,6 +80,11 @@ class HUDManager implements IHUDManager {
         const hudContainer = document.getElementById(this.containerId);
         if (hudContainer) {
             hudContainer.remove();
+        }
+
+        if (this.popstateHandler && typeof window !== "undefined") {
+            window.removeEventListener("popstate", this.popstateHandler);
+            this.popstateHandler = undefined;
         }
 
         this.soundManager.clearLoadedSounds();

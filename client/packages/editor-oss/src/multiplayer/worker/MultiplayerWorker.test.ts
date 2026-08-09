@@ -104,6 +104,37 @@ describe("MultiplayerWorker", () => {
         expect(client.removeObject).toHaveBeenCalledWith("2");
     });
 
+    it("drains batches without shifting the pending message array", async () => {
+        const client = makeClientMock();
+        mockClientFactory.mockReturnValue(client);
+
+        const worker = new MultiplayerWorker(2) as unknown as {
+            onMessage(msg: MessageEvent): void;
+            queue: Array<{event: string}>;
+        };
+        worker.onMessage({
+            data: { event: MULTIPLAYER_EVENTS.START, url: "ws://x", maxClients: 4, sceneId: "s", user: {}, userId: "u" },
+        } as MessageEvent);
+        worker.onMessage({
+            data: { event: MULTIPLAYER_EVENTS.OBJECT.UPDATE, uuid: "1", objectState: { a: 1 } },
+        } as MessageEvent);
+        worker.onMessage({
+            data: { event: MULTIPLAYER_EVENTS.OBJECT.REMOVE, uuid: "2" },
+        } as MessageEvent);
+
+        const shiftSpy = vi.spyOn(worker.queue, "shift");
+
+        await Promise.resolve();
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+
+        expect(shiftSpy).not.toHaveBeenCalled();
+        expect(client.updateObject).toHaveBeenCalledWith("1", { a: 1 });
+        expect(client.removeObject).toHaveBeenCalledWith("2");
+
+        shiftSpy.mockRestore();
+    });
+
     it("routes START and posts worker ready payload", async () => {
         const client = makeClientMock();
         mockClientFactory.mockReturnValue(client);

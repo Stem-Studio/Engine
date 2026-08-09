@@ -7,32 +7,61 @@ export interface ProcessInBatchesOptions<T> {
     yieldBetweenBatches?: boolean;
 }
 
-/**
- *
- * @param items
- * @param processItem
- * @param offset
- * @param concurrency
- */
+type SchedulerWithYield = {
+    yield?: () => Promise<void> | void;
+};
+
+function getSchedulerYield(): (() => Promise<void> | void) | null {
+    const scheduler = (globalThis as typeof globalThis & {scheduler?: SchedulerWithYield}).scheduler;
+    return typeof scheduler?.yield === "function" ? scheduler.yield.bind(scheduler) : null;
+}
+
+async function yieldToEventLoop(): Promise<void> {
+    const schedulerYield = getSchedulerYield();
+    if (schedulerYield) {
+        await schedulerYield();
+        return;
+    }
+
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+}
+
 async function runWithConcurrency<T>(
     items: T[],
     processItem: (item: T, index: number) => Promise<void> | void,
-    offset: number,
+    startIndex: number,
+    endIndex: number,
     concurrency: number,
 ): Promise<void> {
-    let cursor = 0;
-    const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
-        while (cursor < items.length) {
-            const localIndex = cursor++;
-            await processItem(items[localIndex]!, offset + localIndex);
+    const itemCount = endIndex - startIndex;
+    if (itemCount <= 0) {
+        return;
+    }
+
+    const workerCount = Math.min(Math.max(1, concurrency), itemCount);
+    if (workerCount === 1) {
+        for (let itemIndex = startIndex; itemIndex < endIndex; itemIndex++) {
+            await processItem(items[itemIndex]!, itemIndex);
         }
-    });
+        return;
+    }
+
+    let cursor = startIndex;
+    const workers: Array<Promise<void>> = [];
+    for (let workerIndex = 0; workerIndex < workerCount; workerIndex++) {
+        workers.push((async () => {
+            while (cursor < endIndex) {
+                const itemIndex = cursor++;
+                await processItem(items[itemIndex]!, itemIndex);
+            }
+        })());
+    }
     await Promise.all(workers);
 }
 
 /**
- *
- * @param options
+ * Processes a list in bounded batches, optionally yielding to the host between
+ * batches so large scene loads do not monopolize the main thread.
  */
 export async function processInBatches<T>(options: ProcessInBatchesOptions<T>): Promise<void> {
     const { items, processItem, onBatchComplete } = options;
@@ -41,13 +70,13 @@ export async function processInBatches<T>(options: ProcessInBatchesOptions<T>): 
     const yieldBetweenBatches = options.yieldBetweenBatches ?? true;
 
     for (let i = 0; i < items.length; i += batchSize) {
-        const batch = items.slice(i, Math.min(i + batchSize, items.length));
-        await runWithConcurrency(batch, processItem, i, Math.min(concurrency, batch.length));
+        const endIndex = Math.min(i + batchSize, items.length);
+        await runWithConcurrency(items, processItem, i, endIndex, concurrency);
         if (onBatchComplete) {
-            await onBatchComplete(i + batch.length, items.length);
+            await onBatchComplete(endIndex, items.length);
         }
         if (yieldBetweenBatches && i + batchSize < items.length) {
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            await yieldToEventLoop();
         }
     }
 }

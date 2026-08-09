@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import styled from "styled-components";
-import { FontLoader } from "three/examples/jsm/loaders/FontLoader.js";
+import { FontLoader } from "three/addons/loaders/FontLoader.js";
 
 import global from "@stem/editor-oss/global";
 import {DEFAULT_FONT, DEFAULT_WEIGHT, FONT_MAP, resolveFontPath} from "../../../../../object/geometry/fontMap";

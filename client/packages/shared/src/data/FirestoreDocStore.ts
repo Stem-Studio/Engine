@@ -17,10 +17,8 @@ import type {IRemoteDocStore, WhereClause} from "@stem/editor-oss/data";
 import {db as defaultDb} from "../firebase";
 
 /**
- * Firestore-backed implementation of `IRemoteDocStore`. Adapts the
- * generic doc-store interface to the firebase/firestore SDK so the
- * editor-oss package stays free of firestore imports. Lives in
- * `shared/` because firebase/firestore is a proprietary dep boundary.
+ * Firestore-backed implementation of `IRemoteDocStore`. Retained as an
+ * optional adapter for forks that wire Firebase aliases to the real SDK.
  */
 export class FirestoreDocStore implements IRemoteDocStore {
     private readonly db: Firestore | null;

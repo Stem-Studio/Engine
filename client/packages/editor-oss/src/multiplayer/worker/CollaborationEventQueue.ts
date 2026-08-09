@@ -163,15 +163,7 @@ export class CollaborationEventQueue {
             return;
         }
 
-        queue.sort((a, b) => {
-            const priorityDelta = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-            if (priorityDelta !== 0) {
-                return priorityDelta;
-            }
-            return a.timestamp - b.timestamp;
-        });
-
-        const event = queue.shift()!;
+        const event = this.takeNextEvent(queue);
         this.pendingCount -= 1;
         if (queue.length === 0) {
             this.pending.delete(uuid);
@@ -189,6 +181,32 @@ export class CollaborationEventQueue {
             });
 
         this.processing.set(uuid, promise);
+    }
+
+    private takeNextEvent(queue: QueuedEvent[]): QueuedEvent {
+        let nextIndex = 0;
+        let nextEvent = queue[0]!;
+        let nextPriority = PRIORITY_ORDER[nextEvent.priority];
+
+        for (let i = 1; i < queue.length; i++) {
+            const candidate = queue[i]!;
+            const candidatePriority = PRIORITY_ORDER[candidate.priority];
+            if (
+                candidatePriority < nextPriority ||
+                (candidatePriority === nextPriority && candidate.timestamp < nextEvent.timestamp)
+            ) {
+                nextIndex = i;
+                nextEvent = candidate;
+                nextPriority = candidatePriority;
+            }
+        }
+
+        for (let i = nextIndex + 1; i < queue.length; i++) {
+            queue[i - 1] = queue[i]!;
+        }
+        queue.length -= 1;
+
+        return nextEvent;
     }
 
     private evictOldest(): void {

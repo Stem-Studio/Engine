@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getAssetResolutionContext } from '@stem/editor-oss/asset-management/AssetResolutionContext';
 import { serializePrefab, deserializePrefab, SerializePrefabResult } from '../prefab/serialization';
 import { setPrefabId } from '../prefab/util';
+import { findObjectByNameDepthFirst } from '../utils/SceneTraverser';
 
 vi.mock('three', async (importOriginal) => ({
     ...await importOriginal<typeof import('three')>(),
@@ -140,12 +141,7 @@ describe('serializePrefab / deserializePrefab', () => {
         const prefab = await deserializePrefab(result.data, result.assetResolutionContext);
 
         // Find the child again (Converter/parse should recreate similar structure)
-        let foundChild: Object3D | null = null;
-        prefab.traverse((o) => {
-            if (o.name === 'child-with-asset-ref') {
-                foundChild = o;
-            }
-        });
+        const foundChild = findObjectByNameDepthFirst(prefab, 'child-with-asset-ref');
         expect(foundChild).not.toBeNull();
 
         // Ensure the attribute asset ref was restored to the real asset ID and had revisionId set
@@ -192,6 +188,31 @@ describe('serializePrefab / deserializePrefab', () => {
 
         // The serialized payload (data) should be a string
         expect(typeof result.data).toBe('string');
+    });
+
+    it('assigns prefab metadata through deep hierarchies without Three recursive traversal', async () => {
+        const root = new Object3D();
+        root.name = 'deep-root';
+        let cursor = root;
+        for (let i = 0; i < 12000; i++) {
+            const child = new Object3D();
+            child.name = `deep-child-${i}`;
+            cursor.add(child);
+            cursor = child;
+        }
+        cursor.userData.behaviors = [makeBehavior('behavior:deep')];
+        cursor.userData.lambdaComponents = [{lambdaId: 'lambda:deep'}];
+        const traverseSpy = vi.spyOn(Object3D.prototype, 'traverse');
+
+        const result = serializePrefab(root);
+        const prefab = await deserializePrefab(result.data, result.assetResolutionContext);
+        const deepest = findObjectByNameDepthFirst(prefab, 'deep-child-11999')!;
+
+        expect(traverseSpy).not.toHaveBeenCalled();
+        expect(deepest.userData.behaviors[0].prefabBehaviorUuid).toBeDefined();
+        expect(deepest.userData.behaviors[0].uuid).toBeDefined();
+        expect(deepest.userData.lambdaComponents[0].prefabLambdaUuid).toBeDefined();
+        expect(deepest.userData.lambdaComponents[0].uuid).toBeDefined();
     });
 
     it('throws when deserialize receives JSON that cannot be parsed to a prefab (no child)', async () => {

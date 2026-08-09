@@ -13,7 +13,7 @@
  */
 
 import type {Box3, Ray, Sphere, Vector3} from "three";
-import type {Capsule} from "three/examples/jsm/math/Capsule.js";
+import type {Capsule} from "three/addons/math/Capsule.js";
 
 /** Result of a sphere/capsule overlap test. */
 export interface SpatialIntersection {

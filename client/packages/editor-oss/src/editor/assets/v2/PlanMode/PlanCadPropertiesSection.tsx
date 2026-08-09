@@ -52,6 +52,14 @@ function getSelectedPlanNodeId(selectedObject?: THREE.Object3D | null) {
           ? current.userData.planNodeType
           : null;
     }
+    const ownerNodeId = current.userData?.planCadOwnerNodeId;
+    if (!selectedNodeId && typeof ownerNodeId === "string") {
+      selectedNodeId = ownerNodeId;
+      selectedNodeType =
+        typeof current.userData?.planCadOwnerNodeType === "string"
+          ? current.userData.planCadOwnerNodeType
+          : null;
+    }
     const rootSelectedNodeId = current.userData?.planCad?.selectedNodeId;
     if (!activeNodeId && typeof rootSelectedNodeId === "string") {
       activeNodeId = rootSelectedNodeId;
@@ -59,14 +67,40 @@ function getSelectedPlanNodeId(selectedObject?: THREE.Object3D | null) {
     current = current.parent;
   }
 
-  const isContainerSelection =
-    !selectedNodeType ||
-    selectedNodeType === "site" ||
-    selectedNodeType === "building" ||
-    selectedNodeType === "level";
-  return activeNodeId && isContainerSelection
-    ? activeNodeId
-    : (selectedNodeId ?? activeNodeId);
+  if (selectedNodeId) {
+    const isContainerSelection =
+      !selectedNodeType ||
+      selectedNodeType === "site" ||
+      selectedNodeType === "building" ||
+      selectedNodeType === "level";
+    return activeNodeId && isContainerSelection ? activeNodeId : selectedNodeId;
+  }
+
+  const descendantNodeId = getSingleDescendantPlanNodeId(selectedObject);
+  if (descendantNodeId) return descendantNodeId;
+
+  return activeNodeId;
+}
+
+function getSingleDescendantPlanNodeId(
+  selectedObject?: THREE.Object3D | null,
+) {
+  if (!selectedObject) return null;
+  let descendantNodeId: string | null = null;
+  const stack = [...selectedObject.children];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    const nodeId = current.userData?.planNodeId;
+    if (typeof nodeId === "string") {
+      if (descendantNodeId && descendantNodeId !== nodeId) return null;
+      descendantNodeId = nodeId;
+    }
+    for (let i = 0; i < current.children.length; i++) {
+      stack.push(current.children[i]!);
+    }
+  }
+  return descendantNodeId;
 }
 
 function getNode(
@@ -105,6 +139,19 @@ function formatNodeTitle(node: PlanNode) {
 
 function formatNodeLabel(node: PlanNode) {
   return node.name?.trim() || formatNodeTitle(node);
+}
+
+function formatPlanItemSource(item: PlanItemNode) {
+  if (item.source?.type === "model") {
+    if (item.source.provider === "pascal") {
+      const label = item.source.providerAssetId?.replace(/-/g, " ");
+      return label ? `Pascal model: ${label}` : "Pascal model";
+    }
+    return "External model";
+  }
+  return item.source?.modelKind
+    ? `Procedural model: ${item.source.modelKind.replace(/_/g, " ")}`
+    : "Procedural model";
 }
 
 function formatNodeBreadcrumb(data: PlanCadSceneData, node: PlanNode) {
@@ -445,12 +492,7 @@ export const PlanCadPropertiesSection = ({
           {item && (
             <>
               <PanelTextLine>
-                {item.source?.type === "model"
-                  ? "External model"
-                  : "Procedural model"}
-                {item.source?.modelKind
-                  ? `: ${item.source.modelKind.replace(/_/g, " ")}`
-                  : ""}
+                {formatPlanItemSource(item)}
               </PanelTextLine>
               <NumericInputRow
                 label="Width"

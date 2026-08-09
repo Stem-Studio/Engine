@@ -1,9 +1,15 @@
-import {Group, Object3D} from "three";
+import {Float32BufferAttribute, Group, Mesh, MeshBasicMaterial, Object3D, BufferGeometry} from "three";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import BehaviorPluginManager from "./BehaviorPluginManager";
 import type {Behavior} from "../../behaviors/Behavior";
 import type BehaviorData from "../../behaviors/BehaviorData";
+import {
+    EDITOR_PREVIEW_ADOPTED_KEY,
+    EDITOR_PREVIEW_BEHAVIOR_ID_KEY,
+    EDITOR_PREVIEW_BEHAVIOR_UUID_KEY,
+    EDITOR_PREVIEW_ROOT_KEY,
+} from "../../behaviors/editorPreviewVisuals";
 
 class MockWorker {
     onmessage: ((e: MessageEvent) => void) | null = null;
@@ -48,6 +54,45 @@ const createObjectWithBehaviors = (behaviors: BehaviorData[]): Object3D => {
     return obj;
 };
 
+const addDeepObjectChain = (root: Object3D, depth = 12_000): Object3D => {
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        current.add(child);
+        current = child;
+    }
+
+    return current;
+};
+
+const createDeepAssetRefAttributes = (assetId: string, depth = 12_000): Record<string, unknown> => {
+    const root: Record<string, unknown> = {};
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const next: Record<string, unknown> = {};
+        current.next = next;
+        current = next;
+    }
+
+    current.prefab = {assetId, revisionId: "rev-1"};
+    return root;
+};
+
+function makeTriangleGeometry() {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute(
+        "position",
+        new Float32BufferAttribute([
+            0, 0, 0,
+            1, 0, 0,
+            0, 1, 0,
+        ], 3),
+    );
+    return geometry;
+}
+
 // Mock Comlink for worker bridge tests
 const mockProxy = {
     init: vi.fn().mockResolvedValue(undefined),
@@ -78,6 +123,134 @@ afterEach(() => {
 });
 
 describe("BehaviorPluginManager", () => {
+    describe("addPlugin", () => {
+        it("computes normals for editor meshes created by onEditorAdded", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+            const target = new Object3D();
+            const geometry = makeTriangleGeometry();
+            const plugin = createMockPlugin({
+                onEditorAdded: vi.fn(() => {
+                    target.add(new Mesh(geometry, new MeshBasicMaterial()));
+                }),
+            });
+
+            manager.addPlugin(target, plugin);
+
+            expect(geometry.getAttribute("normal")).toBeDefined();
+            expect(geometry.getAttribute("normal").count).toBe(geometry.getAttribute("position").count);
+        });
+
+        it("tags runtime-only preview roots created by onEditorAdded with behavior ownership", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+            const target = new Object3D();
+            const previewRoot = new Object3D();
+            previewRoot.userData.isRuntimeOnly = true;
+            const persistentChild = new Object3D();
+            target.add(persistentChild);
+            const plugin = createMockPlugin({
+                uuid: "preview-behavior-uuid",
+                id: "preview-behavior-id",
+                onEditorAdded: vi.fn(() => {
+                    target.add(previewRoot);
+                }),
+            });
+
+            manager.addPlugin(target, plugin);
+
+            expect(previewRoot.userData[EDITOR_PREVIEW_ROOT_KEY]).toBe(true);
+            expect(previewRoot.userData[EDITOR_PREVIEW_BEHAVIOR_UUID_KEY]).toBe("preview-behavior-uuid");
+            expect(previewRoot.userData[EDITOR_PREVIEW_BEHAVIOR_ID_KEY]).toBe("preview-behavior-id");
+            expect(persistentChild.userData[EDITOR_PREVIEW_ROOT_KEY]).toBeUndefined();
+        });
+
+        it("marks owned preview roots for declarative runtime adoption before preserved clear disposes plugins", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+            const target = new Object3D();
+            const previewRoot = new Object3D();
+            previewRoot.userData.isRuntimeOnly = true;
+            const plugin = createMockPlugin({
+                uuid: "preview-behavior-uuid",
+                id: "preview-behavior-id",
+                _adoptEditorPreviewRoot: true,
+                onEditorAdded: vi.fn(function (this: any) {
+                    this._root = previewRoot;
+                    target.add(previewRoot);
+                }),
+                onEditorDispose: vi.fn(function (this: any) {
+                    if (!this._root?.userData?.[EDITOR_PREVIEW_ADOPTED_KEY]) {
+                        this._root?.removeFromParent();
+                    }
+                }),
+            } as Partial<Behavior> & {_adoptEditorPreviewRoot: boolean});
+
+            manager.addPlugin(target, plugin);
+            manager.clear({preserveEditorPreviewRoots: true});
+
+            expect(previewRoot.userData[EDITOR_PREVIEW_ADOPTED_KEY]).toBe(true);
+            expect(previewRoot.parent).toBe(target);
+        });
+
+        it("does not preserve preview roots for scripts without a runtime adoption contract", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+            const target = new Object3D();
+            const previewRoot = new Object3D();
+            previewRoot.userData.isRuntimeOnly = true;
+            const plugin = createMockPlugin({
+                uuid: "preview-behavior-uuid",
+                id: "preview-behavior-id",
+                _buildTrack: vi.fn(),
+                onEditorAdded: vi.fn(function (this: any) {
+                    this._editorPreviewRoot = previewRoot;
+                    target.add(previewRoot);
+                }),
+                onEditorDispose: vi.fn(function (this: any) {
+                    if (!this._editorPreviewRoot?.userData?.[EDITOR_PREVIEW_ADOPTED_KEY]) {
+                        this._editorPreviewRoot?.removeFromParent();
+                    }
+                    this._editorPreviewRoot = null;
+                }),
+            } as Partial<Behavior> & {_buildTrack: unknown});
+
+            manager.addPlugin(target, plugin);
+            manager.clear({preserveEditorPreviewRoots: true});
+
+            expect(previewRoot.userData[EDITOR_PREVIEW_ADOPTED_KEY]).toBeUndefined();
+            expect(previewRoot.parent).toBeNull();
+        });
+
+        it("waits for asynchronous editor preview construction", async () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+            const target = new Object3D();
+            const previewRoot = new Object3D();
+            previewRoot.userData.isRuntimeOnly = true;
+            let finishBuild!: () => void;
+            const buildGate = new Promise<void>(resolve => {
+                finishBuild = resolve;
+            });
+            const plugin = createMockPlugin({
+                onEditorAdded: vi.fn(async () => {
+                    await buildGate;
+                    target.add(previewRoot);
+                }),
+            });
+
+            manager.addPlugin(target, plugin);
+            const ready = manager.waitForPendingAdditions();
+            expect(previewRoot.parent).toBeNull();
+
+            finishBuild();
+            await ready;
+
+            expect(previewRoot.parent).toBe(target);
+            expect(previewRoot.userData[EDITOR_PREVIEW_ROOT_KEY]).toBe(true);
+        });
+    });
+
     describe("behaviorReferencesAsset (via updateAssetRefs)", () => {
         it("detects a direct AssetRef attribute", () => {
             const editor = createMockEditor();
@@ -315,6 +488,46 @@ describe("BehaviorPluginManager", () => {
 
             expect(plugin.onEditorAttributesUpdated).toHaveBeenCalled();
         });
+
+        it("updates asset refs in deep scenes without recursive Object3D traversal", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+
+            const behavior = createBehaviorData({
+                uuid: "b1",
+                attributesData: {prefab: {assetId: "stem-123", revisionId: "rev-1"}},
+            });
+            const plugin = createMockPlugin({uuid: "b1"});
+            manager.addPlugin(new Object3D(), plugin);
+
+            const scene = new Group();
+            const leaf = addDeepObjectChain(scene);
+            leaf.add(createObjectWithBehaviors([behavior]));
+            const traverseSpy = vi.spyOn(scene, "traverse");
+
+            manager.updateAssetRefs(scene, "stem-123");
+
+            expect(plugin.onEditorAttributesUpdated).toHaveBeenCalled();
+            expect(traverseSpy).not.toHaveBeenCalled();
+        });
+
+        it("detects deeply nested asset attributes without recursive stack growth", () => {
+            const editor = createMockEditor();
+            const manager = new BehaviorPluginManager(editor);
+
+            const behavior = createBehaviorData({
+                uuid: "b1",
+                attributesData: createDeepAssetRefAttributes("stem-123"),
+            });
+            const plugin = createMockPlugin({uuid: "b1"});
+            manager.addPlugin(new Object3D(), plugin);
+
+            const scene = new Group();
+            scene.add(createObjectWithBehaviors([behavior]));
+
+            expect(() => manager.updateAssetRefs(scene, "stem-123")).not.toThrow();
+            expect(plugin.onEditorAttributesUpdated).toHaveBeenCalled();
+        });
     });
 
     describe("worker lifecycle", () => {
@@ -342,6 +555,56 @@ describe("BehaviorPluginManager", () => {
 
             manager.addPlugin(new Object3D(), plugin);
             expect(plugin._workerBridge).toBeUndefined();
+        });
+    });
+
+    describe("editor update activity", () => {
+        it("only marks plugins with onEditorUpdate as needing the editor update loop", () => {
+            const editor = createMockEditor();
+            const onUpdateActivityChanged = vi.fn();
+            const manager = new BehaviorPluginManager(editor, onUpdateActivityChanged);
+            const setupOnlyPlugin = createMockPlugin({uuid: "setup-only"});
+
+            manager.addPlugin(new Object3D(), setupOnlyPlugin);
+
+            expect(manager.hasEditorUpdatePlugins()).toBe(false);
+            expect(onUpdateActivityChanged).not.toHaveBeenCalled();
+
+            const onEditorUpdate = vi.fn();
+            const updatePlugin = createMockPlugin({
+                uuid: "update-plugin",
+                onEditorUpdate,
+            });
+            manager.addPlugin(new Object3D(), updatePlugin);
+
+            expect(manager.hasEditorUpdatePlugins()).toBe(true);
+            expect(onUpdateActivityChanged).toHaveBeenLastCalledWith(true);
+
+            manager.update(1);
+            expect(onEditorUpdate).toHaveBeenCalledTimes(1);
+
+            manager.removePlugin(updatePlugin);
+
+            expect(manager.hasEditorUpdatePlugins()).toBe(false);
+            expect(onUpdateActivityChanged).toHaveBeenLastCalledWith(false);
+        });
+
+        it("notifies once when clear removes update plugins", () => {
+            const editor = createMockEditor();
+            const onUpdateActivityChanged = vi.fn();
+            const manager = new BehaviorPluginManager(editor, onUpdateActivityChanged);
+
+            manager.addPlugin(new Object3D(), createMockPlugin({
+                uuid: "update-plugin",
+                onEditorUpdate: vi.fn(),
+            }));
+            onUpdateActivityChanged.mockClear();
+
+            manager.clear();
+
+            expect(manager.hasEditorUpdatePlugins()).toBe(false);
+            expect(onUpdateActivityChanged).toHaveBeenCalledTimes(1);
+            expect(onUpdateActivityChanged).toHaveBeenCalledWith(false);
         });
     });
 });

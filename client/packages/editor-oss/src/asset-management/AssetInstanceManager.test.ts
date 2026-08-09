@@ -1,5 +1,5 @@
 import { Object3D } from 'three';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { AssetInstanceManager } from './AssetInstanceManager';
 import { AssetRef } from './AssetRef';
@@ -37,6 +37,10 @@ describe('AssetInstanceManager', () => {
 
         (loadModelWithLoader as any).mockImplementation(() => Promise.resolve(makeObject()));
         (loadPrefabWithLoader as any).mockImplementation(() => Promise.resolve(makeObject()));
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
     });
 
     // -- Without preload (no template kept) --
@@ -115,5 +119,26 @@ describe('AssetInstanceManager', () => {
         (loadModelWithLoader as any).mockImplementation(() => Promise.resolve(makeObject()));
         await manager.createModelInstance(ref);
         expect(loadModelWithLoader).toHaveBeenCalledOnce();
+    });
+
+    it('unload disposes deep templates without Object3D.traverse', async () => {
+        await manager.preloadModel(ref);
+        vi.spyOn(Object3D.prototype, 'traverse').mockImplementation(() => {
+            throw new Error('recursive Object3D.traverse should not be used');
+        });
+
+        expect(() => manager.unloadModel(ref)).not.toThrow();
+        expect(MeshUtils.dispose).toHaveBeenCalled();
+    });
+
+    it('dispose clears deep template caches without Object3D.traverse', async () => {
+        await manager.preloadModel(ref);
+        await manager.preloadPrefab(ref);
+        vi.spyOn(Object3D.prototype, 'traverse').mockImplementation(() => {
+            throw new Error('recursive Object3D.traverse should not be used');
+        });
+
+        expect(() => manager.dispose()).not.toThrow();
+        expect(MeshUtils.dispose).toHaveBeenCalled();
     });
 });

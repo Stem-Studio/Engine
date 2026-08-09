@@ -1,0 +1,4427 @@
+# Shared Files Requiring Hunk-Level Split
+# Generated from current worktree by scripts/build-builder-cad-pr-split-patches.mjs
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.style.ts b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.style.ts
+index 0d30d2a..f2a79a1 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.style.ts
++++ b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.style.ts
+@@ -51,6 +51,35 @@ export const ActionButton = styled.button<{
+     &:hover {
+         background: #0284c7;
+     }
++
++    &:focus-visible {
++        outline: 2px solid #93c5fd;
++        outline-offset: 2px;
++    }
++`;
++
++export const BuildSplitControl = styled.div<{$isSelected?: boolean}>`
++    display: inline-flex;
++    align-items: center;
++    height: 32px;
++    border-radius: 8px;
++    overflow: auto;
++    background: ${({$isSelected}) => $isSelected ? "var(--theme-grey-bg-secondary-button)" : "transparent"};
++    border: 1px solid ${({$isSelected}) => $isSelected ? "#ffffff20" : "transparent"};
++`;
++
++export const BuildPrimaryButton = styled(ActionButton)`
++    border-radius: 0;
++    border: 0;
++    width: 36px;
++`;
++
++export const BuildMenuButton = styled(ActionButton)<{$isOpen?: boolean}>`
++    width: 24px;
++    border-radius: 0;
++    border: 0;
++    border-left: 1px solid #ffffff1a;
++    background: ${({$isOpen}) => $isOpen ? "#0284c7" : "transparent"};
+ `;
+ 
+ export const InputWrapper = styled.div`
+@@ -179,15 +208,57 @@ export const MenuPopover = styled.div`
+     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+ `;
+ 
+-export const MenuItem = styled.div`
++export const MenuItem = styled.button`
++    ${buttonReset};
+     display: flex;
+     align-items: center;
+     gap: 8px;
++    width: 100%;
+     padding: 8px 12px;
+     cursor: pointer;
+     font-size: 12px;
+     color: #ccc;
++    text-align: left;
+     &:hover {
+         background: #2a2d2e;
+     }
++
++    &:disabled {
++        cursor: not-allowed;
++        opacity: 0.58;
++    }
++
++    &:disabled:hover {
++        background: transparent;
++    }
++`;
++
++export const MenuItemText = styled.span`
++    display: flex;
++    flex: 1;
++    min-width: 0;
++    flex-direction: column;
++    gap: 2px;
++`;
++
++export const MenuItemLabel = styled.span`
++    color: #e5e7eb;
++    font-size: 12px;
++    line-height: 1.2;
++`;
++
++export const MenuItemDescription = styled.span`
++    color: #9ca3af;
++    font-size: 10px;
++    line-height: 1.2;
++`;
++
++export const MenuItemBadge = styled.span`
++    margin-left: auto;
++    border-radius: 999px;
++    border: 1px solid #ffffff22;
++    padding: 1px 5px;
++    color: #cbd5e1;
++    font-size: 9px;
++    line-height: 1.2;
+ `;
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.tsx b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.tsx
+index 0439424..9e1f601 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.tsx
+@@ -1,473 +1,1054 @@
+-/* eslint-disable @typescript-eslint/no-unsafe-argument */
+-/* eslint-disable @typescript-eslint/no-unsafe-call */
+-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+-/* eslint-disable @typescript-eslint/no-explicit-any */
+-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+-/* eslint-disable @typescript-eslint/no-unsafe-return */
+-import {useCallback, useEffect, useRef, useState} from "react";
+-import {createPortal} from "react-dom";
+-import {VscTools} from "react-icons/vsc";
++import {
++  useCallback,
++  useEffect,
++  useLayoutEffect,
++  useRef,
++  useState,
++} from "react";
++import type { CSSProperties } from "react";
++import { createPortal } from "react-dom";
++import * as THREE from "three";
+ 
+ import {
+-    ActionButton,
+-    Container,
+-    CollaborationIndicator,
+-    CollaborationDot,
+-    MenuPopover,
+-    MenuItem,
+-    MenuOverlay,
+-    DebugButtonWrapper,
+-    ErrorBadge,
++  ActionButton,
++  BuildMenuButton,
++  BuildPrimaryButton,
++  BuildSplitControl,
++  Container,
++  CollaborationIndicator,
++  CollaborationDot,
++  MenuPopover,
++  MenuItem,
++  MenuItemBadge,
++  MenuItemDescription,
++  MenuItemLabel,
++  MenuItemText,
++  MenuOverlay,
++  DebugButtonWrapper,
++  ErrorBadge,
+ } from "./ActionBar.style";
+-import {CADActionBarControls} from "./CADActionBarControls";
+-import {CameraOrientationPanel, CameraOrientation} from "./CameraOrientationPanel";
++import { CADActionBarControls } from "./CADActionBarControls";
++import {
++  CameraOrientationPanel,
++  CameraOrientation,
++} from "./CameraOrientationPanel";
++import {
++  BrushIcon,
++  ChevronUpIcon,
++  HomeIcon,
++  ToolsIcon,
++  type ActionBarIconComponent,
++} from "./icons/ActionBarIcons";
+ import askIcon from "./icons/askIcon.svg";
+ import cameraIcon from "./icons/camera.svg";
+ import gridSnapIcon from "./icons/gridSnap.svg";
+-import {SnapConfigPanel} from "./SnapConfigPanel";
+-import {useCollaborationStatus} from "./useCollaborationStatus";
+-import {useAuthorizationContext} from "@stem/editor-oss/context";
+-import {RIGHT_PANEL_VERSIONS} from "@stem/editor-oss/context/appStateTypes";
+-import {Tooltip} from "../common/Tooltip";
++import { SnapConfigPanel } from "./SnapConfigPanel";
++import { useCollaborationStatus } from "./useCollaborationStatus";
++import { useAuthorizationContext } from "@stem/editor-oss/context";
++import { RIGHT_PANEL_VERSIONS } from "@stem/editor-oss/context/appStateTypes";
++import { Tooltip } from "../common/Tooltip";
++import { getEditorDocsUrl } from "../common/docsUrl";
+ import bugIcon from "./icons/bug.svg";
+ import infoIcon from "./icons/infoIcon.svg";
+ import magicAI from "./icons/magic-ai.svg";
+-import EngineRuntime from "@stem/editor-oss/EngineRuntime";
++import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
+ import global from "@stem/editor-oss/global";
+-import {getLogger, LogLevel} from "@stem/editor-oss/utils/Logger";
+-import {EDITOR_KEYBINDINGS, KeybindingsPanel} from "../BehaviorEditor/KeybindingsPanel";
+-import {GameDebugPanel, GameLog} from "../GameDebugPanel/GameDebugPanel";
++import { getLogger, LogLevel } from "@stem/editor-oss/utils/Logger";
++import {
++  EDITOR_KEYBINDINGS,
++  KeybindingsPanel,
++} from "../BehaviorEditor/KeybindingsPanel";
++import { GameDebugPanel, GameLog } from "../GameDebugPanel/GameDebugPanel";
++import { installPlanCadSceneSync } from "../PlanMode/planCadEditorBridge";
++import { PlanCadToolbar } from "../PlanMode/PlanCadToolbar";
++import { QuickBuildToolbar } from "../QuickBuild/QuickBuildToolbar";
++import { isCADToolsEnabled } from "../../../cad/settings";
+ import {
+-    DEFAULT_SNAPPING_SETTINGS,
+-    DEFAULT_UNITS_SETTINGS,
+-    mergeSnappingSettings,
++  DEFAULT_UNITS_SETTINGS,
++  getSnappingSettings,
++  getUnitsSettings,
++  mergeSnappingSettings,
+ } from "../RightPanel/panels/ProjectSettings/constants";
+-import {SnappingSettings} from "../RightPanel/panels/ProjectSettings/SnappingSection";
+-import {UnitsSettings} from "../RightPanel/panels/ProjectSettings/UnitsSection";
++import { SnappingSettings } from "../RightPanel/panels/ProjectSettings/SnappingSection";
++import { UnitsSettings } from "../RightPanel/panels/ProjectSettings/UnitsSection";
+ 
+ const LONG_PRESS_DELAY = 500;
++const MENU_VIEWPORT_MARGIN = 8;
++const MENU_ANCHOR_GAP = 6;
++const COPILOT_MENU_WIDTH = 160;
++const BUILD_MENU_WIDTH = 240;
++const DOCUMENTED_BUILDER_MODE_PARAM_VALUES = new Set([
++  "1",
++  "quick",
++  "plan",
++  "cad",
++]);
++const LEGACY_BUILDER_MODE_PARAM_VALUES = new Set([
++  "true",
++  "build",
++  "builder",
++  "bim",
++]);
++const BUILDER_MODE_STORAGE_PREFIX = "stem:builderMode:";
++
++type BuilderMode = "none" | "quick" | "mesh-cad" | "bim-plan";
++type ActiveBuilderMode = Exclude<BuilderMode, "none">;
++type BuilderModeRequest =
++  | ActiveBuilderMode
++  | "none"
++  | ((current: BuilderMode) => BuilderMode);
++type BuilderModeReason =
++  | "url"
++  | "restore"
++  | "toggle"
++  | "menu"
++  | "primary"
++  | "close"
++  | "cad-disabled";
++type CameraControlsLike = {
++  target?: THREE.Vector3;
++  center?: THREE.Vector3;
++  addEventListener?: (type: "change", listener: () => void) => void;
++  removeEventListener?: (type: "change", listener: () => void) => void;
++  update?: () => void;
++  dispatchEvent?: (event: { type: "change" }) => void;
++};
++type ControlsManagerLike = {
++  current?: {
++    controls?: CameraControlsLike | null;
++  } | null;
++};
++
++export { getEditorDocsUrl };
++
++function getActiveCameraControls(
++  editor?: { controls?: unknown } | null,
++): CameraControlsLike | null {
++  const controlsManager = editor?.controls as
++    | ControlsManagerLike
++    | null
++    | undefined;
++  return controlsManager?.current?.controls ?? null;
++}
++
++function getBuilderStudioMode(): ActiveBuilderMode | null {
++  if (typeof window === "undefined") return null;
++  const value = new URLSearchParams(window.location.search)
++    .get("builder")
++    ?.toLowerCase();
++  if (
++    !value ||
++    (!DOCUMENTED_BUILDER_MODE_PARAM_VALUES.has(value) &&
++      !LEGACY_BUILDER_MODE_PARAM_VALUES.has(value))
++  )
++    return null;
++  if (value === "plan" || value === "bim") return "bim-plan";
++  if (value === "cad") return "mesh-cad";
++  return "quick";
++}
++
++function getBuilderModeStorageKey(scene?: THREE.Object3D | null) {
++  return `${BUILDER_MODE_STORAGE_PREFIX}${scene?.uuid ?? "default"}`;
++}
++
++function isActiveBuilderMode(value: string | null): value is ActiveBuilderMode {
++  return value === "quick" || value === "mesh-cad" || value === "bim-plan";
++}
++
++function readStoredBuilderMode(
++  scene?: THREE.Object3D | null,
++): ActiveBuilderMode | null {
++  if (typeof window === "undefined") return null;
++  try {
++    const value = window.localStorage.getItem(getBuilderModeStorageKey(scene));
++    return isActiveBuilderMode(value) ? value : null;
++  } catch {
++    return null;
++  }
++}
++
++function persistBuilderMode(
++  scene: THREE.Object3D | null | undefined,
++  mode: BuilderMode,
++) {
++  if (typeof window === "undefined" || mode === "none") return;
++  try {
++    window.localStorage.setItem(getBuilderModeStorageKey(scene), mode);
++  } catch {
++    // Storage can be unavailable in private contexts; builder mode still works without persistence.
++  }
++}
++
++function logBuilderMode(stage: string, details?: Record<string, unknown>) {
++  const logger = getLogger();
++  const payload = details ? [details] : [];
++  logger?.info?.(`[BuilderStudio] ${stage}`, ...payload);
++}
++
++function getAnchoredMenuPosition(
++  anchor: HTMLElement | null,
++  width: number,
++  menuHeight = 0,
++): CSSProperties {
++  if (!anchor || typeof window === "undefined") return { top: 100, left: 100 };
++  const rect = anchor.getBoundingClientRect();
++  const spaceAbove = Math.max(
++    0,
++    rect.top - MENU_VIEWPORT_MARGIN - MENU_ANCHOR_GAP,
++  );
++  const spaceBelow = Math.max(
++    0,
++    window.innerHeight - rect.bottom - MENU_VIEWPORT_MARGIN - MENU_ANCHOR_GAP,
++  );
++  const canFitAbove = menuHeight > 0 && menuHeight <= spaceAbove;
++  const canFitBelow = menuHeight > 0 && menuHeight <= spaceBelow;
++  const placeAbove =
++    menuHeight > 0
++      ? (canFitAbove && !canFitBelow) ||
++        (canFitAbove && canFitBelow && spaceAbove >= spaceBelow) ||
++        (!canFitAbove && !canFitBelow && spaceAbove >= spaceBelow)
++      : spaceAbove >= spaceBelow;
++  const availableHeight = placeAbove ? spaceAbove : spaceBelow;
++  const halfWidth = width / 2;
++  const left = Math.min(
++    Math.max(rect.left + rect.width / 2, MENU_VIEWPORT_MARGIN + halfWidth),
++    Math.max(MENU_VIEWPORT_MARGIN + halfWidth, window.innerWidth - MENU_VIEWPORT_MARGIN - halfWidth),
++  );
++
++  return {
++    top: placeAbove ? rect.top - MENU_ANCHOR_GAP : rect.bottom + MENU_ANCHOR_GAP,
++    left,
++    width,
++    maxHeight: Math.max(0, availableHeight),
++    transform: placeAbove ? "translate(-50%, -100%)" : "translateX(-50%)",
++  };
++}
++
++const BUILDER_MODE_COPY: Record<
++  ActiveBuilderMode,
++  {
++    label: string;
++    description: string;
++    shortcut: string;
++    beta?: boolean;
++    Icon: ActionBarIconComponent;
++  }
++> = {
++  quick: {
++    label: "Build",
++    description: "Stamp terrain, props, and blockout pieces",
++    shortcut: "Quick Build",
++    Icon: BrushIcon,
++  },
++  "mesh-cad": {
++    label: "Model",
++    description: "Edit mesh vertices, edges, and faces",
++    shortcut: "Mesh CAD",
++    beta: true,
++    Icon: ToolsIcon,
++  },
++  "bim-plan": {
++    label: "Plan",
++    description: "Draw walls, rooms, openings, and BIM parts",
++    shortcut: "BIM Plan",
++    beta: true,
++    Icon: HomeIcon,
++  },
++};
++
++const BUILDER_MENU_MODES: ActiveBuilderMode[] = [
++  "quick",
++  "mesh-cad",
++  "bim-plan",
++];
+ 
+ interface ActionBarProps {
+-    errorCount?: number;
+-    openGameDebugPanel?: () => void;
+-    closeGameDebugPanel?: () => void;
+-    showGameDebugPanel?: boolean;
+-    /** Width (%) of the pinned code editor; 0 when not pinned. */
+-    pinnedCodeEditorWidth?: number;
+-    /** True when the code editor is currently visible. */
+-    showCodeEditor?: boolean;
++  errorCount?: number;
++  openGameDebugPanel?: () => void;
++  closeGameDebugPanel?: () => void;
++  showGameDebugPanel?: boolean;
++  /** Width (%) of the pinned code editor; 0 when not pinned. */
++  pinnedCodeEditorWidth?: number;
++  /** True when the code editor is currently visible. */
++  showCodeEditor?: boolean;
+ }
+ 
+ export const ActionBar = ({
+-    errorCount: propErrorCount,
+-    openGameDebugPanel = () => {},
+-    closeGameDebugPanel = () => {},
+-    showGameDebugPanel = false,
+-    pinnedCodeEditorWidth = 0,
++  errorCount: propErrorCount,
++  openGameDebugPanel = () => {},
++  closeGameDebugPanel = () => {},
++  showGameDebugPanel = false,
++  pinnedCodeEditorWidth = 0,
+ }: ActionBarProps) => {
+-    const [showKeybindings, setShowKeybindings] = useState(false);
+-    const keybindingsBtnRef = useRef<HTMLButtonElement>(null);
+-    const gameDebugLogsRef = useRef<GameLog[]>([]);
+-    const [updateTrigger, setUpdateTrigger] = useState(0);
+-    const [maxLogs, setMaxLogs] = useState(500);
+-    const updateTimeoutRef = useRef<number | null>(null);
+-    const app = global.app as EngineRuntime;
+-    const collaborationStatus = useCollaborationStatus();
+-
+-    // Camera orientation state
+-    const [showCameraPanel, setShowCameraPanel] = useState(false);
+-    const [cameraOrientation, setCameraOrientation] = useState<CameraOrientation>("custom");
+-    const cameraBtnRef = useRef<HTMLButtonElement>(null);
+-    const isSettingCameraRef = useRef(false);
+-
+-    // Copilot long-press menu state
+-    const [showCopilotMenu, setShowCopilotMenu] = useState(false);
+-    const copilotBtnRef = useRef<HTMLButtonElement>(null);
+-    const longPressTimerRef = useRef<number | null>(null);
+-    const didLongPressRef = useRef(false);
+-    const authContext = useAuthorizationContext();
+-    const isAdmin = authContext?.isAdmin ?? false;
+-
+-    // Snap config state
+-    const [showSnapPanel, setShowSnapPanel] = useState(false);
+-    const [snappingSettings, setSnappingSettings] = useState<SnappingSettings | null>(() =>
+-        mergeSnappingSettings((app.editor as any)?.scene?.userData?.snapping || DEFAULT_SNAPPING_SETTINGS),
+-    );
+-    const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(
+-        () => (app.editor as any)?.scene?.userData?.units || DEFAULT_UNITS_SETTINGS,
++  const [showKeybindings, setShowKeybindings] = useState(false);
++  const [builderMode, setBuilderMode] = useState<BuilderMode>("none");
++  const builderModeRef = useRef<BuilderMode>("none");
++  const keybindingsBtnRef = useRef<HTMLButtonElement>(null);
++  const cadModeBtnRef = useRef<HTMLButtonElement>(null);
++  const firstBuildMenuItemRef = useRef<HTMLButtonElement>(null);
++  const firstCopilotMenuItemRef = useRef<HTMLButtonElement>(null);
++  const gameDebugLogsRef = useRef<GameLog[]>([]);
++  const [updateTrigger, setUpdateTrigger] = useState(0);
++  const [maxLogs, setMaxLogs] = useState(500);
++  const updateTimeoutRef = useRef<number | null>(null);
++  const app = global.app as EngineRuntime;
++  const didApplyBuilderModeRef = useRef(false);
++  const collaborationStatus = useCollaborationStatus();
++  const [cadToolsEnabled, setCadToolsEnabled] = useState(() =>
++    isCADToolsEnabled(app.editor?.scene),
++  );
++
++  // Camera orientation state
++  const [showCameraPanel, setShowCameraPanel] = useState(false);
++  const [cameraOrientation, setCameraOrientation] =
++    useState<CameraOrientation>("custom");
++  const cameraBtnRef = useRef<HTMLButtonElement>(null);
++  const isSettingCameraRef = useRef(false);
++
++  // Copilot long-press menu state
++  const [showCopilotMenu, setShowCopilotMenu] = useState(false);
++  const [showCadModeMenu, setShowCadModeMenu] = useState(false);
++  const copilotBtnRef = useRef<HTMLButtonElement>(null);
++  const copilotMenuRef = useRef<HTMLDivElement>(null);
++  const buildMenuRef = useRef<HTMLDivElement>(null);
++  const [menuLayoutVersion, setMenuLayoutVersion] = useState(0);
++  const longPressTimerRef = useRef<number | null>(null);
++  const didLongPressRef = useRef(false);
++  const authContext = useAuthorizationContext();
++  const isAdmin = authContext?.isAdmin ?? false;
++
++  // Snap config state
++  const [showSnapPanel, setShowSnapPanel] = useState(false);
++  const [snappingSettings, setSnappingSettings] =
++    useState<SnappingSettings | null>(() =>
++      getSnappingSettings(app.editor?.scene),
+     );
+-    const snapBtnRef = useRef<HTMLButtonElement>(null);
++  const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(() =>
++    getUnitsSettings(app.editor?.scene),
++  );
++  const snapBtnRef = useRef<HTMLButtonElement>(null);
++  const showQuickBuild = builderMode === "quick";
++  const showMeshCad = builderMode === "mesh-cad";
++  const showPlanCad = builderMode === "bim-plan";
+ 
+-    // Calculate error count from logs
+-    const errorCount = gameDebugLogsRef.current.filter(log => log.level === LogLevel.ERROR).length;
+-    const effectiveErrorCount = propErrorCount !== undefined ? propErrorCount : errorCount;
++  // Calculate error count from logs
++  const errorCount = gameDebugLogsRef.current.filter(
++    (log) => log.level === LogLevel.ERROR,
++  ).length;
++  const effectiveErrorCount =
++    propErrorCount !== undefined ? propErrorCount : errorCount;
+ 
+-    const handleLog = (level: LogLevel, args: any[]) => {
+-        if (level === LogLevel.ERROR || level === LogLevel.WARN || level === LogLevel.INFO || level === LogLevel.LOG) {
+-            gameDebugLogsRef.current = [...gameDebugLogsRef.current, {level, args, timestamp: Date.now()}];
++  const handleLog = useCallback(
++    (level: LogLevel, args: GameLog["args"]) => {
++      if (
++        level === LogLevel.ERROR ||
++        level === LogLevel.WARN ||
++        level === LogLevel.INFO ||
++        level === LogLevel.LOG
++      ) {
++        gameDebugLogsRef.current = [
++          ...gameDebugLogsRef.current,
++          { level, args, timestamp: Date.now() },
++        ];
+ 
+-            if (gameDebugLogsRef.current.length > maxLogs) {
+-                gameDebugLogsRef.current = gameDebugLogsRef.current.slice(gameDebugLogsRef.current.length - maxLogs);
+-            }
++        if (gameDebugLogsRef.current.length > maxLogs) {
++          gameDebugLogsRef.current = gameDebugLogsRef.current.slice(
++            gameDebugLogsRef.current.length - maxLogs,
++          );
++        }
+ 
+-            if (showGameDebugPanel) {
+-                if (updateTimeoutRef.current) {
+-                    window.clearTimeout(updateTimeoutRef.current);
+-                }
+-                updateTimeoutRef.current = window.setTimeout(() => {
+-                    setUpdateTrigger(prev => prev + 1);
+-                    updateTimeoutRef.current = null;
+-                }, 100);
+-            }
++        if (showGameDebugPanel) {
++          if (updateTimeoutRef.current) {
++            window.clearTimeout(updateTimeoutRef.current);
++          }
++          updateTimeoutRef.current = window.setTimeout(() => {
++            setUpdateTrigger((prev) => prev + 1);
++            updateTimeoutRef.current = null;
++          }, 100);
+         }
++      }
++    },
++    [maxLogs, showGameDebugPanel],
++  );
++
++  const handleClearLogs = () => {
++    gameDebugLogsRef.current = [];
++    setUpdateTrigger((prev) => prev + 1);
++    app?.call("clearGameDebugLogs", app.editor?.component);
++  };
++
++  const handleSetMaxLogs = (newMaxLogs: number) => {
++    setMaxLogs(newMaxLogs);
++    localStorage.setItem("gameDebugPanel_maxLogs", newMaxLogs.toString());
++  };
++
++  const exitMeshCadMode = useCallback(() => {
++    if (app.editor?.cadMode) {
++      app.editor.exitCADMode();
++    }
++  }, [app]);
++
++  const transitionBuilderMode = useCallback(
++    (request: BuilderModeRequest, reason: BuilderModeReason) => {
++      const current = builderModeRef.current;
++      const next = typeof request === "function" ? request(current) : request;
++      const scene = app.editor?.scene;
++
++      setShowCadModeMenu(false);
++      if (
++        (next === "mesh-cad" || next === "bim-plan") &&
++        !isCADToolsEnabled(scene)
++      ) {
++        logBuilderMode("CAD mode blocked", { mode: next, reason });
++        return;
++      }
++      if (current === next) return;
++
++      if (next !== "mesh-cad") {
++        exitMeshCadMode();
++      }
++
++      builderModeRef.current = next;
++      setBuilderMode(next);
++      persistBuilderMode(scene, next);
++      logBuilderMode("Builder mode changed", {
++        from: current,
++        to: next,
++        reason,
++      });
++    },
++    [app, exitMeshCadMode],
++  );
++
++  useEffect(() => {
++    builderModeRef.current = builderMode;
++  }, [builderMode]);
++
++  useEffect(() => {
++    const savedMaxLogs = localStorage.getItem("gameDebugPanel_maxLogs");
++    if (savedMaxLogs) {
++      setMaxLogs(parseInt(savedMaxLogs, 10));
++    }
++  }, []);
++
++  useEffect(() => {
++    getLogger()?.addListener(handleLog);
++
++    return () => {
++      getLogger()?.removeListener(handleLog);
++      if (updateTimeoutRef.current) {
++        window.clearTimeout(updateTimeoutRef.current);
++      }
+     };
++  }, [handleLog]);
+ 
+-    const handleClearLogs = () => {
+-        gameDebugLogsRef.current = [];
+-        setUpdateTrigger(prev => prev + 1);
+-        app?.call("clearGameDebugLogs", app.editor?.component);
++  useEffect(() => {
++    const handlePlayerInit = () => {
++      gameDebugLogsRef.current = [];
++      setUpdateTrigger((prev) => prev + 1);
+     };
+ 
+-    const handleSetMaxLogs = (newMaxLogs: number) => {
+-        setMaxLogs(newMaxLogs);
+-        localStorage.setItem("gameDebugPanel_maxLogs", newMaxLogs.toString());
++    const handlePlayerStopped = () => {
++      gameDebugLogsRef.current = [];
++      setUpdateTrigger((prev) => prev + 1);
+     };
+ 
+-    useEffect(() => {
+-        const savedMaxLogs = localStorage.getItem("gameDebugPanel_maxLogs");
+-        if (savedMaxLogs) {
+-            setMaxLogs(parseInt(savedMaxLogs, 10));
+-        }
+-    }, []);
++    app.on("playerInit.ActionBar", handlePlayerInit);
++    app.on("playerStopped.ActionBar", handlePlayerStopped);
+ 
+-    useEffect(() => {
+-        getLogger()?.addListener(handleLog);
++    return () => {
++      app.on("playerInit.ActionBar", null);
++      app.on("playerStopped.ActionBar", null);
++    };
++  }, [app]);
+ 
+-        return () => {
+-            getLogger()?.removeListener(handleLog);
+-            if (updateTimeoutRef.current) {
+-                window.clearTimeout(updateTimeoutRef.current);
+-            }
+-        };
+-    }, [maxLogs, showGameDebugPanel]);
+-
+-    useEffect(() => {
+-        const handlePlayerInit = () => {
+-            gameDebugLogsRef.current = [];
+-            setUpdateTrigger(prev => prev + 1);
+-        };
+-
+-        const handlePlayerStopped = () => {
+-            gameDebugLogsRef.current = [];
+-            setUpdateTrigger(prev => prev + 1);
+-        };
+-
+-        app.on("playerInit.ActionBar", handlePlayerInit);
+-        app.on("playerStopped.ActionBar", handlePlayerStopped);
+-
+-        return () => {
+-            app.on("playerInit.ActionBar", null);
+-            app.on("playerStopped.ActionBar", null);
+-        };
+-    }, [app]);
+-
+-    // Camera controls change detection — reset to "custom" on manual orbit
+-    useEffect(() => {
+-        const controls = (app.editor as any)?.controls?.current?.controls;
+-        if (!controls) return;
+-        const onChange = () => {
+-            if (!isSettingCameraRef.current) {
+-                setCameraOrientation("custom");
+-            }
+-        };
+-        controls.addEventListener("change", onChange);
+-        return () => controls.removeEventListener("change", onChange);
+-    }, [app]);
+-
+-    // Set camera to a preset orientation
+-    const handleCameraSelect = (orientation: CameraOrientation) => {
+-        const editor = app.editor as any;
+-        const camera = editor?.camera;
+-        const controls = editor?.controls?.current?.controls;
+-        if (!camera || !controls) return;
+-
+-        const positions: Record<string, [number, number, number]> = {
+-            default: [0, 10, 25],
+-            top: [0, 50, 0.001],
+-            side: [0, 5, 50],
+-        };
+-        const pos = positions[orientation];
+-        if (!pos) return;
+-
+-        isSettingCameraRef.current = true;
+-        camera.position.set(pos[0], pos[1], pos[2]);
+-        // OrbitControls uses `target`; the legacy EditorControlsImpl uses `center`.
+-        const focusPoint = controls.target ?? controls.center;
+-        focusPoint?.set(0, 0, 0);
+-        camera.lookAt(0, 0, 0);
+-        controls.update?.();
+-        controls.dispatchEvent({type: "change"});
+-        setCameraOrientation(orientation);
+-        requestAnimationFrame(() => {
+-            isSettingCameraRef.current = false;
+-        });
++  useEffect(() => installPlanCadSceneSync(app), [app]);
++
++  useEffect(() => {
++    const syncCadToolsEnabled = () => {
++      const enabled = isCADToolsEnabled(app.editor?.scene);
++      setCadToolsEnabled(enabled);
++      if (!enabled) {
++        transitionBuilderMode(
++          (current) =>
++            current === "mesh-cad" || current === "bim-plan" ? "none" : current,
++          "cad-disabled",
++        );
++      }
+     };
+ 
+-    // Snapping settings listener
+-    useEffect(() => {
+-        app.on("snappingSettingsChanged.ActionBar", (settings: SnappingSettings) => {
+-            setSnappingSettings(mergeSnappingSettings(settings));
+-        });
+-        app.on("unitsSettingsChanged.ActionBar", (settings: UnitsSettings) => {
+-            setUnitsSettings(settings || DEFAULT_UNITS_SETTINGS);
+-        });
+-        return () => {
+-            app.on("snappingSettingsChanged.ActionBar", null);
+-            app.on("unitsSettingsChanged.ActionBar", null);
+-        };
+-    }, [app]);
+-
+-    // Update snap increment from preset
+-    const handleSnapSelect = (value: number) => {
+-        const editor = app.editor as any;
+-        if (!editor?.scene) return;
+-        editor.scene.userData = editor.scene.userData || {};
+-        const currentSettings = mergeSnappingSettings(editor.scene.userData.snapping || DEFAULT_SNAPPING_SETTINGS);
+-        const updated: SnappingSettings = {
+-            ...currentSettings,
+-            grid: {...currentSettings.grid, enabled: true, increment: value},
+-        };
+-        editor.scene.userData.snapping = updated;
+-        app.call("objectChanged", editor, editor.scene);
+-        app.call("snappingSettingsChanged", editor, updated);
++    app.on("cadToolsSettingsChanged.ActionBar", syncCadToolsEnabled);
++    app.on("editorCleared.ActionBarCadTools", syncCadToolsEnabled);
++    app.on(
++      "objectChanged.ActionBarCadTools",
++      (_source: unknown, object?: THREE.Object3D) => {
++        if (!object || object === app.editor?.scene) syncCadToolsEnabled();
++      },
++    );
++    syncCadToolsEnabled();
++
++    return () => {
++      app.on("cadToolsSettingsChanged.ActionBar", null);
++      app.on("editorCleared.ActionBarCadTools", null);
++      app.on("objectChanged.ActionBarCadTools", null);
+     };
++  }, [app, transitionBuilderMode]);
++
++  useEffect(() => {
++    const applyBuilderMode = () => {
++      const scene = app.editor?.scene;
++      if (!scene) return;
+ 
+-    const handleOpenSnapSettings = () => {
+-        const setActiveRightPanel = app.editor?.component?.props?.setActiveRightPanel;
+-        setActiveRightPanel?.(RIGHT_PANEL_VERSIONS.GameSettings);
+-        app.call("focusProjectSettingsSection", app.editor, "snapping");
++      const urlMode = didApplyBuilderModeRef.current
++        ? null
++        : getBuilderStudioMode();
++      if (urlMode) {
++        didApplyBuilderModeRef.current = true;
++        transitionBuilderMode(urlMode, "url");
++        return;
++      }
++
++      const storedMode = readStoredBuilderMode(scene);
++      if (storedMode) {
++        transitionBuilderMode(storedMode, "restore");
++      }
+     };
+ 
+-    const gridSnapEnabled = snappingSettings?.grid?.enabled ?? false;
+-    const gridSnapIncrement = snappingSettings?.grid?.increment ?? 1;
+-    const showMetricSnapLabels =
+-        !unitsSettings?.enabled || ["meters", "centimeters", "millimeters"].includes(unitsSettings.currentUnit);
++    applyBuilderMode();
++    app.on("sceneLoaded.ActionBarBuilderMode", applyBuilderMode);
++    return () => {
++      app.on("sceneLoaded.ActionBarBuilderMode", null);
++    };
++  }, [app, transitionBuilderMode]);
+ 
+-    // Copilot button long-press handlers
+-    const clearLongPress = () => {
+-        if (longPressTimerRef.current) {
+-            window.clearTimeout(longPressTimerRef.current);
+-            longPressTimerRef.current = null;
+-        }
++  // Camera controls change detection — reset to "custom" on manual orbit
++  useEffect(() => {
++    const controls = getActiveCameraControls(app.editor);
++    if (!controls) return;
++    const onChange = () => {
++      if (!isSettingCameraRef.current) {
++        setCameraOrientation("custom");
++      }
+     };
++    controls.addEventListener?.("change", onChange);
++    return () => controls.removeEventListener?.("change", onChange);
++  }, [app]);
++
++  // Set camera to a preset orientation
++  const handleCameraSelect = (orientation: CameraOrientation) => {
++    const editor = app.editor;
++    const camera = editor?.camera;
++    const controls = getActiveCameraControls(editor);
++    if (!camera || !controls) return;
+ 
+-    const handleCopilotPointerDown = () => {
+-        if (!isAdmin) return;
+-        didLongPressRef.current = false;
+-        longPressTimerRef.current = window.setTimeout(() => {
+-            didLongPressRef.current = true;
+-            setShowCopilotMenu(true);
+-        }, LONG_PRESS_DELAY);
++    const positions: Record<string, [number, number, number]> = {
++      default: [0, 10, 25],
++      top: [0, 50, 0.001],
++      side: [0, 5, 50],
+     };
++    const pos = positions[orientation];
++    if (!pos) return;
+ 
+-    const handleCopilotPointerUp = () => {
+-        clearLongPress();
+-        if (!didLongPressRef.current) {
+-            app.editor?.component?.toggleAiCopilot();
+-        }
++    isSettingCameraRef.current = true;
++    camera.position.set(pos[0], pos[1], pos[2]);
++    // OrbitControls uses `target`; the legacy EditorControlsImpl uses `center`.
++    const focusPoint = controls.target ?? controls.center;
++    focusPoint?.set(0, 0, 0);
++    camera.lookAt(0, 0, 0);
++    controls.update?.();
++    controls.dispatchEvent?.({ type: "change" });
++    setCameraOrientation(orientation);
++    requestAnimationFrame(() => {
++      isSettingCameraRef.current = false;
++    });
++  };
++
++  // Snapping settings listener
++  useEffect(() => {
++    app.on(
++      "snappingSettingsChanged.ActionBar",
++      (settings: SnappingSettings) => {
++        setSnappingSettings(mergeSnappingSettings(settings));
++      },
++    );
++    app.on("unitsSettingsChanged.ActionBar", (
++      _editor: unknown,
++      settings: UnitsSettings,
++    ) => {
++      setUnitsSettings(settings || DEFAULT_UNITS_SETTINGS);
++    });
++    return () => {
++      app.on("snappingSettingsChanged.ActionBar", null);
++      app.on("unitsSettingsChanged.ActionBar", null);
+     };
++  }, [app]);
+ 
+-    const handleCopilotPointerLeave = () => {
+-        clearLongPress();
++  // Update snap increment from preset
++  const handleSnapSelect = (value: number) => {
++    const editor = app.editor;
++    if (!editor?.scene) return;
++    editor.scene.userData = editor.scene.userData || {};
++    const currentSettings = getSnappingSettings(editor.scene);
++    const updated: SnappingSettings = {
++      ...currentSettings,
++      grid: { ...currentSettings.grid, enabled: true, increment: value },
+     };
++    editor.scene.userData.snapping = updated;
++    app.call("objectChanged", editor, editor.scene);
++    app.call("snappingSettingsChanged", editor, updated);
++  };
++
++  const handleOpenSnapSettings = () => {
++    const setActiveRightPanel =
++      app.editor?.component?.props?.setActiveRightPanel;
++    setActiveRightPanel?.(RIGHT_PANEL_VERSIONS.GameSettings);
++    app.call("focusProjectSettingsSection", app.editor, "snapping");
++  };
++
++  const handleOpenCadSettings = useCallback(() => {
++    const setActiveRightPanel =
++      app.editor?.component?.props?.setActiveRightPanel;
++    setActiveRightPanel?.(RIGHT_PANEL_VERSIONS.GameSettings);
++    app.call("focusProjectSettingsSection", app.editor, "cadTools");
++  }, [app]);
++
++  const gridSnapEnabled = snappingSettings?.grid?.enabled ?? false;
++  const gridSnapIncrement = snappingSettings?.grid?.increment ?? 1;
++  const showMetricSnapLabels =
++    !unitsSettings?.enabled ||
++    ["meters", "centimeters", "millimeters"].includes(
++      unitsSettings.currentUnit,
++    );
++
++  // Copilot button long-press handlers
++  const clearLongPress = () => {
++    if (longPressTimerRef.current) {
++      window.clearTimeout(longPressTimerRef.current);
++      longPressTimerRef.current = null;
++    }
++  };
++
++  const handleCopilotPointerDown = () => {
++    if (!isAdmin) return;
++    didLongPressRef.current = false;
++    longPressTimerRef.current = window.setTimeout(() => {
++      didLongPressRef.current = true;
++      setShowCopilotMenu(true);
++    }, LONG_PRESS_DELAY);
++  };
++
++  const handleCopilotPointerUp = () => {
++    clearLongPress();
++    if (!didLongPressRef.current) {
++      app.editor?.component?.toggleAiCopilot();
++    }
++  };
++
++  const handleCopilotPointerLeave = () => {
++    clearLongPress();
++  };
++
++  const refreshMenuLayout = useCallback(() => {
++    setMenuLayoutVersion((value) => value + 1);
++  }, []);
++
++  const getCopilotMenuPosition = useCallback(() => {
++    return getAnchoredMenuPosition(
++      copilotBtnRef.current,
++      COPILOT_MENU_WIDTH,
++      copilotMenuRef.current?.offsetHeight ?? 0,
++    );
++  }, [menuLayoutVersion]);
++
++  const getCadModeMenuPosition = useCallback(() => {
++    return getAnchoredMenuPosition(
++      cadModeBtnRef.current,
++      BUILD_MENU_WIDTH,
++      buildMenuRef.current?.offsetHeight ?? 0,
++    );
++  }, [menuLayoutVersion]);
++
++  const closeCopilotMenu = useCallback((restoreFocus = false) => {
++    setShowCopilotMenu(false);
++    if (restoreFocus) {
++      requestAnimationFrame(() => copilotBtnRef.current?.focus());
++    }
++  }, []);
++
++  const closeBuildMenu = useCallback((restoreFocus = false) => {
++    setShowCadModeMenu(false);
++    if (restoreFocus) {
++      requestAnimationFrame(() => cadModeBtnRef.current?.focus());
++    }
++  }, []);
++
++  const selectBuilderMenuMode = useCallback(
++    (target: ActiveBuilderMode) => {
++      if (
++        (target === "mesh-cad" || target === "bim-plan") &&
++        !cadToolsEnabled
++      ) {
++        handleOpenCadSettings();
++        closeBuildMenu(true);
++        return;
++      }
++      transitionBuilderMode(
++        (current) => (current === target ? "none" : target),
++        "menu",
++      );
++      closeBuildMenu(true);
++    },
++    [cadToolsEnabled, closeBuildMenu, handleOpenCadSettings, transitionBuilderMode],
++  );
++
++  const activatePrimaryBuildMode = useCallback(() => {
++    transitionBuilderMode(
++      (current) => (current === "quick" ? "none" : "quick"),
++      "primary",
++    );
++  }, [transitionBuilderMode]);
++
++  useEffect(() => {
++    if (!showCadModeMenu) return;
++    const frame = requestAnimationFrame(() => {
++      firstBuildMenuItemRef.current?.focus();
++    });
++    return () => cancelAnimationFrame(frame);
++  }, [showCadModeMenu]);
++
++  useEffect(() => {
++    if (!showCopilotMenu) return;
++    const frame = requestAnimationFrame(() => {
++      firstCopilotMenuItemRef.current?.focus();
++    });
++    return () => cancelAnimationFrame(frame);
++  }, [showCopilotMenu]);
+ 
+-    const getCopilotMenuPosition = useCallback(() => {
+-        const anchor = copilotBtnRef.current;
+-        if (!anchor) return {top: 100, left: 100};
+-        const rect = anchor.getBoundingClientRect();
+-        const estimatedHeight = 40;
+-        let top = rect.top - 6 - estimatedHeight;
+-        let left = rect.left + rect.width / 2 - 80;
+-        if (left < 8) left = 8;
+-        if (top < 8) top = rect.bottom + 6;
+-        return {top, left};
+-    }, []);
+-
+-    return (
+-        <>
+-            <Container
+-                style={pinnedCodeEditorWidth > 0 ? {left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)`} : undefined}
++  useLayoutEffect(() => {
++    if (!showCadModeMenu && !showCopilotMenu) return;
++    const frame = requestAnimationFrame(refreshMenuLayout);
++    window.addEventListener("resize", refreshMenuLayout);
++    window.addEventListener("scroll", refreshMenuLayout, true);
++    return () => {
++      cancelAnimationFrame(frame);
++      window.removeEventListener("resize", refreshMenuLayout);
++      window.removeEventListener("scroll", refreshMenuLayout, true);
++    };
++  }, [refreshMenuLayout, showCadModeMenu, showCopilotMenu]);
++
++  useEffect(() => {
++    if (!showCadModeMenu) return;
++    const handleKeyDown = (event: KeyboardEvent) => {
++      if (event.key === "Escape") {
++        event.preventDefault();
++        closeBuildMenu(true);
++      }
++    };
++    window.addEventListener("keydown", handleKeyDown);
++    return () => window.removeEventListener("keydown", handleKeyDown);
++  }, [closeBuildMenu, showCadModeMenu]);
++
++  useEffect(() => {
++    if (!showCopilotMenu) return;
++    const handleKeyDown = (event: KeyboardEvent) => {
++      if (event.key === "Escape") {
++        event.preventDefault();
++        closeCopilotMenu(true);
++      }
++    };
++    window.addEventListener("keydown", handleKeyDown);
++    return () => window.removeEventListener("keydown", handleKeyDown);
++  }, [closeCopilotMenu, showCopilotMenu]);
++
++  return (
++    <>
++      <Container
++        style={
++          pinnedCodeEditorWidth > 0
++            ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
++            : undefined
++        }
++      >
++        <CADActionBarControls
++          forceVisible={showMeshCad}
++          allowAutoVisible={showMeshCad}
++          onClose={() => transitionBuilderMode("none", "close")}
++        />
++        <Tooltip text="Help" height="auto">
++          <ActionButton
++            aria-label="Open help documentation"
++            onClick={() => window.open(getEditorDocsUrl(), "_blank")}
++          >
++            <img src={askIcon} style={{ width: 18, height: 18 }} />
++          </ActionButton>
++        </Tooltip>
++        <Tooltip text="Keyboard Shortcuts" height="auto">
++          <ActionButton
++            ref={keybindingsBtnRef}
++            onClick={() => setShowKeybindings((v) => !v)}
++          >
++            <img src={infoIcon} />
++          </ActionButton>
++        </Tooltip>
++        <BuildSplitControl $isSelected={builderMode !== "none"}>
++          <Tooltip
++            text="Build tools: Quick Build"
++            height="auto"
++          >
++            <BuildPrimaryButton
++              data-testid="actionbar-quick-build"
++              $isSelected={showQuickBuild}
++              aria-label="Open Quick Build"
++              aria-pressed={showQuickBuild}
++              onClick={activatePrimaryBuildMode}
+             >
+-                <CADActionBarControls />
+-                <Tooltip
+-                    text="Help"
+-                    height="auto"
+-                >
+-                    <ActionButton onClick={() => window.open(`https://docs.${window.location.hostname}`, "_blank")}>
+-                        <img
+-                            src={askIcon}
+-                            style={{width: 18, height: 18}}
+-                        />
+-                    </ActionButton>
+-                </Tooltip>
+-                <Tooltip
+-                    text="Keyboard Shortcuts"
+-                    height="auto"
+-                >
+-                    <ActionButton
+-                        ref={keybindingsBtnRef}
+-                        onClick={() => setShowKeybindings(v => !v)}
+-                    >
+-                        <img src={infoIcon} />
+-                    </ActionButton>
+-                </Tooltip>
++              <BrushIcon size={18} />
++            </BuildPrimaryButton>
++          </Tooltip>
++          <Tooltip
++            text={
++              cadToolsEnabled
++                ? "Build tools"
++                : "Build tools - enable CAD & BIM tools in Project Settings"
++            }
++            height="auto"
++          >
++            <BuildMenuButton
++              ref={cadModeBtnRef}
++              data-testid="actionbar-cad-tools"
++              $isOpen={showCadModeMenu}
++              $isSelected={showMeshCad || showPlanCad}
++              aria-label="Open build tools menu"
++              aria-haspopup="menu"
++              aria-expanded={showCadModeMenu}
++              onClick={() => setShowCadModeMenu((v) => !v)}
++            >
++              <ChevronUpIcon size={14} />
++            </BuildMenuButton>
++          </Tooltip>
++        </BuildSplitControl>
+ 
+-                <Tooltip
+-                    text="Camera View"
+-                    height="auto"
+-                >
+-                    <ActionButton
+-                        ref={cameraBtnRef}
+-                        $isSelected={showCameraPanel}
+-                        onClick={() => setShowCameraPanel(v => !v)}
+-                    >
+-                        <img
+-                            src={cameraIcon}
+-                            alt=""
+-                        />
+-                    </ActionButton>
+-                </Tooltip>
+-                {gridSnapEnabled && (
+-                    <>
+-                        <Tooltip
+-                            text={`Grid Snap: ${gridSnapIncrement}`}
+-                            height="auto"
+-                        >
+-                            <ActionButton
+-                                ref={snapBtnRef}
+-                                $isSelected={showSnapPanel}
+-                                onClick={() => setShowSnapPanel(v => !v)}
+-                            >
+-                                <img
+-                                    src={gridSnapIcon}
+-                                    alt=""
+-                                />
+-                            </ActionButton>
+-                        </Tooltip>
+-                    </>
+-                )}
++        <Tooltip text="Camera View" height="auto">
++          <ActionButton
++            ref={cameraBtnRef}
++            $isSelected={showCameraPanel}
++            onClick={() => setShowCameraPanel((v) => !v)}
++          >
++            <img src={cameraIcon} alt="" />
++          </ActionButton>
++        </Tooltip>
++        {gridSnapEnabled && (
++          <>
++            <Tooltip text={`Grid Snap: ${gridSnapIncrement}`} height="auto">
++              <ActionButton
++                ref={snapBtnRef}
++                $isSelected={showSnapPanel}
++                onClick={() => setShowSnapPanel((v) => !v)}
++              >
++                <img src={gridSnapIcon} alt="" />
++              </ActionButton>
++            </Tooltip>
++          </>
++        )}
+ 
+-                <Tooltip
+-                    text="Debug Console"
+-                    height="auto"
+-                >
+-                    <DebugButtonWrapper>
+-                        <ActionButton
+-                            onClick={() => (showGameDebugPanel ? closeGameDebugPanel() : openGameDebugPanel())}
+-                        >
+-                            <img
+-                                src={bugIcon}
+-                                alt="debug"
+-                            />
+-                        </ActionButton>
+-                        {effectiveErrorCount > 0 && (
+-                            <ErrorBadge>{effectiveErrorCount > 99 ? "99+" : effectiveErrorCount}</ErrorBadge>
+-                        )}
+-                    </DebugButtonWrapper>
+-                </Tooltip>
+-                <Tooltip
+-                    text={isAdmin ? "AI Copilot (hold for menu)" : "AI Copilot"}
+-                    height="auto"
++        <Tooltip text="Debug Console" height="auto">
++          <DebugButtonWrapper>
++            <ActionButton
++              onClick={() =>
++                showGameDebugPanel
++                  ? closeGameDebugPanel()
++                  : openGameDebugPanel()
++              }
++            >
++              <img src={bugIcon} alt="debug" />
++            </ActionButton>
++            {effectiveErrorCount > 0 && (
++              <ErrorBadge>
++                {effectiveErrorCount > 99 ? "99+" : effectiveErrorCount}
++              </ErrorBadge>
++            )}
++          </DebugButtonWrapper>
++        </Tooltip>
++        <Tooltip
++          text={isAdmin ? "AI Copilot (hold for menu)" : "AI Copilot"}
++          height="auto"
++        >
++          <ActionButton
++            ref={copilotBtnRef}
++            data-testid="actionbar-copilot"
++            onPointerDown={handleCopilotPointerDown}
++            onPointerUp={handleCopilotPointerUp}
++            onPointerLeave={handleCopilotPointerLeave}
++            onContextMenu={(e) => e.preventDefault()}
++            $isActive={app.editor?.component?.state.showAiCopilot}
++          >
++            <img src={magicAI} alt="magic AI" />
++          </ActionButton>
++        </Tooltip>
++        {collaborationStatus && (
++          <>
++            <Tooltip
++              text={
++                collaborationStatus === "connected"
++                  ? "Collaborative - Connected"
++                  : collaborationStatus === "connecting"
++                    ? "Collaborative - Connecting..."
++                    : "Collaborative - Disconnected"
++              }
++              height="auto"
++            >
++              <CollaborationIndicator $status={collaborationStatus}>
++                <CollaborationDot $status={collaborationStatus} />
++              </CollaborationIndicator>
++            </Tooltip>
++          </>
++        )}
++        {showKeybindings && (
++          <KeybindingsPanel
++            anchorRef={keybindingsBtnRef}
++            onClose={() => setShowKeybindings(false)}
++            bindings={EDITOR_KEYBINDINGS}
++            title="Editor Shortcuts"
++          />
++        )}
++        {showCameraPanel && (
++          <CameraOrientationPanel
++            anchorRef={cameraBtnRef}
++            onClose={() => setShowCameraPanel(false)}
++            onSelect={handleCameraSelect}
++            activeOrientation={cameraOrientation}
++          />
++        )}
++        {showSnapPanel && gridSnapEnabled && (
++          <SnapConfigPanel
++            anchorRef={snapBtnRef}
++            onClose={() => setShowSnapPanel(false)}
++            onSelect={handleSnapSelect}
++            activeValue={gridSnapIncrement}
++            showMetricLabels={showMetricSnapLabels}
++            onOpenSettings={handleOpenSnapSettings}
++          />
++        )}
++        {showCopilotMenu &&
++          createPortal(
++            <>
++              <MenuOverlay onClick={() => closeCopilotMenu(true)} />
++              <MenuPopover
++                ref={copilotMenuRef}
++                style={getCopilotMenuPosition()}
++                role="menu"
++                aria-label="AI Copilot tools"
++              >
++                <MenuItem
++                  ref={firstCopilotMenuItemRef}
++                  type="button"
++                  role="menuitem"
++                  onClick={() => {
++                    closeCopilotMenu(true);
++                    app.editor?.component?.openAiCopilotTerminal();
++                  }}
+                 >
+-                    <ActionButton
+-                        ref={copilotBtnRef}
+-                        data-testid="actionbar-copilot"
+-                        onPointerDown={handleCopilotPointerDown}
+-                        onPointerUp={handleCopilotPointerUp}
+-                        onPointerLeave={handleCopilotPointerLeave}
+-                        onContextMenu={e => e.preventDefault()}
+-                        $isActive={app.editor?.component?.state.showAiCopilot}
++                  <ToolsIcon size={14} />
++                  Script Tool
++                </MenuItem>
++              </MenuPopover>
++            </>,
++            document.body,
++          )}
++        {showCadModeMenu &&
++          createPortal(
++            <>
++              <MenuOverlay onClick={() => closeBuildMenu(true)} />
++              <MenuPopover
++                ref={buildMenuRef}
++                style={getCadModeMenuPosition()}
++                role="menu"
++                aria-label="Build tools"
++              >
++                {BUILDER_MENU_MODES.map((mode, index) => {
++                  const item = BUILDER_MODE_COPY[mode];
++                  const Icon = item.Icon;
++                  const disabled =
++                    (mode === "mesh-cad" || mode === "bim-plan") &&
++                    !cadToolsEnabled;
++                  const testId =
++                    mode === "quick"
++                      ? "actionbar-build-quick"
++                      : mode === "mesh-cad"
++                        ? "actionbar-mesh-cad"
++                        : "actionbar-plan-cad";
++                  return (
++                    <MenuItem
++                      key={mode}
++                      ref={index === 0 ? firstBuildMenuItemRef : undefined}
++                      type="button"
++                      role="menuitem"
++                      data-testid={testId}
++                      disabled={disabled}
++                      aria-pressed={builderMode === mode}
++                      onClick={() => selectBuilderMenuMode(mode)}
+                     >
+-                        <img
+-                            src={magicAI}
+-                            alt="magic AI"
+-                        />
+-                    </ActionButton>
+-                </Tooltip>
+-                {collaborationStatus && (
+-                    <>
+-                        <Tooltip
+-                            text={
+-                                collaborationStatus === "connected"
+-                                    ? "Collaborative - Connected"
+-                                    : collaborationStatus === "connecting"
+-                                      ? "Collaborative - Connecting..."
+-                                      : "Collaborative - Disconnected"
+-                            }
+-                            height="auto"
+-                        >
+-                            <CollaborationIndicator $status={collaborationStatus}>
+-                                <CollaborationDot $status={collaborationStatus} />
+-                            </CollaborationIndicator>
+-                        </Tooltip>
+-                    </>
+-                )}
+-                {showKeybindings && (
+-                    <KeybindingsPanel
+-                        anchorRef={keybindingsBtnRef}
+-                        onClose={() => setShowKeybindings(false)}
+-                        bindings={EDITOR_KEYBINDINGS}
+-                        title="Editor Shortcuts"
+-                    />
++                      <Icon size={14} />
++                      <MenuItemText>
++                        <MenuItemLabel>{item.label}</MenuItemLabel>
++                        <MenuItemDescription>
++                          {disabled
++                            ? "Enable CAD & BIM tools in Project Settings"
++                            : item.description}
++                        </MenuItemDescription>
++                      </MenuItemText>
++                      {item.beta && <MenuItemBadge>beta</MenuItemBadge>}
++                    </MenuItem>
++                  );
++                })}
++                {!cadToolsEnabled && (
++                  <MenuItem
++                    type="button"
++                    role="menuitem"
++                    data-testid="actionbar-enable-cad-tools"
++                    onClick={() => {
++                      handleOpenCadSettings();
++                      closeBuildMenu(true);
++                    }}
++                  >
++                    <ToolsIcon size={14} />
++                    <MenuItemText>
++                      <MenuItemLabel>Enable CAD & BIM tools</MenuItemLabel>
++                      <MenuItemDescription>
++                        Opens Project Settings.
++                      </MenuItemDescription>
++                    </MenuItemText>
++                  </MenuItem>
+                 )}
+-                {showCameraPanel && (
+-                    <CameraOrientationPanel
+-                        anchorRef={cameraBtnRef}
+-                        onClose={() => setShowCameraPanel(false)}
+-                        onSelect={handleCameraSelect}
+-                        activeOrientation={cameraOrientation}
+-                    />
+-                )}
+-                {showSnapPanel && gridSnapEnabled && (
+-                    <SnapConfigPanel
+-                        anchorRef={snapBtnRef}
+-                        onClose={() => setShowSnapPanel(false)}
+-                        onSelect={handleSnapSelect}
+-                        activeValue={gridSnapIncrement}
+-                        showMetricLabels={showMetricSnapLabels}
+-                        onOpenSettings={handleOpenSnapSettings}
+-                    />
+-                )}
+-                {showCopilotMenu &&
+-                    createPortal(
+-                        <>
+-                            <MenuOverlay onClick={() => setShowCopilotMenu(false)} />
+-                            <MenuPopover style={getCopilotMenuPosition()}>
+-                                <MenuItem
+-                                    onClick={() => {
+-                                        setShowCopilotMenu(false);
+-                                        app.editor?.component?.openAiCopilotTerminal();
+-                                    }}
+-                                >
+-                                    <VscTools size={14} />
+-                                    Script Tool
+-                                </MenuItem>
+-                            </MenuPopover>
+-                        </>,
+-                        document.body,
+-                    )}
+-            </Container>
+-
+-            {showGameDebugPanel && (
+-                <GameDebugPanel
+-                    logsRef={gameDebugLogsRef}
+-                    updateTrigger={updateTrigger}
+-                    onClose={closeGameDebugPanel}
+-                    onClear={handleClearLogs}
+-                    maxLogs={maxLogs}
+-                    setMaxLogs={handleSetMaxLogs}
+-                />
+-            )}
+-        </>
+-    );
++              </MenuPopover>
++            </>,
++            document.body,
++          )}
++      </Container>
++
++      {showQuickBuild && (
++        <QuickBuildToolbar
++          pinnedCodeEditorWidth={pinnedCodeEditorWidth}
++          onClose={() => transitionBuilderMode("none", "close")}
++        />
++      )}
++      {showPlanCad && cadToolsEnabled && (
++        <PlanCadToolbar
++          pinnedCodeEditorWidth={pinnedCodeEditorWidth}
++          onClose={() => transitionBuilderMode("none", "close")}
++        />
++      )}
++
++      {showGameDebugPanel && (
++        <GameDebugPanel
++          logsRef={gameDebugLogsRef}
++          updateTrigger={updateTrigger}
++          onClose={closeGameDebugPanel}
++          onClear={handleClearLogs}
++          maxLogs={maxLogs}
++          setMaxLogs={handleSetMaxLogs}
++        />
++      )}
++    </>
++  );
+ };
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/panels/ProjectSettings/GameSettings.tsx b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/panels/ProjectSettings/GameSettings.tsx
+index af4ed0d..1ae3f8c 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/panels/ProjectSettings/GameSettings.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/panels/ProjectSettings/GameSettings.tsx
+@@ -1,1140 +1,1266 @@
+ import i18n from "i18next";
+-import {debounce} from "lodash";
+-import React, {useCallback, useEffect, useRef, useState} from "react";
++import { debounce } from "lodash";
++import React, { useCallback, useEffect, useRef, useState } from "react";
+ import * as THREE from "three";
+ 
+-import {AngleUnitsSection, AngleUnitsSettings} from "./AngleUnitsSection";
+-import {BoundingBoxSection} from "./BoundingBoxSection";
+-import {CADToolsSection} from "./CADToolsSection";
+-import {ColorPaletteSection, DEFAULT_COLOR_PALETTE} from "./ColorPaletteSection";
++import { AngleUnitsSection, AngleUnitsSettings } from "./AngleUnitsSection";
++import { BoundingBoxSection } from "./BoundingBoxSection";
++import { CADToolsSection } from "./CADToolsSection";
+ import {
+-    DEFAULT_ANGLE_UNITS_SETTINGS,
+-    DEFAULT_BOUNDING_BOX_SETTINGS,
+-    DEFAULT_UNITS_SETTINGS,
+-    mergeSnappingSettings,
+-    type BoundingBoxSettings,
++  ColorPaletteSection,
++  DEFAULT_COLOR_PALETTE,
++} from "./ColorPaletteSection";
++import {
++  DEFAULT_ANGLE_UNITS_SETTINGS,
++  DEFAULT_BOUNDING_BOX_SETTINGS,
++  DEFAULT_UNITS_SETTINGS,
++  mergeSnappingSettings,
++  type BoundingBoxSettings,
+ } from "./constants";
+-import {CrazyGamesIntegration} from "./CrazyGamesIntegration";
+-import {DiscordIntegration} from "./DiscordIntegration";
+-import {EmailPasswordAuth} from "./EmailPasswordAuth";
+-import {useIntegrationSettings} from "./hooks";
+-import {MobileGameServicesIntegration} from "./MobileGameServicesIntegration";
+-import {PhysicsSection, PhysicsSettings} from "./PhysicsSection";
+-import {TabContent, TooltipRowWrapper, Wrapper} from "./ProjectSettings.style";
+-import {GameDetailsSection, GameModeSection, PlayerProfileSection} from "./sections";
+-import {SnappingSection, SnappingSettings} from "./SnappingSection";
+-import {SteamIntegration} from "./SteamIntegration";
+-import {UnitsSection, UnitsSettings} from "./UnitsSection";
+-import {saveScene} from "@stem/network/api/scene";
+-import {updateSceneThumbnail} from "@stem/network/api/scene/thumbnail";
+-import {useAppGlobalContext, useHomepageContext} from "@stem/editor-oss/context";
+-import {RIGHT_PANEL_VERSIONS} from "@stem/editor-oss/context/appStateTypes";
++import { CrazyGamesIntegration } from "./CrazyGamesIntegration";
++import { DiscordIntegration } from "./DiscordIntegration";
++import { EmailPasswordAuth } from "./EmailPasswordAuth";
++import { useIntegrationSettings } from "./hooks";
++import { MobileGameServicesIntegration } from "./MobileGameServicesIntegration";
++import { PhysicsSection, PhysicsSettings } from "./PhysicsSection";
++import {
++  TabContent,
++  TooltipRowWrapper,
++  Wrapper,
++} from "./ProjectSettings.style";
++import {
++  GameDetailsSection,
++  GameModeSection,
++  PlayerProfileSection,
++} from "./sections";
++import { SnappingSection, SnappingSettings } from "./SnappingSection";
++import { SteamIntegration } from "./SteamIntegration";
++import { UnitsSection, UnitsSettings } from "./UnitsSection";
++import { saveScene } from "@stem/network/api/scene";
++import { updateSceneThumbnail } from "@stem/network/api/scene/thumbnail";
++import {
++  useAppGlobalContext,
++  useHomepageContext,
++} from "@stem/editor-oss/context";
++import { RIGHT_PANEL_VERSIONS } from "@stem/editor-oss/context/appStateTypes";
+ import Editor from "../../../../../../editor/Editor";
+ import EngineRuntime from "@stem/editor-oss/EngineRuntime";
+ import global from "@stem/editor-oss/global";
+-import {PhysicsEngineType} from "../../../../../../physics/common/types";
+-import {showToast} from "@stem/editor-oss/showToast";
+-import {HUDRendererMode} from "@stem/editor-oss/types/GameSettingsTypes";
++import { PhysicsEngineType } from "../../../../../../physics/common/types";
++import { showToast } from "@stem/editor-oss/showToast";
++import { HUDRendererMode } from "@stem/editor-oss/types/GameSettingsTypes";
+ import Ajax from "@stem/editor-oss/utils/Ajax";
+-import {DEFAULT_ORIENTATION_POLICY} from "@stem/editor-oss/utils/orientationPolicy";
+-import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
+-import {isPlaygroundMode} from "@web-shared/playgroundMode";
+-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
+-import {DEFAULT_CAD_TOOLS_SETTINGS, setCADToolsSettings} from "../../../../../cad/settings";
+-import {Tooltip} from "../../../common";
+-import {Item} from "../../../common/BasicCombobox/BasicCombobox";
+-import {NumericInput} from "../../../common/NumericInput";
+-import {StyledButton} from "../../../common/StyledButton";
+-import {getRandomPlaceholderIdentifier} from "../../../CreateDashboard/GameOverview/placeholderThumbnails";
+-import {ContentItem} from "../../common/ContentItem";
+-import {NumericInputRow} from "../../common/NumericInputRow";
+-import {PanelCheckbox} from "../../common/PanelCheckbox";
+-import {SelectRow} from "../../common/SelectRow";
+-import {Separator} from "../../common/Separator";
+-import {PanelSectionTitle, PanelSectionTitleSecondary} from "../../RightPanel.style";
++import { DEFAULT_ORIENTATION_POLICY } from "@stem/editor-oss/utils/orientationPolicy";
++import { backendUrlFromPath } from "@stem/editor-oss/utils/UrlUtils";
++import { isPlaygroundMode } from "@web-shared/playgroundMode";
++import { IS_OSS } from "@stem/editor-oss/mode/buildMode";
++import {
++  DEFAULT_CAD_TOOLS_SETTINGS,
++  setCADToolsSettings,
++} from "../../../../../cad/settings";
++import { Tooltip } from "../../../common";
++import { Item } from "../../../common/BasicCombobox/BasicCombobox";
++import { NumericInput } from "../../../common/NumericInput";
++import { StyledButton } from "../../../common/StyledButton";
++import { getRandomPlaceholderIdentifier } from "../../../CreateDashboard/GameOverview/placeholderThumbnails";
++import { ContentItem } from "../../common/ContentItem";
++import { NumericInputRow } from "../../common/NumericInputRow";
++import { PanelCheckbox } from "../../common/PanelCheckbox";
++import { SelectRow } from "../../common/SelectRow";
++import { Separator } from "../../common/Separator";
++import {
++  PanelSectionTitle,
++  PanelSectionTitleSecondary,
++} from "../../RightPanel.style";
+ 
+ export interface IMapping {
+-    backend: string;
+-    backend_port: number;
+-    created_at: string;
+-    game_id: string;
+-    host: string;
+-    id: string;
+-    path: string;
+-    type: string;
+-    updated_at: string;
++  backend: string;
++  backend_port: number;
++  created_at: string;
++  game_id: string;
++  host: string;
++  id: string;
++  path: string;
++  type: string;
++  updated_at: string;
+ }
+ 
+ const normalizeProjectGameSettings = (
+-    gameSettings: Record<string, any> = {},
+-    fallbackIsGame = true,
++  gameSettings: Record<string, any> = {},
++  fallbackIsGame = true,
+ ) => {
+-    const {enabled: _legacyEnabled, ...current} = gameSettings;
+-    return {
+-        ...current,
+-        uuid: current.uuid || THREE.MathUtils.generateUUID(),
+-        isGame: current.isGame ?? _legacyEnabled ?? fallbackIsGame,
+-        lives: current.lives ?? 3,
+-        maxScore: current.maxScore ?? 500,
+-        timer: current.timer ?? 200,
+-        orientationPolicy: current.orientationPolicy || DEFAULT_ORIENTATION_POLICY,
+-    };
++  const { enabled: _legacyEnabled, ...current } = gameSettings;
++  return {
++    ...current,
++    uuid: current.uuid || THREE.MathUtils.generateUUID(),
++    isGame: current.isGame ?? _legacyEnabled ?? fallbackIsGame,
++    lives: current.lives ?? 3,
++    maxScore: current.maxScore ?? 500,
++    timer: current.timer ?? 200,
++    orientationPolicy: current.orientationPolicy || DEFAULT_ORIENTATION_POLICY,
++  };
+ };
+ 
+ const SERIALIZED_GAME_BOOLEAN_SETTINGS = new Set([
+-    "showHUD",
+-    "useAvatar",
+-    "isMultiplayer",
+-    "multiplayerAutoJoin",
+-    "voiceChatEnabled",
++  "showHUD",
++  "useAvatar",
++  "isMultiplayer",
++  "multiplayerAutoJoin",
++  "voiceChatEnabled",
+ ]);
+ 
+ const loadGameMappingApi = () => import("@stem/network/api/gameMapping");
+ 
+-const GameSettingsComponent = ({openUIPanel}: {openUIPanel: () => void}) => {
+-    const app = (global as any).app as EngineRuntime;
+-    const editor = app.editor as Editor;
+-    const {setActiveRightPanel, activeRightPanel, slug, setSlug, gameMapping, setGameMapping} = useAppGlobalContext();
+-    const {setShouldRefreshDashboard} = useHomepageContext();
+-
+-    // Use the integration settings hook
+-    const {
+-        discordIntegration,
+-        mobileGameServices,
+-        steamIntegration,
+-        crazyGamesIntegration,
+-        emailPasswordAuth,
+-        playerSupport,
+-        allowAnonymousFirebase,
+-        setDiscordIntegration,
+-        setMobileGameServices,
+-        setSteamIntegration,
+-        setCrazyGamesIntegration,
+-        setEmailPasswordAuth,
+-        setPlayerSupport,
+-        setAllowAnonymousFirebase,
+-        disableAllIntegrations,
+-        loadIntegrationSettings,
+-    } = useIntegrationSettings();
+-
+-    const [useAvatar, setUseAvatar] = useState(!!app.editor?.useAvatar);
+-    const [isMultiplayer, setIsMultiplayer] = useState(!!app.editor?.isMultiplayer);
+-    const [isVFXOnMobile, setIsVFXOnMobile] = useState(!!editor?.VFXOnMobile);
+-    const [isCollaborative, setIsCollaborative] = useState(!!app.editor?.isCollaborative);
+-    const [maxCollaboratorsInRoom, setMaxCollaboratorsInRoom] = useState(app.editor?.maxCollaboratorsInRoom || 6);
+-    const [voiceChatEnabled, setVoiceChatEnabled] = useState(!!app.editor?.voiceChatEnabled);
+-    const [showHUD, setShowHUD] = useState(!!app.editor?.showHUD);
+-    const [hudRenderer, setHudRenderer] = useState<HUDRendererMode>(editor?.hudRenderer === "uikit" ? "uikit" : "html");
+-    const [productionMode, setProductionMode] = useState(app.editor?.scene?.userData?.productionMode ?? true);
+-    const [playmodeInspectorEnabled, setPlaymodeInspectorEnabled] = useState(
+-        !!app.editor?.scene?.userData?.playmodeInspectorEnabled,
+-    );
+-    const [compartmentsEnabled, setCompartmentsEnabled] = useState(
+-        app.editor?.scene?.userData?.compartmentsEnabled ?? false,
+-    );
+-    const [maxMultiplayerClientsPerRoom, setMaxMultiplayerClientsPerRoom] = useState(
+-        editor?.maxMultiplayerClientsPerRoom || 4,
+-    );
+-    const [multiplayerAutoJoin, setMultiplayerAutoJoin] = useState(!!editor?.multiplayerAutoJoin);
+-    const [enableOrbitControls, setEnableOrbitControls] = useState(
+-        typeof editor?.scene?.userData?.enableOrbitControls === "boolean"
+-            ? editor.scene.userData.enableOrbitControls
+-            : true,
+-    );
+-    const [useSceneTraverser, setUseSceneTraverser] = useState(!!editor?.scene?.userData?.useSceneTraverser);
+-
+-    const [game, setGame] = useState(() => {
+-        const gameSettings = editor?.scene?.userData?.game || {};
+-        return normalizeProjectGameSettings(gameSettings);
+-    });
+-    const [thumbnail, setThumbnail] = useState(editor?.sceneThumbnail || "");
+-    const [name, setName] = useState(editor?.sceneName || "");
+-    const [description, setDescription] = useState(editor?.description || "");
+-    const [tags, setTags] = useState<string[]>(editor?.tags || []);
+-    const [contentRating, setContentRating] = useState(editor?.contentRating || "Unrated");
+-
+-    const [suggestedSlug, setSuggestedSlug] = useState("");
+-    const [isSlugError, setIsSlugError] = useState(false);
+-    const [slugErrorStatus, setSlugErrorStatus] = useState("");
+-    const [slugLocked, setSlugLocked] = useState(!!slug || false);
+-
+-    // Physics settings
+-    const [physicsSettings, setPhysicsSettings] = useState(() => {
+-        const savedPhysicsSettings = app?.editor?.scene?.userData?.physics;
+-        return {
+-            engine: savedPhysicsSettings?.engine || PhysicsEngineType.Ammo,
+-            gravity: savedPhysicsSettings?.gravity || -9.81,
+-        };
+-    });
+-
+-    // Snapping settings
+-    const [snappingSettings, setSnappingSettings] = useState<SnappingSettings>(() => {
+-        const saved = app?.editor?.scene?.userData?.snapping;
+-        return mergeSnappingSettings(saved);
+-    });
+-
+-    const [cadToolsEnabled, setCadToolsEnabled] = useState<boolean>(() => {
+-        const saved = app?.editor?.scene?.userData?.cadTools?.enabled;
+-        return typeof saved === "boolean" ? saved : DEFAULT_CAD_TOOLS_SETTINGS.enabled;
++const GameSettingsComponent = ({
++  openUIPanel,
++}: {
++  openUIPanel: () => void;
++}) => {
++  const app = (global as any).app as EngineRuntime;
++  const editor = app.editor as Editor;
++  const {
++    setActiveRightPanel,
++    activeRightPanel,
++    slug,
++    setSlug,
++    gameMapping,
++    setGameMapping,
++  } = useAppGlobalContext();
++  const { setShouldRefreshDashboard } = useHomepageContext();
++
++  // Use the integration settings hook
++  const {
++    discordIntegration,
++    mobileGameServices,
++    steamIntegration,
++    crazyGamesIntegration,
++    emailPasswordAuth,
++    playerSupport,
++    allowAnonymousFirebase,
++    setDiscordIntegration,
++    setMobileGameServices,
++    setSteamIntegration,
++    setCrazyGamesIntegration,
++    setEmailPasswordAuth,
++    setPlayerSupport,
++    setAllowAnonymousFirebase,
++    disableAllIntegrations,
++    loadIntegrationSettings,
++  } = useIntegrationSettings();
++
++  const [useAvatar, setUseAvatar] = useState(!!app.editor?.useAvatar);
++  const [isMultiplayer, setIsMultiplayer] = useState(
++    !!app.editor?.isMultiplayer,
++  );
++  const [isVFXOnMobile, setIsVFXOnMobile] = useState(!!editor?.VFXOnMobile);
++  const [isCollaborative, setIsCollaborative] = useState(
++    !!app.editor?.isCollaborative,
++  );
++  const [maxCollaboratorsInRoom, setMaxCollaboratorsInRoom] = useState(
++    app.editor?.maxCollaboratorsInRoom || 6,
++  );
++  const [voiceChatEnabled, setVoiceChatEnabled] = useState(
++    !!app.editor?.voiceChatEnabled,
++  );
++  const [showHUD, setShowHUD] = useState(!!app.editor?.showHUD);
++  const [hudRenderer, setHudRenderer] = useState<HUDRendererMode>(
++    editor?.hudRenderer === "uikit" ? "uikit" : "html",
++  );
++  const [productionMode, setProductionMode] = useState(
++    app.editor?.scene?.userData?.productionMode ?? true,
++  );
++  const [playmodeInspectorEnabled, setPlaymodeInspectorEnabled] = useState(
++    !!app.editor?.scene?.userData?.playmodeInspectorEnabled,
++  );
++  const [compartmentsEnabled, setCompartmentsEnabled] = useState(
++    app.editor?.scene?.userData?.compartmentsEnabled ?? false,
++  );
++  const [maxMultiplayerClientsPerRoom, setMaxMultiplayerClientsPerRoom] =
++    useState(editor?.maxMultiplayerClientsPerRoom || 4);
++  const [multiplayerAutoJoin, setMultiplayerAutoJoin] = useState(
++    !!editor?.multiplayerAutoJoin,
++  );
++  const [enableOrbitControls, setEnableOrbitControls] = useState(
++    typeof editor?.scene?.userData?.enableOrbitControls === "boolean"
++      ? editor.scene.userData.enableOrbitControls
++      : true,
++  );
++  const [useSceneTraverser, setUseSceneTraverser] = useState(
++    !!editor?.scene?.userData?.useSceneTraverser,
++  );
++
++  const [game, setGame] = useState(() => {
++    const gameSettings = editor?.scene?.userData?.game || {};
++    return normalizeProjectGameSettings(gameSettings);
++  });
++  const [thumbnail, setThumbnail] = useState(editor?.sceneThumbnail || "");
++  const [name, setName] = useState(editor?.sceneName || "");
++  const [description, setDescription] = useState(editor?.description || "");
++  const [tags, setTags] = useState<string[]>(editor?.tags || []);
++  const [contentRating, setContentRating] = useState(
++    editor?.contentRating || "Unrated",
++  );
++
++  const [suggestedSlug, setSuggestedSlug] = useState("");
++  const [isSlugError, setIsSlugError] = useState(false);
++  const [slugErrorStatus, setSlugErrorStatus] = useState("");
++  const [slugLocked, setSlugLocked] = useState(!!slug || false);
++
++  // Physics settings
++  const [physicsSettings, setPhysicsSettings] = useState(() => {
++    const savedPhysicsSettings = app?.editor?.scene?.userData?.physics;
++    return {
++      engine: savedPhysicsSettings?.engine || PhysicsEngineType.Ammo,
++      gravity: savedPhysicsSettings?.gravity || -9.81,
++    };
++  });
++
++  // Snapping settings
++  const [snappingSettings, setSnappingSettings] = useState<SnappingSettings>(
++    () => {
++      const saved = app?.editor?.scene?.userData?.snapping;
++      return mergeSnappingSettings(saved);
++    },
++  );
++
++  const [cadToolsEnabled, setCadToolsEnabled] = useState<boolean>(() => {
++    const saved = app?.editor?.scene?.userData?.cadTools?.enabled;
++    return typeof saved === "boolean"
++      ? saved
++      : DEFAULT_CAD_TOOLS_SETTINGS.enabled;
++  });
++
++  // Units settings
++  const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(() => {
++    const saved = app?.editor?.scene?.userData?.units;
++    return saved || DEFAULT_UNITS_SETTINGS;
++  });
++
++  // Angle units settings
++  const [angleUnitsSettings, setAngleUnitsSettings] =
++    useState<AngleUnitsSettings>(() => {
++      const saved = app?.editor?.scene?.userData?.angleUnits;
++      return saved || DEFAULT_ANGLE_UNITS_SETTINGS;
+     });
+ 
+-    // Units settings
+-    const [unitsSettings, setUnitsSettings] = useState<UnitsSettings>(() => {
+-        const saved = app?.editor?.scene?.userData?.units;
+-        return saved || DEFAULT_UNITS_SETTINGS;
++  // Bounding box mode
++  const [boundingBoxSettings, setBoundingBoxSettings] =
++    useState<BoundingBoxSettings>(() => {
++      const saved = app?.editor?.scene?.userData?.boundingBox;
++      return saved || DEFAULT_BOUNDING_BOX_SETTINGS;
+     });
+-
+-    // Angle units settings
+-    const [angleUnitsSettings, setAngleUnitsSettings] = useState<AngleUnitsSettings>(() => {
+-        const saved = app?.editor?.scene?.userData?.angleUnits;
+-        return saved || DEFAULT_ANGLE_UNITS_SETTINGS;
++  const snappingSectionRef = useRef<HTMLDivElement>(null);
++  const [pendingProjectSettingsSection, setPendingProjectSettingsSection] =
++    useState<string | null>(null);
++
++  // Color palette
++  const [colorPalette, setColorPalette] = useState(
++    () => app?.editor?.scene?.userData?.colorPalette || DEFAULT_COLOR_PALETTE,
++  );
++
++  const orientationPolicyOptions: Item[] = [
++    { key: "any", value: i18n.t("Any orientation") },
++    { key: "preferPortrait", value: i18n.t("Prefer portrait") },
++    { key: "preferLandscape", value: i18n.t("Prefer landscape") },
++    { key: "requirePortrait", value: i18n.t("Require portrait") },
++    { key: "requireLandscape", value: i18n.t("Require landscape") },
++  ];
++
++  const debouncedSceneChange = useCallback(
++    debounce((data) => {
++      void Ajax.post({
++        url: backendUrlFromPath(`/api/Scene/Edit`),
++        data: {
++          Name: data.name,
++          ID: editor?.sceneID,
++          Description: data.description,
++          Tags: JSON.stringify(data.tags),
++          ContentRating: data.contentRating,
++        },
++        msgBodyType: "multipart",
++      }).then((response) => {
++        if (response?.data.Code === 200 && editor) {
++          editor.sceneName = data.name;
++          editor.description = data.description;
++          editor.tags = data.tags;
++          editor.contentRating = data.contentRating;
++          setShouldRefreshDashboard(true);
++          app.call(`clear`, editor, editor);
++        }
++      });
++    }, 500),
++    [app, setShouldRefreshDashboard],
++  );
++
++  const loadGameMapping = async () => {
++    if (!editor?.sceneID) return;
++    const { getGameMapping } = await loadGameMappingApi();
++    const mapping = await getGameMapping(editor.sceneID);
++    setGameMapping(mapping);
++    if (mapping) {
++      setSlug(mapping.Slug);
++      setSuggestedSlug(mapping.Slug);
++      setSlugLocked(true);
++    } else {
++      setSlug("");
++      setSuggestedSlug("");
++      setSlugLocked(false);
++    }
++  };
++
++  const handleNameChange = () => {
++    editor.sceneName = name;
++    app.call("sceneNameUpdated");
++    debouncedSceneChange({ name, description, tags, contentRating });
++  };
++
++  const handleDescriptionChange = () => {
++    editor.description = description;
++    debouncedSceneChange({ name, description, tags, contentRating });
++  };
++
++  const handleNameInputChange = (value: string) => {
++    setName(value);
++    editor.sceneName = value;
++    app.call("sceneNameUpdated");
++  };
++
++  const handleDescriptionInputChange = (value: string) => {
++    setDescription(value);
++    editor.description = value;
++  };
++
++  const handleContentRatingChange = (rating: string) => {
++    setContentRating(rating);
++    editor.contentRating = rating;
++    debouncedSceneChange({ name, description, tags, contentRating: rating });
++  };
++
++  const removeSelected = () => {
++    if (
++      editor.selected &&
++      !Array.isArray(editor.selected) &&
++      editor.selected.type !== "Scene" &&
++      !(editor.selected as THREE.PerspectiveCamera).isPerspectiveCamera
++    ) {
++      setActiveRightPanel(RIGHT_PANEL_VERSIONS.None);
++    }
++  };
++
++  const handleInputChange = (value: any, inputName: string) => {
++    setGame((prevState) => {
++      const newState = { ...prevState, [inputName]: value };
++      editor.scene.userData.game = newState;
++      app.call("objectChanged", app.editor, app.editor?.scene);
++      return newState;
+     });
+-
+-    // Bounding box mode
+-    const [boundingBoxSettings, setBoundingBoxSettings] = useState<BoundingBoxSettings>(() => {
+-        const saved = app?.editor?.scene?.userData?.boundingBox;
+-        return saved || DEFAULT_BOUNDING_BOX_SETTINGS;
++  };
++
++  const handleThumbnailChange = (url: string) => {
++    const nextThumbnail = url || getRandomPlaceholderIdentifier();
++    setThumbnail(nextThumbnail);
++    editor.sceneThumbnail = nextThumbnail;
++    const sceneId = editor.sceneID;
++    const sceneName = editor.sceneName;
++    if (sceneId && sceneName) {
++      void updateSceneThumbnail(sceneId, sceneName, nextThumbnail);
++      setShouldRefreshDashboard(true);
++    }
++  };
++
++  const setLocalGameState = () => {
++    const gameData = editor?.scene?.userData?.game;
++    if (gameData) {
++      setGame(normalizeProjectGameSettings(gameData));
++    }
++  };
++
++  const handleBooleanChange = (
++    key: string,
++    setter: (value: boolean) => void,
++  ) => {
++    const current = (editor as any)[key] as boolean;
++    const newValue = !current;
++    (editor as any)[key] = newValue;
++
++    if (SERIALIZED_GAME_BOOLEAN_SETTINGS.has(key)) {
++      if (!editor.scene.userData) editor.scene.userData = {};
++      const gameSettings = {
++        ...normalizeProjectGameSettings(editor.scene.userData.game),
++        [key]: newValue,
++      };
++      editor.scene.userData.game = gameSettings;
++      setGame(gameSettings);
++      app.call("objectChanged", app.editor, app.editor?.scene);
++    }
++
++    setter(newValue);
++  };
++
++  const handleCollaborativeCheckboxChange = (checked: boolean) => {
++    editor.isCollaborative = checked;
++    setIsCollaborative(checked);
++    showToast({
++      type: "info",
++      title: "Refresh the page to apply collaborative mode changes.",
+     });
+-    const snappingSectionRef = useRef<HTMLDivElement>(null);
+-    const [pendingProjectSettingsSection, setPendingProjectSettingsSection] = useState<string | null>(null);
+-
+-    // Color palette
+-    const [colorPalette, setColorPalette] = useState(
+-        () => app?.editor?.scene?.userData?.colorPalette || DEFAULT_COLOR_PALETTE,
+-    );
+-
+-    const orientationPolicyOptions: Item[] = [
+-        {key: "any", value: i18n.t("Any orientation")},
+-        {key: "preferPortrait", value: i18n.t("Prefer portrait")},
+-        {key: "preferLandscape", value: i18n.t("Prefer landscape")},
+-        {key: "requirePortrait", value: i18n.t("Require portrait")},
+-        {key: "requireLandscape", value: i18n.t("Require landscape")},
+-    ];
+-
+-    const debouncedSceneChange = useCallback(
+-        debounce(data => {
+-            void Ajax.post({
+-                url: backendUrlFromPath(`/api/Scene/Edit`),
+-                data: {
+-                    Name: data.name,
+-                    ID: editor?.sceneID,
+-                    Description: data.description,
+-                    Tags: JSON.stringify(data.tags),
+-                    ContentRating: data.contentRating,
+-                },
+-                msgBodyType: "multipart",
+-            }).then(response => {
+-                if (response?.data.Code === 200 && editor) {
+-                    editor.sceneName = data.name;
+-                    editor.description = data.description;
+-                    editor.tags = data.tags;
+-                    editor.contentRating = data.contentRating;
+-                    setShouldRefreshDashboard(true);
+-                    app.call(`clear`, editor, editor);
+-                }
+-            });
+-        }, 500),
+-        [app, setShouldRefreshDashboard],
+-    );
+-
+-    const loadGameMapping = async () => {
+-        if (!editor?.sceneID) return;
+-        const {getGameMapping} = await loadGameMappingApi();
+-        const mapping = await getGameMapping(editor.sceneID);
+-        setGameMapping(mapping);
+-        if (mapping) {
+-            setSlug(mapping.Slug);
+-            setSuggestedSlug(mapping.Slug);
+-            setSlugLocked(true);
+-        } else {
+-            setSlug("");
+-            setSuggestedSlug("");
+-            setSlugLocked(false);
+-        }
+-    };
+-
+-    const handleNameChange = () => {
+-        editor.sceneName = name;
+-        app.call("sceneNameUpdated");
+-        debouncedSceneChange({name, description, tags, contentRating});
+-    };
+-
+-    const handleDescriptionChange = () => {
+-        editor.description = description;
+-        debouncedSceneChange({name, description, tags, contentRating});
+-    };
+-
+-    const handleNameInputChange = (value: string) => {
+-        setName(value);
+-        editor.sceneName = value;
+-        app.call("sceneNameUpdated");
+-    };
+-
+-    const handleDescriptionInputChange = (value: string) => {
+-        setDescription(value);
+-        editor.description = value;
+-    };
+-
+-    const handleContentRatingChange = (rating: string) => {
+-        setContentRating(rating);
+-        editor.contentRating = rating;
+-        debouncedSceneChange({name, description, tags, contentRating: rating});
+-    };
+-
+-    const removeSelected = () => {
+-        if (
+-            editor.selected &&
+-            !Array.isArray(editor.selected) &&
+-            editor.selected.type !== "Scene" &&
+-            !(editor.selected as THREE.PerspectiveCamera).isPerspectiveCamera
+-        ) {
+-            setActiveRightPanel(RIGHT_PANEL_VERSIONS.None);
+-        }
+-    };
+-
+-    const handleInputChange = (value: any, inputName: string) => {
+-        setGame(prevState => {
+-            const newState = {...prevState, [inputName]: value};
+-            editor.scene.userData.game = newState;
+-            app.call("objectChanged", app.editor, app.editor?.scene);
+-            return newState;
+-        });
+-    };
+-
+-    const handleThumbnailChange = (url: string) => {
+-        const nextThumbnail = url || getRandomPlaceholderIdentifier();
+-        setThumbnail(nextThumbnail);
+-        editor.sceneThumbnail = nextThumbnail;
+-        const sceneId = editor.sceneID;
+-        const sceneName = editor.sceneName;
+-        if (sceneId && sceneName) {
+-            void updateSceneThumbnail(sceneId, sceneName, nextThumbnail);
+-            setShouldRefreshDashboard(true);
+-        }
+-    };
+-
+-    const setLocalGameState = () => {
+-        const gameData = editor?.scene?.userData?.game;
+-        if (gameData) {
+-            setGame(normalizeProjectGameSettings(gameData));
+-        }
+-    };
+-
+-    const handleBooleanChange = (key: string, setter: (value: boolean) => void) => {
+-        const current = (editor as any)[key] as boolean;
+-        const newValue = !current;
+-        (editor as any)[key] = newValue;
+-
+-        if (SERIALIZED_GAME_BOOLEAN_SETTINGS.has(key)) {
+-            if (!editor.scene.userData) editor.scene.userData = {};
+-            const gameSettings = {
+-                ...normalizeProjectGameSettings(editor.scene.userData.game),
+-                [key]: newValue,
+-            };
+-            editor.scene.userData.game = gameSettings;
+-            setGame(gameSettings);
+-            app.call("objectChanged", app.editor, app.editor?.scene);
+-        }
+-
+-        setter(newValue);
+-    };
+-
+-    const handleCollaborativeCheckboxChange = (checked: boolean) => {
+-        editor.isCollaborative = checked;
+-        setIsCollaborative(checked);
+-        showToast({type: "info", title: "Refresh the page to apply collaborative mode changes."});
+-    };
+-
+-    const handleMaxCollaboratorsInRoomChange = (value: number) => {
+-        app.editor!.maxCollaboratorsInRoom = value;
+-        setMaxCollaboratorsInRoom(value);
++  };
++
++  const handleMaxCollaboratorsInRoomChange = (value: number) => {
++    app.editor!.maxCollaboratorsInRoom = value;
++    setMaxCollaboratorsInRoom(value);
++  };
++
++  const handleProductionModeCheckboxChange = (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    editor.scene.userData.productionMode = checked;
++    setProductionMode(checked);
++  };
++
++  const ensureSceneGameSettings = () => {
++    const current = editor.scene.userData.game || {};
++    const gameSettings = normalizeProjectGameSettings(current);
++    editor.scene.userData.game = gameSettings;
++    return gameSettings;
++  };
++
++  const handleProjectTypeChange = (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    const gameSettings = {
++      ...ensureSceneGameSettings(),
++      isGame: checked,
+     };
+-
+-    const handleProductionModeCheckboxChange = (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        editor.scene.userData.productionMode = checked;
+-        setProductionMode(checked);
+-    };
+-
+-    const ensureSceneGameSettings = () => {
+-        const current = editor.scene.userData.game || {};
+-        const gameSettings = normalizeProjectGameSettings(current);
+-        editor.scene.userData.game = gameSettings;
+-        return gameSettings;
+-    };
+-
+-    const handleProjectTypeChange = (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        const gameSettings = {
+-            ...ensureSceneGameSettings(),
+-            isGame: checked,
+-        };
+-        editor.scene.userData.game = gameSettings;
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setGame(gameSettings);
+-    };
+-
+-    const handlePlaymodeInspectorCheckboxChange = (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        editor.scene.userData.playmodeInspectorEnabled = checked;
+-        setPlaymodeInspectorEnabled(checked);
+-    };
+-
+-    const handleCompartmentsCheckboxChange = async (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        editor.scene.userData.compartmentsEnabled = checked;
+-        setCompartmentsEnabled(checked);
+-        app.call("objectChanged", editor, editor.scene);
+-
+-        const confirmed = window.confirm("Compartments setting changed. Save and reload scene to apply?");
+-        if (confirmed) {
+-            try {
+-                await saveScene(false, false);
+-                window.location.reload();
+-            } catch (error) {
+-                console.error("Failed to save and reload scene:", error);
+-            }
+-        }
+-    };
+-
+-    const handleEnableOrbitControlsChange = (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        editor.scene.userData.enableOrbitControls = checked;
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setEnableOrbitControls(checked);
+-    };
+-
+-    const handleUseSceneTraverserChange = (checked: boolean) => {
+-        if (!editor.scene.userData) editor.scene.userData = {};
+-        editor.scene.userData.useSceneTraverser = checked;
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setUseSceneTraverser(checked);
+-    };
+-
+-    const handlePhysicsSettingsChange = (settings: PhysicsSettings) => {
+-        editor.scene.userData.physics = {...settings};
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setPhysicsSettings(settings);
+-    };
+-
+-    const handleSnappingSettingsChange = (settings: SnappingSettings) => {
+-        if (!settings) return;
+-        const normalizedSettings = mergeSnappingSettings(settings);
+-        editor.scene.userData.snapping = {...normalizedSettings};
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setSnappingSettings(normalizedSettings);
+-        app.call("snappingSettingsChanged", app.editor, normalizedSettings);
+-    };
+-
+-    const handleUnitsSettingsChange = (settings: UnitsSettings) => {
+-        if (!settings) return;
+-        editor.scene.userData.units = {...settings};
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setUnitsSettings(settings);
+-        app.call("unitsSettingsChanged", app.editor, settings);
+-    };
+-
+-    const handleAngleUnitsSettingsChange = (settings: AngleUnitsSettings) => {
+-        if (!settings) return;
+-        editor.scene.userData.angleUnits = {...settings};
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setAngleUnitsSettings(settings);
+-        app.call("angleUnitsSettingsChanged", app.editor, settings);
+-    };
+-
+-    const handleBoundingBoxSettingsChange = (settings: BoundingBoxSettings) => {
+-        if (!settings) return;
+-        editor.scene.userData.boundingBox = {...settings};
+-        setBoundingBoxSettings(settings);
+-        app.call("boundingBoxModeChanged", app.editor, settings);
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-    };
+-
+-    const handleCADToolsSettingsChange = (enabled: boolean) => {
+-        setCADToolsSettings(editor.scene, {enabled});
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setCadToolsEnabled(enabled);
+-        app.call("cadToolsSettingsChanged", app.editor, {enabled});
+-        if (!enabled) {
+-            editor.exitCADMode();
+-        }
+-    };
+-
+-    const handleColorPaletteChange = (palette: string) => {
+-        editor.scene.userData.colorPalette = palette;
+-        app.call("objectChanged", app.editor, app.editor?.scene);
+-        setColorPalette(palette);
+-    };
+-
+-    const handleMaxMultiplayerClientsPerRoomChange = (value: number) => {
+-        editor.maxMultiplayerClientsPerRoom = value;
+-        setMaxMultiplayerClientsPerRoom(value);
+-    };
+-
+-    const handleHudRendererChange = (value: HUDRendererMode) => {
+-        editor.hudRenderer = value;
+-        setHudRenderer(value);
+-    };
+-
+-    const handlePlayerSupportChange = (enabled: boolean) => {
+-        const newPlayerSupport = {enabled};
+-        editor.scene.userData.playerSupport = newPlayerSupport;
+-        setPlayerSupport(newPlayerSupport);
+-        if (!enabled) {
+-            disableAllIntegrations();
+-        }
+-    };
+-
+-    const isValidSubdomain = (input: string) => {
+-        const regex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+-        return regex.test(input);
+-    };
+-
+-    const handleDeleteSlug = async () => {
++    editor.scene.userData.game = gameSettings;
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setGame(gameSettings);
++  };
++
++  const handlePlaymodeInspectorCheckboxChange = (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    editor.scene.userData.playmodeInspectorEnabled = checked;
++    setPlaymodeInspectorEnabled(checked);
++  };
++
++  const handleCompartmentsCheckboxChange = async (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    editor.scene.userData.compartmentsEnabled = checked;
++    setCompartmentsEnabled(checked);
++    app.call("objectChanged", editor, editor.scene);
++
++    const confirmed = window.confirm(
++      "Compartments setting changed. Save and reload scene to apply?",
++    );
++    if (confirmed) {
++      try {
++        await saveScene(false, false);
++        window.location.reload();
++      } catch (error) {
++        console.error("Failed to save and reload scene:", error);
++      }
++    }
++  };
++
++  const handleEnableOrbitControlsChange = (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    editor.scene.userData.enableOrbitControls = checked;
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setEnableOrbitControls(checked);
++  };
++
++  const handleUseSceneTraverserChange = (checked: boolean) => {
++    if (!editor.scene.userData) editor.scene.userData = {};
++    editor.scene.userData.useSceneTraverser = checked;
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setUseSceneTraverser(checked);
++  };
++
++  const handlePhysicsSettingsChange = (settings: PhysicsSettings) => {
++    editor.scene.userData.physics = { ...settings };
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setPhysicsSettings(settings);
++  };
++
++  const handleSnappingSettingsChange = (settings: SnappingSettings) => {
++    if (!settings) return;
++    const normalizedSettings = mergeSnappingSettings(settings);
++    editor.scene.userData.snapping = { ...normalizedSettings };
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setSnappingSettings(normalizedSettings);
++    app.call("snappingSettingsChanged", app.editor, normalizedSettings);
++  };
++
++  const handleUnitsSettingsChange = (settings: UnitsSettings) => {
++    if (!settings) return;
++    editor.scene.userData.units = { ...settings };
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setUnitsSettings(settings);
++    app.call("unitsSettingsChanged", app.editor, settings);
++  };
++
++  const handleAngleUnitsSettingsChange = (settings: AngleUnitsSettings) => {
++    if (!settings) return;
++    editor.scene.userData.angleUnits = { ...settings };
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setAngleUnitsSettings(settings);
++    app.call("angleUnitsSettingsChanged", app.editor, settings);
++  };
++
++  const handleBoundingBoxSettingsChange = (settings: BoundingBoxSettings) => {
++    if (!settings) return;
++    editor.scene.userData.boundingBox = { ...settings };
++    setBoundingBoxSettings(settings);
++    app.call("boundingBoxModeChanged", app.editor, settings);
++    app.call("objectChanged", app.editor, app.editor?.scene);
++  };
++
++  const handleCADToolsSettingsChange = (enabled: boolean) => {
++    setCADToolsSettings(editor.scene, { enabled });
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setCadToolsEnabled(enabled);
++    app.call("cadToolsSettingsChanged", app.editor, { enabled });
++    if (!enabled) {
++      editor.exitCADMode();
++    }
++  };
++
++  const handleColorPaletteChange = (palette: string) => {
++    editor.scene.userData.colorPalette = palette;
++    app.call("objectChanged", app.editor, app.editor?.scene);
++    setColorPalette(palette);
++  };
++
++  const handleMaxMultiplayerClientsPerRoomChange = (value: number) => {
++    editor.maxMultiplayerClientsPerRoom = value;
++    setMaxMultiplayerClientsPerRoom(value);
++  };
++
++  const handleHudRendererChange = (value: HUDRendererMode) => {
++    editor.hudRenderer = value;
++    setHudRenderer(value);
++  };
++
++  const handlePlayerSupportChange = (enabled: boolean) => {
++    const newPlayerSupport = { enabled };
++    editor.scene.userData.playerSupport = newPlayerSupport;
++    setPlayerSupport(newPlayerSupport);
++    if (!enabled) {
++      disableAllIntegrations();
++    }
++  };
++
++  const isValidSubdomain = (input: string) => {
++    const regex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
++    return regex.test(input);
++  };
++
++  const handleDeleteSlug = async () => {
++    try {
++      const { deleteGameMapping } = await loadGameMappingApi();
++      await deleteGameMapping(editor.sceneID || "");
++      setGameMapping(null);
++      setSlug("");
++      setSlugLocked(false);
++    } catch (err) {
++      console.error(err);
++    } finally {
++      setIsSlugError(false);
++      setSlugErrorStatus("");
++    }
++  };
++
++  const handleSaveSlug = async () => {
++    if (!editor.sceneID || !suggestedSlug) return;
++    if (suggestedSlug === gameMapping?.Slug) return;
++
++    if (!isValidSubdomain(suggestedSlug)) {
++      return showToast({
++        type: "error",
++        title: "No special characters allowed.",
++      });
++    }
++
++    try {
++      const { checkSlugExists, createGameMapping, updateGameMapping } =
++        await loadGameMappingApi();
++      const slugCheck = await checkSlugExists(suggestedSlug);
++      if (!slugCheck) {
++        setIsSlugError(true);
++        setSlugErrorStatus("Error connecting with the server!");
++        return;
++      }
++
++      if (!slugCheck.valid) {
++        setIsSlugError(true);
++        return;
++      }
++
++      if (slugCheck.exists && !gameMapping) {
++        showToast({ type: "error", title: "Slug is already taken" });
++        setSlugErrorStatus("Slug is already taken!");
++        setIsSlugError(true);
++        return;
++      }
++
++      let discordClientId = undefined;
++      if (discordIntegration.enabled && editor.sceneID) {
+         try {
+-            const {deleteGameMapping} = await loadGameMappingApi();
+-            await deleteGameMapping(editor.sceneID || "");
+-            setGameMapping(null);
+-            setSlug("");
+-            setSlugLocked(false);
+-        } catch (err) {
+-            console.error(err);
+-        } finally {
+-            setIsSlugError(false);
+-            setSlugErrorStatus("");
+-        }
+-    };
+-
+-    const handleSaveSlug = async () => {
+-        if (!editor.sceneID || !suggestedSlug) return;
+-        if (suggestedSlug === gameMapping?.Slug) return;
+-
+-        if (!isValidSubdomain(suggestedSlug)) {
+-            return showToast({type: "error", title: "No special characters allowed."});
++          discordClientId = await app.authManager.discordGetClientID(
++            editor.sceneID,
++          );
++        } catch (error) {
++          console.error("Error getting Discord client ID:", error);
++          showToast({
++            type: "error",
++            title: "Failed to get Discord app ID",
++            body: "Please ensure Discord keys are properly configured.",
++          });
++          return;
+         }
++      }
++
++      const result = gameMapping
++        ? await updateGameMapping(
++            editor.sceneID,
++            suggestedSlug,
++            discordClientId,
++          )
++        : await createGameMapping(
++            editor.sceneID,
++            suggestedSlug,
++            discordClientId,
++          );
++
++      if (result) {
++        setGameMapping(result.mapping ?? null);
++        setSlug(suggestedSlug);
++        setSlugLocked(true);
++        setIsSlugError(false);
++        setSlugErrorStatus("");
++      } else {
++        setIsSlugError(true);
++        setSlugErrorStatus("Could not set the slug for the game!");
++      }
++    } catch (err) {
++      console.error(err);
++      setIsSlugError(true);
++    }
++  };
++
++  const loadGameSettingsFromMetadata = useCallback(() => {
++    if (!editor) return;
++
++    editor.scene.userData.game = normalizeProjectGameSettings(
++      editor.scene.userData.game,
++    );
++    setGame(editor.scene.userData.game);
++    setUseAvatar(!!editor?.useAvatar);
++    setIsMultiplayer(!!editor?.isMultiplayer);
++    setVoiceChatEnabled(!!editor?.voiceChatEnabled);
++    setIsVFXOnMobile(!!editor?.VFXOnMobile);
++    setName(editor.sceneName || "");
++    setDescription(editor.description || "");
++    setIsCollaborative(!!app.editor?.isCollaborative);
++    setMaxCollaboratorsInRoom(app.editor?.maxCollaboratorsInRoom || 6);
++    setShowHUD(!!app.editor?.showHUD);
++    setHudRenderer(editor?.hudRenderer === "uikit" ? "uikit" : "html");
++    setMaxMultiplayerClientsPerRoom(
++      app.editor?.maxMultiplayerClientsPerRoom || 4,
++    );
++    setMultiplayerAutoJoin(!!app.editor?.multiplayerAutoJoin);
++    setProductionMode(app.editor?.scene?.userData?.productionMode ?? true);
++    setPlaymodeInspectorEnabled(
++      !!app.editor?.scene?.userData?.playmodeInspectorEnabled,
++    );
++    setCompartmentsEnabled(
++      app.editor?.scene?.userData?.compartmentsEnabled ?? false,
++    );
++    setEnableOrbitControls(
++      typeof editor?.scene?.userData?.enableOrbitControls === "boolean"
++        ? editor.scene.userData.enableOrbitControls
++        : true,
++    );
++    setUseSceneTraverser(!!editor?.scene?.userData?.useSceneTraverser);
++    setTags(editor.tags || []);
++    setContentRating(editor.contentRating || "Unrated");
++    setThumbnail(editor.sceneThumbnail || "");
++
++    // Load physics settings
++    const physicsData = editor?.scene?.userData?.physics;
++    if (physicsData) {
++      setPhysicsSettings({
++        engine: physicsData.engine,
++        gravity: physicsData.gravity,
++      });
++    }
++
++    // Load snapping settings
++    const snappingData = mergeSnappingSettings(
++      editor?.scene?.userData?.snapping,
++    );
++    setSnappingSettings(snappingData);
++    if (snappingData)
++      app.call("snappingSettingsChanged", app.editor, snappingData);
++
++    const cadToolsData =
++      editor?.scene?.userData?.cadTools || DEFAULT_CAD_TOOLS_SETTINGS;
++    setCadToolsEnabled(!!cadToolsData.enabled);
++    app.call("cadToolsSettingsChanged", app.editor, {
++      enabled: !!cadToolsData.enabled,
++    });
+ 
+-        try {
+-            const {checkSlugExists, createGameMapping, updateGameMapping} = await loadGameMappingApi();
+-            const slugCheck = await checkSlugExists(suggestedSlug);
+-            if (!slugCheck) {
+-                setIsSlugError(true);
+-                setSlugErrorStatus("Error connecting with the server!");
+-                return;
+-            }
+-
+-            if (!slugCheck.valid) {
+-                setIsSlugError(true);
+-                return;
+-            }
+-
+-            if (slugCheck.exists && !gameMapping) {
+-                showToast({type: "error", title: "Slug is already taken"});
+-                setSlugErrorStatus("Slug is already taken!");
+-                setIsSlugError(true);
+-                return;
+-            }
++    // Load units settings
++    const unitsData = editor?.scene?.userData?.units || DEFAULT_UNITS_SETTINGS;
++    setUnitsSettings(unitsData);
++    if (unitsData) app.call("unitsSettingsChanged", app.editor, unitsData);
++
++    // Load angle units settings
++    const angleUnitsData =
++      editor?.scene?.userData?.angleUnits || DEFAULT_ANGLE_UNITS_SETTINGS;
++    setAngleUnitsSettings(angleUnitsData);
++    if (angleUnitsData)
++      app.call("angleUnitsSettingsChanged", app.editor, angleUnitsData);
++
++    // Load bounding box settings
++    const boundingBoxData =
++      editor?.scene?.userData?.boundingBox || DEFAULT_BOUNDING_BOX_SETTINGS;
++    setBoundingBoxSettings(boundingBoxData);
++    app.call("boundingBoxModeChanged", app.editor, boundingBoxData);
++
++    // Load color palette
++    setColorPalette(
++      editor?.scene?.userData?.colorPalette || DEFAULT_COLOR_PALETTE,
++    );
+ 
+-            let discordClientId = undefined;
+-            if (discordIntegration.enabled && editor.sceneID) {
+-                try {
+-                    discordClientId = await app.authManager.discordGetClientID(editor.sceneID);
+-                } catch (error) {
+-                    console.error("Error getting Discord client ID:", error);
+-                    showToast({
+-                        type: "error",
+-                        title: "Failed to get Discord app ID",
+-                        body: "Please ensure Discord keys are properly configured.",
+-                    });
+-                    return;
+-                }
+-            }
++    // Load integration settings
++    loadIntegrationSettings();
++  }, [editor, app, loadIntegrationSettings]);
++
++  useEffect(() => {
++    if (gameMapping) {
++      setSlug(gameMapping.Slug);
++      setSuggestedSlug(gameMapping.Slug ?? "");
++    } else {
++      setSuggestedSlug(slug ?? "");
++    }
++  }, [gameMapping]);
++
++  useEffect(() => {
++    const updateSceneName = () => setName(editor.sceneName || "");
++    app.on(`sceneNameUpdated.GameSettings`, updateSceneName);
++    app.on(`objectSelected.GameSettings`, removeSelected);
++    app.on("sceneSaved.GameSettings", () => {
++      setLocalGameState();
++      loadGameSettingsFromMetadata();
++    });
++    app.on("sceneLoaded.GameSettings", () => {
++      setLocalGameState();
++      loadGameSettingsFromMetadata();
++      void loadGameMapping();
++    });
++    app.on("clear.GameSettings", loadGameSettingsFromMetadata);
++
++    // Sync snapping settings when changed externally (e.g. ActionBar snap preset)
++    app.on(
++      "snappingSettingsChanged.GameSettings",
++      (settings: SnappingSettings) => {
++        setSnappingSettings(mergeSnappingSettings(settings));
++      },
++    );
++    app.on("focusProjectSettingsSection.GameSettings", (section: string) => {
++      setPendingProjectSettingsSection(section);
++    });
+ 
+-            const result = gameMapping
+-                ? await updateGameMapping(editor.sceneID, suggestedSlug, discordClientId)
+-                : await createGameMapping(editor.sceneID, suggestedSlug, discordClientId);
+-
+-            if (result) {
+-                setGameMapping(result.mapping ?? null);
+-                setSlug(suggestedSlug);
+-                setSlugLocked(true);
+-                setIsSlugError(false);
+-                setSlugErrorStatus("");
+-            } else {
+-                setIsSlugError(true);
+-                setSlugErrorStatus("Could not set the slug for the game!");
+-            }
+-        } catch (err) {
+-            console.error(err);
+-            setIsSlugError(true);
+-        }
++    return () => {
++      app.on(`objectSelected.GameSettings`, null);
++      app.on("sceneSaved.GameSettings", null);
++      app.on("sceneLoaded.GameSettings", null);
++      app.on("clear.GameSettings", null);
++      app.on(`sceneNameUpdated.GameSettings`, null);
++      app.on("snappingSettingsChanged.GameSettings", null);
++      app.on("focusProjectSettingsSection.GameSettings", null);
+     };
++  }, [editor, loadGameSettingsFromMetadata]);
++
++  useEffect(() => {
++    if (activeRightPanel === RIGHT_PANEL_VERSIONS.GameSettings) {
++      setLocalGameState();
++      loadGameSettingsFromMetadata();
++      void loadGameMapping();
++    }
++  }, [activeRightPanel, loadGameSettingsFromMetadata]);
++
++  useEffect(() => {
++    if (
++      activeRightPanel !== RIGHT_PANEL_VERSIONS.GameSettings ||
++      (pendingProjectSettingsSection !== "snapping" &&
++        pendingProjectSettingsSection !== "cadTools")
++    ) {
++      return;
++    }
++
++    const frame = window.requestAnimationFrame(() => {
++      snappingSectionRef.current?.scrollIntoView({
++        behavior: "smooth",
++        block: "start",
++      });
++      setPendingProjectSettingsSection(null);
++    });
+ 
+-    const loadGameSettingsFromMetadata = useCallback(() => {
+-        if (!editor) return;
+-
+-        editor.scene.userData.game = normalizeProjectGameSettings(editor.scene.userData.game);
+-        setGame(editor.scene.userData.game);
+-        setUseAvatar(!!editor?.useAvatar);
+-        setIsMultiplayer(!!editor?.isMultiplayer);
+-        setVoiceChatEnabled(!!editor?.voiceChatEnabled);
+-        setIsVFXOnMobile(!!editor?.VFXOnMobile);
+-        setName(editor.sceneName || "");
+-        setDescription(editor.description || "");
+-        setIsCollaborative(!!app.editor?.isCollaborative);
+-        setMaxCollaboratorsInRoom(app.editor?.maxCollaboratorsInRoom || 6);
+-        setShowHUD(!!app.editor?.showHUD);
+-        setHudRenderer(editor?.hudRenderer === "uikit" ? "uikit" : "html");
+-        setMaxMultiplayerClientsPerRoom(app.editor?.maxMultiplayerClientsPerRoom || 4);
+-        setMultiplayerAutoJoin(!!app.editor?.multiplayerAutoJoin);
+-        setProductionMode(app.editor?.scene?.userData?.productionMode ?? true);
+-        setPlaymodeInspectorEnabled(!!app.editor?.scene?.userData?.playmodeInspectorEnabled);
+-        setCompartmentsEnabled(app.editor?.scene?.userData?.compartmentsEnabled ?? false);
+-        setEnableOrbitControls(
+-            typeof editor?.scene?.userData?.enableOrbitControls === "boolean"
+-                ? editor.scene.userData.enableOrbitControls
+-                : true,
+-        );
+-        setUseSceneTraverser(!!editor?.scene?.userData?.useSceneTraverser);
+-        setTags(editor.tags || []);
+-        setContentRating(editor.contentRating || "Unrated");
+-        setThumbnail(editor.sceneThumbnail || "");
+-
+-        // Load physics settings
+-        const physicsData = editor?.scene?.userData?.physics;
+-        if (physicsData) {
+-            setPhysicsSettings({engine: physicsData.engine, gravity: physicsData.gravity});
+-        }
+-
+-        // Load snapping settings
+-        const snappingData = mergeSnappingSettings(editor?.scene?.userData?.snapping);
+-        setSnappingSettings(snappingData);
+-        if (snappingData) app.call("snappingSettingsChanged", app.editor, snappingData);
+-
+-        const cadToolsData = editor?.scene?.userData?.cadTools || DEFAULT_CAD_TOOLS_SETTINGS;
+-        setCadToolsEnabled(!!cadToolsData.enabled);
+-        app.call("cadToolsSettingsChanged", app.editor, {enabled: !!cadToolsData.enabled});
+-
+-        // Load units settings
+-        const unitsData = editor?.scene?.userData?.units || DEFAULT_UNITS_SETTINGS;
+-        setUnitsSettings(unitsData);
+-        if (unitsData) app.call("unitsSettingsChanged", app.editor, unitsData);
+-
+-        // Load angle units settings
+-        const angleUnitsData = editor?.scene?.userData?.angleUnits || DEFAULT_ANGLE_UNITS_SETTINGS;
+-        setAngleUnitsSettings(angleUnitsData);
+-        if (angleUnitsData) app.call("angleUnitsSettingsChanged", app.editor, angleUnitsData);
+-
+-        // Load bounding box settings
+-        const boundingBoxData = editor?.scene?.userData?.boundingBox || DEFAULT_BOUNDING_BOX_SETTINGS;
+-        setBoundingBoxSettings(boundingBoxData);
+-        app.call("boundingBoxModeChanged", app.editor, boundingBoxData);
+-
+-        // Load color palette
+-        setColorPalette(editor?.scene?.userData?.colorPalette || DEFAULT_COLOR_PALETTE);
+-
+-        // Load integration settings
+-        loadIntegrationSettings();
+-    }, [editor, app, loadIntegrationSettings]);
+-
+-    useEffect(() => {
+-        if (gameMapping) {
+-            setSlug(gameMapping.Slug);
+-            setSuggestedSlug(gameMapping.Slug ?? "");
+-        } else {
+-            setSuggestedSlug(slug ?? "");
+-        }
+-    }, [gameMapping]);
+-
+-    useEffect(() => {
+-        const updateSceneName = () => setName(editor.sceneName || "");
+-        app.on(`sceneNameUpdated.GameSettings`, updateSceneName);
+-        app.on(`objectSelected.GameSettings`, removeSelected);
+-        app.on("sceneSaved.GameSettings", () => {
+-            setLocalGameState();
+-            loadGameSettingsFromMetadata();
+-        });
+-        app.on("sceneLoaded.GameSettings", () => {
+-            setLocalGameState();
+-            loadGameSettingsFromMetadata();
+-            void loadGameMapping();
+-        });
+-        app.on("clear.GameSettings", loadGameSettingsFromMetadata);
+-
+-        // Sync snapping settings when changed externally (e.g. ActionBar snap preset)
+-        app.on("snappingSettingsChanged.GameSettings", (settings: SnappingSettings) => {
+-            setSnappingSettings(mergeSnappingSettings(settings));
+-        });
+-        app.on("focusProjectSettingsSection.GameSettings", (section: string) => {
+-            setPendingProjectSettingsSection(section);
+-        });
+-
+-        return () => {
+-            app.on(`objectSelected.GameSettings`, null);
+-            app.on("sceneSaved.GameSettings", null);
+-            app.on("sceneLoaded.GameSettings", null);
+-            app.on("clear.GameSettings", null);
+-            app.on(`sceneNameUpdated.GameSettings`, null);
+-            app.on("snappingSettingsChanged.GameSettings", null);
+-            app.on("focusProjectSettingsSection.GameSettings", null);
+-        };
+-    }, [editor, loadGameSettingsFromMetadata]);
+-
+-    useEffect(() => {
+-        if (activeRightPanel === RIGHT_PANEL_VERSIONS.GameSettings) {
+-            setLocalGameState();
+-            loadGameSettingsFromMetadata();
+-            void loadGameMapping();
+-        }
+-    }, [activeRightPanel, loadGameSettingsFromMetadata]);
+-
+-    useEffect(() => {
+-        if (activeRightPanel !== RIGHT_PANEL_VERSIONS.GameSettings || pendingProjectSettingsSection !== "snapping") {
+-            return;
+-        }
+-
+-        const frame = window.requestAnimationFrame(() => {
+-            snappingSectionRef.current?.scrollIntoView({
+-                behavior: "smooth",
+-                block: "start",
+-            });
+-            setPendingProjectSettingsSection(null);
+-        });
+-
+-        return () => window.cancelAnimationFrame(frame);
+-    }, [activeRightPanel, pendingProjectSettingsSection]);
+-
+-    if (activeRightPanel !== RIGHT_PANEL_VERSIONS.GameSettings) return null;
+-
+-    return (
+-        <TabContent>
+-            {/* ── 1. Project Identity ── */}
+-            <GameDetailsSection
+-                name={name}
+-                setName={handleNameInputChange}
+-                description={description}
+-                setDescription={handleDescriptionInputChange}
+-                tags={tags}
+-                setTags={setTags}
+-                game={game}
+-                thumbnail={thumbnail}
+-                onThumbnailChange={handleThumbnailChange}
+-                suggestedSlug={suggestedSlug}
+-                setSuggestedSlug={setSuggestedSlug}
+-                isSlugError={isSlugError}
+-                slugErrorStatus={slugErrorStatus}
+-                slugLocked={slugLocked}
+-                onNameChange={handleNameChange}
+-                onDescriptionChange={handleDescriptionChange}
+-                onSaveSlug={handleSaveSlug}
+-                onDeleteSlug={handleDeleteSlug}
+-                onInputChange={handleInputChange}
+-                contentRating={contentRating}
+-                onContentRatingChange={handleContentRatingChange}
+-                debouncedSceneChange={debouncedSceneChange}
++    return () => window.cancelAnimationFrame(frame);
++  }, [activeRightPanel, pendingProjectSettingsSection]);
++
++  if (activeRightPanel !== RIGHT_PANEL_VERSIONS.GameSettings) return null;
++
++  return (
++    <TabContent>
++      {/* ── 1. Project Identity ── */}
++      <GameDetailsSection
++        name={name}
++        setName={handleNameInputChange}
++        description={description}
++        setDescription={handleDescriptionInputChange}
++        tags={tags}
++        setTags={setTags}
++        game={game}
++        thumbnail={thumbnail}
++        onThumbnailChange={handleThumbnailChange}
++        suggestedSlug={suggestedSlug}
++        setSuggestedSlug={setSuggestedSlug}
++        isSlugError={isSlugError}
++        slugErrorStatus={slugErrorStatus}
++        slugLocked={slugLocked}
++        onNameChange={handleNameChange}
++        onDescriptionChange={handleDescriptionChange}
++        onSaveSlug={handleSaveSlug}
++        onDeleteSlug={handleDeleteSlug}
++        onInputChange={handleInputChange}
++        contentRating={contentRating}
++        onContentRatingChange={handleContentRatingChange}
++        debouncedSceneChange={debouncedSceneChange}
++      />
++
++      {/* ── 2. Editor Preferences ── */}
++      <Separator margin="-4px 0 12px" />
++      <ContentItem
++        ref={snappingSectionRef}
++        $rowGap="12px"
++        style={{ scrollMarginTop: "12px" }}
++      >
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Snapping</PanelSectionTitle>
++          <Tooltip
++            text="Controls precision placement behavior for move, rotate, and scale operations."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <SnappingSection
++          settings={snappingSettings}
++          onChange={handleSnappingSettingsChange}
++          angleUnit={angleUnitsSettings.currentUnit}
++        />
++        <CADToolsSection
++          enabled={cadToolsEnabled}
++          onChange={handleCADToolsSettingsChange}
++        />
++      </ContentItem>
++
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Units</PanelSectionTitle>
++          <Tooltip
++            text="Sets preferred measurement display units in editor controls."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <UnitsSection
++          settings={unitsSettings}
++          onChange={handleUnitsSettingsChange}
++        />
++        <BoundingBoxSection
++          settings={boundingBoxSettings}
++          onChange={handleBoundingBoxSettingsChange}
++        />
++      </ContentItem>
++
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Angle Units</PanelSectionTitle>
++          <Tooltip
++            text="Sets preferred angle display units for editor rotation controls and gizmo overlays."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <AngleUnitsSection
++          settings={angleUnitsSettings}
++          onChange={handleAngleUnitsSettingsChange}
++        />
++      </ContentItem>
++
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Color Palette</PanelSectionTitle>
++          <Tooltip
++            text="Choose a named color palette whose swatches appear in every color picker."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <ColorPaletteSection
++          palette={colorPalette}
++          onChange={handleColorPaletteChange}
++        />
++      </ContentItem>
++
++      {/* ── 3. Physics ── */}
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Physics</PanelSectionTitle>
++          <Tooltip
++            text="Sets global simulation defaults for gravity and physics backend."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <PhysicsSection
++          settings={physicsSettings}
++          onChange={handlePhysicsSettingsChange}
++        />
++      </ContentItem>
++
++      {/* ── 4. Game Rules ── */}
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle>Level Rules</PanelSectionTitle>
++          <Tooltip
++            text="Defines score, life, and timer goals for your core gameplay loop. Use these when the project behaves like a level-based game with clear failure or completion conditions."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <NumericInputRow
++          label="Max Score"
++          value={game.maxScore}
++          setValue={(value) => handleInputChange(value, "maxScore")}
++          rightAlign
++          $margin="0"
++          labelTooltip="Target score threshold for completing the level. Use 0 or a low value when score is not a win condition. Typical arcade-style targets are small and readable, while progression-heavy games may use much larger totals."
++        />
++        <NumericInputRow
++          label="Player Lives"
++          value={game.lives}
++          setValue={(value) => handleInputChange(value, "lives")}
++          rightAlign
++          $margin="0"
++          labelTooltip="How many failed attempts the player gets before game over. Common values are 1 for punishing runs, 3 for classic arcade structure, and 5 or more for forgiving casual experiences."
++        />
++        <TooltipRowWrapper>
++          <PanelSectionTitleSecondary>Time Limit</PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip
++              text="Maximum time allowed for the level in seconds. Set to 0 for no time limit. Short sessions often use 30-180 seconds, while exploration scenes usually leave this at 0."
++              width="120px"
+             />
+-
+-            {/* ── 2. Editor Preferences ── */}
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem
+-                ref={snappingSectionRef}
+-                $rowGap="12px"
+-                style={{scrollMarginTop: "12px"}}
+-            >
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Snapping</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Controls precision placement behavior for move, rotate, and scale operations."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <SnappingSection
+-                    settings={snappingSettings}
+-                    onChange={handleSnappingSettingsChange}
+-                    angleUnit={angleUnitsSettings.currentUnit}
+-                />
+-                <CADToolsSection
+-                    enabled={cadToolsEnabled}
+-                    onChange={handleCADToolsSettingsChange}
+-                />
+-            </ContentItem>
+-
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Units</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Sets preferred measurement display units in editor controls."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <UnitsSection
+-                    settings={unitsSettings}
+-                    onChange={handleUnitsSettingsChange}
+-                />
+-                <BoundingBoxSection
+-                    settings={boundingBoxSettings}
+-                    onChange={handleBoundingBoxSettingsChange}
+-                />
+-            </ContentItem>
+-
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Angle Units</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Sets preferred angle display units for editor rotation controls and gizmo overlays."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <AngleUnitsSection
+-                    settings={angleUnitsSettings}
+-                    onChange={handleAngleUnitsSettingsChange}
+-                />
+-            </ContentItem>
+-
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Color Palette</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Choose a named color palette whose swatches appear in every color picker."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <ColorPaletteSection
+-                    palette={colorPalette}
+-                    onChange={handleColorPaletteChange}
+-                />
+-            </ContentItem>
+-
+-            {/* ── 3. Physics ── */}
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Physics</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Sets global simulation defaults for gravity and physics backend."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <PhysicsSection
+-                    settings={physicsSettings}
+-                    onChange={handlePhysicsSettingsChange}
+-                />
+-            </ContentItem>
+-
+-            {/* ── 4. Game Rules ── */}
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle>Level Rules</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Defines score, life, and timer goals for your core gameplay loop. Use these when the project behaves like a level-based game with clear failure or completion conditions."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <NumericInputRow
+-                    label="Max Score"
+-                    value={game.maxScore}
+-                    setValue={value => handleInputChange(value, "maxScore")}
+-                    rightAlign
+-                    $margin="0"
+-                    labelTooltip="Target score threshold for completing the level. Use 0 or a low value when score is not a win condition. Typical arcade-style targets are small and readable, while progression-heavy games may use much larger totals."
+-                />
+-                <NumericInputRow
+-                    label="Player Lives"
+-                    value={game.lives}
+-                    setValue={value => handleInputChange(value, "lives")}
+-                    rightAlign
+-                    $margin="0"
+-                    labelTooltip="How many failed attempts the player gets before game over. Common values are 1 for punishing runs, 3 for classic arcade structure, and 5 or more for forgiving casual experiences."
+-                />
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitleSecondary>Time Limit</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="Maximum time allowed for the level in seconds. Set to 0 for no time limit. Short sessions often use 30-180 seconds, while exploration scenes usually leave this at 0."
+-                            width="120px"
+-                        />
+-                        <NumericInput
+-                            padding="6px 16px 6px 14px"
+-                            value={game.timer}
+-                            setValue={value => handleInputChange(value, "timer")}
+-                            unit={"s"}
+-                            rightAlign
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-            </ContentItem>
+-
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <TooltipRowWrapper>
+-                    <PanelSectionTitle $margin="0 0 0px">HUD & Display</PanelSectionTitle>
+-                    <Tooltip
+-                        text="Controls default player-facing interface and display behavior for the runtime experience."
+-                        width="220px"
+-                    />
+-                </TooltipRowWrapper>
+-                <PanelCheckbox
+-                    v2
+-                    text="Use Standard HUD Panels"
+-                    checked={!!showHUD}
+-                    isGray
+-                    regular
+-                    onChange={() => handleBooleanChange("showHUD", setShowHUD)}
+-                    tooltipText="Shows the built-in HUD and menu panels. Leave this on unless the experience uses a fully custom interface or intentionally hides default gameplay chrome."
+-                />
+-                <SelectRow
+-                    label="Renderer"
+-                    data={[
+-                        {key: "html", value: "HTML"},
+-                        {key: "uikit", value: "UIKit"},
+-                    ]}
+-                    value={{
+-                        key: hudRenderer,
+-                        value: hudRenderer === "uikit" ? "UIKit" : "HTML",
+-                    }}
+-                    onChange={item => handleHudRendererChange(item.key as HUDRendererMode)}
+-                    disableTyping
+-                    width="120px"
+-                />
+-                <StyledButton
+-                    style={{fontWeight: "400"}}
+-                    isGreySecondary
+-                    onClick={openUIPanel}
+-                    disabled={!game.isGame}
+-                >
+-                    Customize
+-                </StyledButton>
+-                <SelectRow
+-                    label={i18n.t("Orientation")}
+-                    data={orientationPolicyOptions}
+-                    value={
+-                        orientationPolicyOptions.find(option => option.key === (game.orientationPolicy || DEFAULT_ORIENTATION_POLICY))
+-                        || orientationPolicyOptions[0]
+-                    }
+-                    onChange={selected => handleInputChange(selected.key, "orientationPolicy")}
+-                    disableTyping
+-                    noPortal
+-                    labelTooltip={i18n.t(
+-                        "Attempts to lock the player's mobile orientation. Required modes show an overlay until the device matches. Prefer modes are softer suggestions. Landscape is typical for action and 3D camera-heavy games, while portrait fits menu-first or vertical experiences.",
+-                    )}
+-                />
+-                <TooltipRowWrapper style={{height: "16px"}}>
+-                    <PanelSectionTitleSecondary>Enable Orbit Controls</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="Allows the player to orbit the camera when no player character is active. Useful for model viewers, architectural walkthroughs, or sandbox scenes."
+-                            width="130px"
+-                        />
+-                        <PanelCheckbox
+-                            v2
+-                            text=""
+-                            checked={!!enableOrbitControls}
+-                            isGray
+-                            regular
+-                            onChange={() => handleEnableOrbitControlsChange(!enableOrbitControls)}
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-                <PanelCheckbox
+-                    v2
+-                    text="Use SceneTraverser (Beta)"
+-                    checked={!!useSceneTraverser}
+-                    isGray
+-                    regular
+-                    onChange={() => handleUseSceneTraverserChange(!useSceneTraverser)}
+-                    tooltipText="Experimental shared scene traversal path for editor and runtime rendering. Leave this off unless you are explicitly testing that pipeline or validating a fix tied to it."
+-                />
+-                <PanelCheckbox
+-                    v2
+-                    text="VFX on mobile"
+-                    checked={!!isVFXOnMobile}
+-                    isGray
+-                    regular
+-                    onChange={() => handleBooleanChange("VFXOnMobile", setIsVFXOnMobile)}
+-                    tooltipText="Allows particle systems and heavier visual effects on mobile devices. Keep this off for broad mobile compatibility, and enable it only when the project is tested on target phones."
+-                />
+-            </ContentItem>
+-
+-            {/* ── 5. Player & Multiplayer ── */}
+-            {/* Mirror PlayerProfileSection's own visibility logic so the
++            <NumericInput
++              padding="6px 16px 6px 14px"
++              value={game.timer}
++              setValue={(value) => handleInputChange(value, "timer")}
++              unit={"s"}
++              rightAlign
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++      </ContentItem>
++
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <TooltipRowWrapper>
++          <PanelSectionTitle $margin="0 0 0px">HUD & Display</PanelSectionTitle>
++          <Tooltip
++            text="Controls default player-facing interface and display behavior for the runtime experience."
++            width="220px"
++          />
++        </TooltipRowWrapper>
++        <PanelCheckbox
++          v2
++          text="Use Standard HUD Panels"
++          checked={!!showHUD}
++          isGray
++          regular
++          onChange={() => handleBooleanChange("showHUD", setShowHUD)}
++          tooltipText="Shows the built-in HUD and menu panels. Leave this on unless the experience uses a fully custom interface or intentionally hides default gameplay chrome."
++        />
++        <SelectRow
++          label="Renderer"
++          data={[
++            { key: "html", value: "HTML" },
++            { key: "uikit", value: "UIKit" },
++          ]}
++          value={{
++            key: hudRenderer,
++            value: hudRenderer === "uikit" ? "UIKit" : "HTML",
++          }}
++          onChange={(item) =>
++            handleHudRendererChange(item.key as HUDRendererMode)
++          }
++          disableTyping
++          width="120px"
++        />
++        <StyledButton
++          style={{ fontWeight: "400" }}
++          isGreySecondary
++          onClick={openUIPanel}
++          disabled={!game.isGame}
++        >
++          Customize
++        </StyledButton>
++        <SelectRow
++          label={i18n.t("Orientation")}
++          data={orientationPolicyOptions}
++          value={
++            orientationPolicyOptions.find(
++              (option) =>
++                option.key ===
++                (game.orientationPolicy || DEFAULT_ORIENTATION_POLICY),
++            ) || orientationPolicyOptions[0]
++          }
++          onChange={(selected) =>
++            handleInputChange(selected.key, "orientationPolicy")
++          }
++          disableTyping
++          noPortal
++          labelTooltip={i18n.t(
++            "Attempts to lock the player's mobile orientation. Required modes show an overlay until the device matches. Prefer modes are softer suggestions. Landscape is typical for action and 3D camera-heavy games, while portrait fits menu-first or vertical experiences.",
++          )}
++        />
++        <TooltipRowWrapper style={{ height: "16px" }}>
++          <PanelSectionTitleSecondary>
++            Enable Orbit Controls
++          </PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip
++              text="Allows the player to orbit the camera when no player character is active. Useful for model viewers, architectural walkthroughs, or sandbox scenes."
++              width="130px"
++            />
++            <PanelCheckbox
++              v2
++              text=""
++              checked={!!enableOrbitControls}
++              isGray
++              regular
++              onChange={() =>
++                handleEnableOrbitControlsChange(!enableOrbitControls)
++              }
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++        <PanelCheckbox
++          v2
++          text="Use SceneTraverser (Beta)"
++          checked={!!useSceneTraverser}
++          isGray
++          regular
++          onChange={() => handleUseSceneTraverserChange(!useSceneTraverser)}
++          tooltipText="Experimental shared scene traversal path for editor and runtime rendering. Leave this off unless you are explicitly testing that pipeline or validating a fix tied to it."
++        />
++        <PanelCheckbox
++          v2
++          text="VFX on mobile"
++          checked={!!isVFXOnMobile}
++          isGray
++          regular
++          onChange={() => handleBooleanChange("VFXOnMobile", setIsVFXOnMobile)}
++          tooltipText="Allows particle systems and heavier visual effects on mobile devices. Keep this off for broad mobile compatibility, and enable it only when the project is tested on target phones."
++        />
++      </ContentItem>
++
++      {/* ── 5. Player & Multiplayer ── */}
++      {/* Mirror PlayerProfileSection's own visibility logic so the
+                 preceding separator doesn't strand a phantom section when
+                 every child checkbox is hidden (OSS playground). */}
+-            {(!isPlaygroundMode() || !IS_OSS) && (
+-                <>
+-                    <Separator margin="-4px 0 12px" />
+-                    <PlayerProfileSection
+-                        playerSupport={playerSupport}
+-                        allowAnonymousFirebase={allowAnonymousFirebase}
+-                        useAvatar={useAvatar}
+-                        isMultiplayer={isMultiplayer}
+-                        multiplayerAutoJoin={multiplayerAutoJoin}
+-                        maxMultiplayerClientsPerRoom={maxMultiplayerClientsPerRoom}
+-                        onPlayerSupportChange={handlePlayerSupportChange}
+-                        onBooleanChange={handleBooleanChange}
+-                        onMaxClientsChange={handleMaxMultiplayerClientsPerRoomChange}
+-                        setAllowAnonymousFirebase={setAllowAnonymousFirebase}
+-                        setUseAvatar={setUseAvatar}
+-                        setIsMultiplayer={setIsMultiplayer}
+-                        setMultiplayerAutoJoin={setMultiplayerAutoJoin}
+-                    />
+-                </>
+-            )}
+-
+-            {/* ── 6. Collaboration ── */}
+-            {/* OSS builds (incl. the playground iframe) ship no
++      {(!isPlaygroundMode() || !IS_OSS) && (
++        <>
++          <Separator margin="-4px 0 12px" />
++          <PlayerProfileSection
++            playerSupport={playerSupport}
++            allowAnonymousFirebase={allowAnonymousFirebase}
++            useAvatar={useAvatar}
++            isMultiplayer={isMultiplayer}
++            multiplayerAutoJoin={multiplayerAutoJoin}
++            maxMultiplayerClientsPerRoom={maxMultiplayerClientsPerRoom}
++            onPlayerSupportChange={handlePlayerSupportChange}
++            onBooleanChange={handleBooleanChange}
++            onMaxClientsChange={handleMaxMultiplayerClientsPerRoomChange}
++            setAllowAnonymousFirebase={setAllowAnonymousFirebase}
++            setUseAvatar={setUseAvatar}
++            setIsMultiplayer={setIsMultiplayer}
++            setMultiplayerAutoJoin={setMultiplayerAutoJoin}
++          />
++        </>
++      )}
++
++      {/* ── 6. Collaboration ── */}
++      {/* OSS builds (incl. the playground iframe) ship no
+                 collaborative-editing backend — flipping these toggles
+                 silently does nothing. */}
+-            {!IS_OSS && (
+-                <>
+-                    <Separator margin="-4px 0 12px" />
+-                    <GameModeSection
+-                        isCollaborative={isCollaborative}
+-                        maxCollaboratorsInRoom={maxCollaboratorsInRoom}
+-                        voiceChatEnabled={voiceChatEnabled}
+-                        onBooleanChange={handleBooleanChange}
+-                        onCollaborativeChange={handleCollaborativeCheckboxChange}
+-                        onMaxCollaboratorsChange={handleMaxCollaboratorsInRoomChange}
+-                        onOpenCollaborators={() => app?.editor?.component?.showCollaboratorsModal()}
+-                        setVoiceChatEnabled={setVoiceChatEnabled}
+-                    />
+-                </>
+-            )}
+-
+-            {/* ── 7. Platform Integrations ── */}
+-            {/* Discord / Steam / CrazyGames / Mobile services all require
++      {!IS_OSS && (
++        <>
++          <Separator margin="-4px 0 12px" />
++          <GameModeSection
++            isCollaborative={isCollaborative}
++            maxCollaboratorsInRoom={maxCollaboratorsInRoom}
++            voiceChatEnabled={voiceChatEnabled}
++            onBooleanChange={handleBooleanChange}
++            onCollaborativeChange={handleCollaborativeCheckboxChange}
++            onMaxCollaboratorsChange={handleMaxCollaboratorsInRoomChange}
++            onOpenCollaborators={() =>
++              app?.editor?.component?.showCollaboratorsModal()
++            }
++            setVoiceChatEnabled={setVoiceChatEnabled}
++          />
++        </>
++      )}
++
++      {/* ── 7. Platform Integrations ── */}
++      {/* Discord / Steam / CrazyGames / Mobile services all require
+                 publisher credentials and a hosted backend that OSS doesn't
+                 ship — hide the entire block in OSS (incl. playground). */}
+-            {playerSupport.enabled && !IS_OSS && (
+-                <>
+-                    <Separator margin="-4px 0 12px" />
+-                    <ContentItem $rowGap="12px">
+-                        <PanelSectionTitle>Platform Integrations</PanelSectionTitle>
+-                        <EmailPasswordAuth
+-                            emailPasswordAuth={emailPasswordAuth}
+-                            setEmailPasswordAuth={setEmailPasswordAuth}
+-                        />
+-                        <Separator margin="4px 0" />
+-                        <PanelSectionTitleSecondary>Discord</PanelSectionTitleSecondary>
+-                        <DiscordIntegration
+-                            discordIntegration={discordIntegration}
+-                            setDiscordIntegration={setDiscordIntegration}
+-                        />
+-                        <Separator margin="4px 0" />
+-                        <MobileGameServicesIntegration
+-                            mobileGameServices={mobileGameServices}
+-                            setMobileGameServices={setMobileGameServices}
+-                        />
+-                        <SteamIntegration
+-                            steamIntegration={steamIntegration}
+-                            setSteamIntegration={setSteamIntegration}
+-                        />
+-                        <CrazyGamesIntegration
+-                            crazyGamesIntegration={crazyGamesIntegration}
+-                            setCrazyGamesIntegration={setCrazyGamesIntegration}
+-                        />
+-                    </ContentItem>
+-                </>
+-            )}
+-
+-            {/* ── 8. Developer Tools ── */}
+-            <Separator margin="-4px 0 12px" />
+-            <ContentItem $rowGap="12px">
+-                <PanelSectionTitle $margin="0 0 0px">Developer Tools</PanelSectionTitle>
+-                <TooltipRowWrapper style={{height: "16px"}}>
+-                    <PanelSectionTitleSecondary>Production Mode</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="Remove debugger statements"
+-                            width="120px"
+-                        />
+-                        <PanelCheckbox
+-                            v2
+-                            text=""
+-                            checked={!!productionMode}
+-                            isGray
+-                            regular
+-                            onChange={() => handleProductionModeCheckboxChange(!productionMode)}
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-                <TooltipRowWrapper style={{height: "16px"}}>
+-                    <PanelSectionTitleSecondary>Game Project</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="Marks this project as a game. Turn it off for a 3D experience; Play still starts the runtime and uses orbit controls when no player exists."
+-                            width="220px"
+-                        />
+-                        <PanelCheckbox
+-                            v2
+-                            text=""
+-                            checked={!!game.isGame}
+-                            isGray
+-                            regular
+-                            onChange={() => handleProjectTypeChange(!game.isGame)}
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-                <TooltipRowWrapper style={{height: "16px"}}>
+-                    <PanelSectionTitleSecondary>Enable Play-mode Inspector</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="Show a hierarchy + properties panel during Play. Edits revert when Play stops."
+-                            width="220px"
+-                        />
+-                        <PanelCheckbox
+-                            v2
+-                            text=""
+-                            checked={!!playmodeInspectorEnabled}
+-                            isGray
+-                            regular
+-                            onChange={() => handlePlaymodeInspectorCheckboxChange(!playmodeInspectorEnabled)}
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-                <TooltipRowWrapper style={{height: "16px"}}>
+-                    <PanelSectionTitleSecondary>Compartments</PanelSectionTitleSecondary>
+-                    <Wrapper>
+-                        <Tooltip
+-                            text="SES sandbox for scripts (reload required)"
+-                            width="180px"
+-                        />
+-                        <PanelCheckbox
+-                            v2
+-                            text=""
+-                            checked={!!compartmentsEnabled}
+-                            isGray
+-                            regular
+-                            onChange={() => handleCompartmentsCheckboxChange(!compartmentsEnabled)}
+-                        />
+-                    </Wrapper>
+-                </TooltipRowWrapper>
+-                <StyledButton
+-                    style={{fontWeight: "400", marginTop: "8px"}}
+-                    isGreySecondary
+-                    onClick={() => app.editor?.component?.showFTUEModal()}
+-                >
+-                    Show First Time Experience
+-                </StyledButton>
+-                <StyledButton
+-                    style={{fontWeight: "400", marginTop: "8px"}}
+-                    isGreySecondary
+-                    onClick={() => {
+-                        localStorage.removeItem("erth-ftue-seen");
+-                        showToast({
+-                            type: "info",
+-                            title: "Experience Reset",
+-                            body: "Reload the page to see the Getting Started guide.",
+-                        });
+-                    }}
+-                >
+-                    Reset First Time User Experience
+-                </StyledButton>
+-            </ContentItem>
+-        </TabContent>
+-    );
++      {playerSupport.enabled && !IS_OSS && (
++        <>
++          <Separator margin="-4px 0 12px" />
++          <ContentItem $rowGap="12px">
++            <PanelSectionTitle>Platform Integrations</PanelSectionTitle>
++            <EmailPasswordAuth
++              emailPasswordAuth={emailPasswordAuth}
++              setEmailPasswordAuth={setEmailPasswordAuth}
++            />
++            <Separator margin="4px 0" />
++            <PanelSectionTitleSecondary>Discord</PanelSectionTitleSecondary>
++            <DiscordIntegration
++              discordIntegration={discordIntegration}
++              setDiscordIntegration={setDiscordIntegration}
++            />
++            <Separator margin="4px 0" />
++            <MobileGameServicesIntegration
++              mobileGameServices={mobileGameServices}
++              setMobileGameServices={setMobileGameServices}
++            />
++            <SteamIntegration
++              steamIntegration={steamIntegration}
++              setSteamIntegration={setSteamIntegration}
++            />
++            <CrazyGamesIntegration
++              crazyGamesIntegration={crazyGamesIntegration}
++              setCrazyGamesIntegration={setCrazyGamesIntegration}
++            />
++          </ContentItem>
++        </>
++      )}
++
++      {/* ── 8. Developer Tools ── */}
++      <Separator margin="-4px 0 12px" />
++      <ContentItem $rowGap="12px">
++        <PanelSectionTitle $margin="0 0 0px">Developer Tools</PanelSectionTitle>
++        <TooltipRowWrapper style={{ height: "16px" }}>
++          <PanelSectionTitleSecondary>
++            Production Mode
++          </PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip text="Remove debugger statements" width="120px" />
++            <PanelCheckbox
++              v2
++              text=""
++              checked={!!productionMode}
++              isGray
++              regular
++              onChange={() =>
++                handleProductionModeCheckboxChange(!productionMode)
++              }
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++        <TooltipRowWrapper style={{ height: "16px" }}>
++          <PanelSectionTitleSecondary>Game Project</PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip
++              text="Marks this project as a game. Turn it off for a 3D experience; Play still starts the runtime and uses orbit controls when no player exists."
++              width="220px"
++            />
++            <PanelCheckbox
++              v2
++              text=""
++              checked={!!game.isGame}
++              isGray
++              regular
++              onChange={() => handleProjectTypeChange(!game.isGame)}
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++        <TooltipRowWrapper style={{ height: "16px" }}>
++          <PanelSectionTitleSecondary>
++            Enable Play-mode Inspector
++          </PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip
++              text="Show a hierarchy + properties panel during Play. Edits revert when Play stops."
++              width="220px"
++            />
++            <PanelCheckbox
++              v2
++              text=""
++              checked={!!playmodeInspectorEnabled}
++              isGray
++              regular
++              onChange={() =>
++                handlePlaymodeInspectorCheckboxChange(!playmodeInspectorEnabled)
++              }
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++        <TooltipRowWrapper style={{ height: "16px" }}>
++          <PanelSectionTitleSecondary>Compartments</PanelSectionTitleSecondary>
++          <Wrapper>
++            <Tooltip
++              text="SES sandbox for scripts (reload required)"
++              width="180px"
++            />
++            <PanelCheckbox
++              v2
++              text=""
++              checked={!!compartmentsEnabled}
++              isGray
++              regular
++              onChange={() =>
++                handleCompartmentsCheckboxChange(!compartmentsEnabled)
++              }
++            />
++          </Wrapper>
++        </TooltipRowWrapper>
++        <StyledButton
++          style={{ fontWeight: "400", marginTop: "8px" }}
++          isGreySecondary
++          onClick={() => app.editor?.component?.showFTUEModal()}
++        >
++          Show First Time Experience
++        </StyledButton>
++        <StyledButton
++          style={{ fontWeight: "400", marginTop: "8px" }}
++          isGreySecondary
++          onClick={() => {
++            localStorage.removeItem("erth-ftue-seen");
++            showToast({
++              type: "info",
++              title: "Experience Reset",
++              body: "Reload the page to see the Getting Started guide.",
++            });
++          }}
++        >
++          Reset First Time User Experience
++        </StyledButton>
++      </ContentItem>
++    </TabContent>
++  );
+ };
+ 
+ export const GameSettings = React.memo(GameSettingsComponent);
+diff --git a/package.json b/package.json
+index 13403cb..8da1835 100644
+--- a/package.json
++++ b/package.json
+@@ -29,12 +29,19 @@
+     "dev:ai": "cd server && BUILD_MODE=oss go run -tags oss ./cmd/ai-server serve",
+     "dev:mp": "cd stemstudio-multiplayer && npm start",
+     "build": "BUILD_MODE=oss bunx --bun vite --emptyOutDir build && bun scripts/copy.js",
++    "vite-build": "BUILD_MODE=oss bunx --bun vite build",
++    "textures:tiny-world": "ENABLE_TINY_WORLD_TEXTURES=1 node scripts/copy-tiny-world-builder-textures.mjs",
+     "build:ai-server": "cd server && go build -tags oss -buildvcs=false -trimpath -o ../build/server/stemstudio-ai-server ./cmd/ai-server",
+     "typecheck": "cd client && bunx tsc --noEmit",
+     "lint": "cd client && bunx eslint packages",
+     "lint:oss-boundary": "cd client && eslint --config eslint.boundary.cjs --no-inline-config --no-warn-ignored --quiet 'packages/editor-oss/src/**/*.{ts,tsx}'",
+-    "test": "BUILD_MODE=oss bunx --bun vitest run",
+-    "test:e2e": "node scripts/playwright/oss-smoke.mjs",
++    "test": "BUILD_MODE=oss bunx --bun vitest run --exclude '**/DirectCopilotProvider.test.ts' --exclude '**/AiCopilot.sessionMode.test.tsx' --exclude '**/QuickBuildToolbar.behavior.test.tsx' --exclude '**/builderToolbars.test.tsx' && BUILD_MODE=oss bunx --bun vitest run client/packages/editor-oss/src/copilot/DirectCopilotProvider.test.ts && BUILD_MODE=oss bunx --bun vitest run client/packages/editor-oss/src/editor/assets/v2/AiCopilot/AiCopilot.sessionMode.test.tsx && BUILD_MODE=oss bunx vitest run client/packages/editor-oss/src/editor/assets/v2/QuickBuild/QuickBuildToolbar.behavior.test.tsx client/packages/editor-oss/src/editor/assets/v2/builderToolbars.test.tsx",
++    "test:e2e": "node scripts/playwright/oss-smoke.mjs && node scripts/playwright/oss-filesystem-roundtrip.mjs && node scripts/playwright/oss-builder-mode-smoke.mjs && node scripts/playwright/oss-builder-tools-ux-smoke.mjs && node scripts/playwright/oss-plan-cad-smoke.mjs",
++    "test:e2e:filesystem-roundtrip": "node scripts/playwright/oss-filesystem-roundtrip.mjs",
++    "test:e2e:builder-mode": "node scripts/playwright/oss-builder-mode-smoke.mjs",
++    "test:e2e:builder-tools": "node scripts/playwright/oss-builder-tools-ux-smoke.mjs",
++    "test:e2e:builder-release": "node scripts/playwright/oss-builder-release-scenario.mjs",
++    "test:e2e:plan-cad": "node scripts/playwright/oss-plan-cad-smoke.mjs",
+     "test:e2e:site": "node scripts/playwright/site-deploy-routing.mjs && node scripts/playwright/site-landing.mjs && node scripts/playwright/site-docs.mjs && node scripts/playwright/site-nav.mjs && node scripts/playwright/site-playground.mjs",
+     "test:e2e:site:routing": "node scripts/playwright/site-deploy-routing.mjs",
+     "deploy": "./scripts/deploy.sh",
+
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.builderModes.test.tsx b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.builderModes.test.tsx
+new file mode 100644
+index 0000000..ea5a586
+--- /dev/null
++++ b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/ActionBar.builderModes.test.tsx
+@@ -0,0 +1,320 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import {
++  cleanup,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++} from "@testing-library/react";
++import type { ReactNode } from "react";
++import * as THREE from "three";
++
++import global from "@stem/editor-oss/global";
++import { ActionBar, getEditorDocsUrl } from "./ActionBar";
++
++let mockIsAdmin = false;
++
++vi.mock("@stem/editor-oss/context", () => ({
++  useAuthorizationContext: () => ({ isAdmin: mockIsAdmin }),
++}));
++
++vi.mock("./useCollaborationStatus", () => ({
++  useCollaborationStatus: () => null,
++}));
++
++vi.mock("../common/Tooltip", () => ({
++  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
++}));
++
++vi.mock("./CADActionBarControls", () => ({
++  CADActionBarControls: ({
++    forceVisible,
++    onClose,
++  }: {
++    forceVisible?: boolean;
++    allowAutoVisible?: boolean;
++    onClose?: () => void;
++  }) =>
++    forceVisible ? (
++      <div data-testid="mesh-cad-toolbar">
++        <button type="button" data-testid="mesh-cad-close" onClick={onClose}>
++          Close
++        </button>
++      </div>
++    ) : null,
++}));
++
++vi.mock("../QuickBuild/QuickBuildToolbar", () => ({
++  QuickBuildToolbar: ({ onClose }: { onClose?: () => void }) => (
++    <div data-testid="quick-build-toolbar">
++      <button type="button" data-testid="quick-build-close" onClick={onClose}>
++        Close
++      </button>
++    </div>
++  ),
++}));
++
++vi.mock("../PlanMode/PlanCadToolbar", () => ({
++  PlanCadToolbar: ({ onClose }: { onClose?: () => void }) => (
++    <div data-testid="plan-cad-toolbar">
++      <button type="button" data-testid="plan-cad-close" onClick={onClose}>
++        Close
++      </button>
++    </div>
++  ),
++}));
++
++vi.mock("./CameraOrientationPanel", () => ({
++  CameraOrientationPanel: () => null,
++}));
++
++vi.mock("./SnapConfigPanel", () => ({
++  SnapConfigPanel: () => null,
++}));
++
++vi.mock("../BehaviorEditor/KeybindingsPanel", () => ({
++  EDITOR_KEYBINDINGS: [],
++  KeybindingsPanel: () => null,
++}));
++
++vi.mock("../GameDebugPanel/GameDebugPanel", () => ({
++  GameDebugPanel: () => null,
++}));
++
++function installFakeApp(options: { cadToolsEnabled?: boolean } = {}) {
++  const scene = new THREE.Scene();
++  scene.userData.cadTools = { enabled: options.cadToolsEnabled ?? true };
++  scene.userData.snapping = { grid: { enabled: false, increment: 1 } };
++  const handlers = new Map<string, (...args: any[]) => void>();
++  const app = {
++    editor: {
++      scene,
++      component: {
++        state: { showAiCopilot: false },
++        props: { setActiveRightPanel: vi.fn() },
++        toggleAiCopilot: vi.fn(),
++        openAiCopilotTerminal: vi.fn(),
++      },
++      controls: { current: { controls: null } },
++      cadMode: false,
++      exitCADMode: vi.fn(() => {
++        app.editor.cadMode = false;
++      }),
++    },
++    on: vi.fn((key: string, handler: ((...args: any[]) => void) | null) => {
++      if (handler) handlers.set(key, handler);
++      else handlers.delete(key);
++    }),
++    call: vi.fn(),
++    emit: (key: string, ...args: any[]) => handlers.get(key)?.(...args),
++  };
++  global.app = app as any;
++  return app;
++}
++
++describe("ActionBar builder modes", () => {
++  afterEach(() => {
++    cleanup();
++    vi.useRealTimers();
++    vi.restoreAllMocks();
++    mockIsAdmin = false;
++    global.app = null;
++    window.history.pushState({}, "", "/");
++    window.localStorage.clear();
++  });
++
++  it("keeps Mesh CAD and BIM Plan as explicit CAD menu choices", async () => {
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
++
++    expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
++    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("mesh-cad-close"));
++    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
++    expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
++    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
++
++    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
++    expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("plan-cad-close"));
++    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
++  });
++
++  it("exits active mesh edit mode when switching to BIM Plan or Quick Build", async () => {
++    const app = installFakeApp();
++    app.editor.cadMode = true;
++
++    render(<ActionBar />);
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
++
++    expect(app.editor.exitCADMode).toHaveBeenCalledTimes(1);
++
++    app.editor.cadMode = true;
++    fireEvent.click(screen.getByTestId("actionbar-quick-build"));
++
++    expect(app.editor.exitCADMode).toHaveBeenCalledTimes(2);
++  });
++
++  it("keeps builder modes mutually exclusive across quick, plan, and mesh transitions", async () => {
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    fireEvent.click(screen.getByTestId("actionbar-quick-build"));
++    expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
++
++    expect(screen.queryByTestId("quick-build-toolbar")).not.toBeInTheDocument();
++    expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
++
++    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
++    expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
++
++    fireEvent.click(screen.getByTestId("actionbar-quick-build"));
++
++    expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
++    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
++    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
++  });
++
++  it("keeps CAD tools discoverable when disabled and routes users to project settings", async () => {
++    const app = installFakeApp({ cadToolsEnabled: false });
++
++    render(<ActionBar />);
++
++    fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
++    expect(await screen.findByTestId("actionbar-mesh-cad")).toBeDisabled();
++    expect(screen.getByTestId("actionbar-plan-cad")).toBeDisabled();
++    fireEvent.click(screen.getByTestId("actionbar-enable-cad-tools"));
++
++    expect(app.editor.component.props.setActiveRightPanel).toHaveBeenCalled();
++    expect(app.call).toHaveBeenCalledWith(
++      "focusProjectSettingsSection",
++      app.editor,
++      "cadTools",
++    );
++  });
++
++  it("focuses the build menu and returns focus to its trigger on Escape", async () => {
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    const menuTrigger = screen.getByTestId("actionbar-cad-tools");
++    fireEvent.click(menuTrigger);
++    const quickItem = await screen.findByTestId("actionbar-build-quick");
++
++    await waitFor(() => {
++      expect(quickItem).toHaveFocus();
++    });
++
++    fireEvent.keyDown(window, { key: "Escape" });
++
++    await waitFor(() => {
++      expect(menuTrigger).toHaveFocus();
++    });
++    expect(screen.queryByRole("menu", { name: "Build tools" })).toBeNull();
++  });
++
++  it("focuses the Copilot admin menu and returns focus to its trigger on Escape", async () => {
++    mockIsAdmin = true;
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    const copilotTrigger = screen.getByTestId("actionbar-copilot");
++    fireEvent.pointerDown(copilotTrigger);
++
++    const scriptTool = await screen.findByRole("menuitem", {
++      name: "Script Tool",
++    });
++    await waitFor(() => {
++      expect(scriptTool).toHaveFocus();
++    });
++
++    fireEvent.keyDown(window, { key: "Escape" });
++
++    await waitFor(() => {
++      expect(copilotTrigger).toHaveFocus();
++    });
++    expect(screen.queryByRole("menu", { name: "AI Copilot tools" })).toBeNull();
++  });
++
++  it("routes builder=cad to Mesh CAD instead of BIM Plan", async () => {
++    window.history.pushState({}, "", "/?builder=cad");
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    await waitFor(() => {
++      expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
++    });
++    expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
++  });
++
++  it("routes builder=bim to BIM Plan", async () => {
++    window.history.pushState({}, "", "/?builder=bim");
++    installFakeApp();
++
++    render(<ActionBar />);
++
++    await waitFor(() => {
++      expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
++    });
++    expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
++  });
++
++  it("restores the last active builder mode for the current scene", async () => {
++    const app = installFakeApp();
++    window.localStorage.setItem(
++      `stem:builderMode:${app.editor.scene.uuid}`,
++      "quick",
++    );
++
++    render(<ActionBar />);
++
++    await waitFor(() => {
++      expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
++    });
++  });
++
++  it("opens the local docs route from Help by default", () => {
++    installFakeApp();
++    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
++
++    render(<ActionBar />);
++
++    fireEvent.click(screen.getByLabelText("Open help documentation"));
++
++    expect(openSpy).toHaveBeenCalledWith("/docs", "_blank");
++  });
++
++  it("supports an explicit docs URL override", () => {
++    expect(getEditorDocsUrl("https://docs.example.test/create")).toBe(
++      "https://docs.example.test/create",
++    );
++    expect(getEditorDocsUrl("  ")).toBe("/docs");
++  });
++});
+
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/ActionBar/icons/ActionBarIcons.tsx b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/icons/ActionBarIcons.tsx
+new file mode 100644
+index 0000000..c10ba96
+--- /dev/null
++++ b/client/packages/editor-oss/src/editor/assets/v2/ActionBar/icons/ActionBarIcons.tsx
+@@ -0,0 +1,123 @@
++import type { ReactElement, ReactNode, SVGProps } from "react";
++
++export type ActionBarIconProps = SVGProps<SVGSVGElement> & {
++    size?: number | string;
++};
++
++export type ActionBarIconComponent = (
++    props: ActionBarIconProps,
++) => ReactElement;
++
++const ActionBarSvgIcon = ({
++    size = 20,
++    children,
++    ...props
++}: ActionBarIconProps & { children: ReactNode }) => (
++    <svg
++        viewBox="0 0 20 20"
++        width={size}
++        height={size}
++        fill="none"
++        stroke="currentColor"
++        strokeWidth="1.7"
++        strokeLinecap="round"
++        strokeLinejoin="round"
++        aria-hidden="true"
++        {...props}
++    >
++        {children}
++    </svg>
++);
++
++export const BrushIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M12.6 4.6L15.4 7.4" />
++        <path d="M6.2 14.2L13.8 6.6C14.6 5.8 14.6 4.6 13.8 3.8C13 3 11.8 3 11 3.8L3.8 11" />
++        <path d="M3.6 11.4C5.8 11.5 7.3 12.8 7.5 15.1C6.1 15.7 4.5 16 2.9 16.1C3 14.5 3.2 12.9 3.6 11.4Z" />
++    </ActionBarSvgIcon>
++);
++
++export const HomeIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M3.5 9.4L10 4L16.5 9.4" />
++        <path d="M5.4 8.5V16H14.6V8.5" />
++        <path d="M8.2 16V11.5H11.8V16" />
++    </ActionBarSvgIcon>
++);
++
++export const ToolsIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M12.5 4.2C13.6 3.7 14.9 3.9 15.8 4.8L13.6 7L15 8.4L17.2 6.2C17.7 7.3 17.5 8.6 16.6 9.5C15.7 10.4 14.4 10.6 13.3 10.1L8 15.4C7.3 16.1 6.2 16.1 5.5 15.4L4.6 14.5C3.9 13.8 3.9 12.7 4.6 12L9.9 6.7C9.4 5.7 9.6 4.9 10.3 4.2" />
++        <path d="M4.2 4.6L7.2 7.6" />
++        <path d="M3.4 6.2L5.8 3.8" />
++    </ActionBarSvgIcon>
++);
++
++export const ChevronUpIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M5 12.2L10 7.2L15 12.2" />
++    </ActionBarSvgIcon>
++);
++
++export const CloseIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M5.5 5.5L14.5 14.5" />
++        <path d="M14.5 5.5L5.5 14.5" />
++    </ActionBarSvgIcon>
++);
++
++export const MoveIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M10 3.5V16.5" />
++        <path d="M7.8 5.7L10 3.5L12.2 5.7" />
++        <path d="M7.8 14.3L10 16.5L12.2 14.3" />
++        <path d="M3.5 10H16.5" />
++        <path d="M5.7 7.8L3.5 10L5.7 12.2" />
++        <path d="M14.3 7.8L16.5 10L14.3 12.2" />
++    </ActionBarSvgIcon>
++);
++
++export const CubeIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M10 3.5L16 6.8V13.2L10 16.5L4 13.2V6.8L10 3.5Z" />
++        <path d="M4.2 6.9L10 10.2L15.8 6.9" />
++        <path d="M10 10.2V16.2" />
++    </ActionBarSvgIcon>
++);
++
++export const PencilIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M4 13.7L3.5 16.5L6.3 16L15.7 6.6L13.4 4.3L4 13.7Z" />
++        <path d="M12.2 5.5L14.5 7.8" />
++    </ActionBarSvgIcon>
++);
++
++export const RefreshIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M15.4 7.1C14.5 5.3 12.6 4 10.4 4C7.9 4 5.8 5.6 5.1 7.9" />
++        <path d="M15.5 4.6V7.1H13" />
++        <path d="M4.6 12.9C5.5 14.7 7.4 16 9.6 16C12.1 16 14.2 14.4 14.9 12.1" />
++        <path d="M4.5 15.4V12.9H7" />
++    </ActionBarSvgIcon>
++);
++
++export const ScaleIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <path d="M5 15L15 5" />
++        <path d="M11.5 5H15V8.5" />
++        <path d="M8.5 15H5V11.5" />
++        <path d="M5 5H8" />
++        <path d="M5 5V8" />
++        <path d="M15 15H12" />
++        <path d="M15 15V12" />
++    </ActionBarSvgIcon>
++);
++
++export const ViewGridIcon = (props: ActionBarIconProps) => (
++    <ActionBarSvgIcon {...props}>
++        <rect x="4" y="4" width="4.5" height="4.5" rx="0.7" />
++        <rect x="11.5" y="4" width="4.5" height="4.5" rx="0.7" />
++        <rect x="4" y="11.5" width="4.5" height="4.5" rx="0.7" />
++        <rect x="11.5" y="11.5" width="4.5" height="4.5" rx="0.7" />
++    </ActionBarSvgIcon>
++);
+

@@ -191,15 +191,17 @@ class VideoBillboardBehavior extends BehaviorBase {
         }
 
         if (this.game?.player && this.proximityDistance > 0) {
-            const distanceToPlayer = this.game.player.position.distanceTo(this.target.position);
+            const proximityDistanceSq = this.proximityDistance * this.proximityDistance;
+            const distanceToPlayerSq = this.game.player.position.distanceToSquared(this.target.position);
 
-            const distanceRatio = Math.max(0, Math.min(1, 1 - distanceToPlayer / this.proximityDistance));
-            const calculatedVolume = distanceRatio * this.initialVolume;
-            this.videoSource.setVolume(calculatedVolume);
-
-            if (distanceToPlayer < this.proximityDistance) {
+            if (distanceToPlayerSq < proximityDistanceSq) {
+                const distanceToPlayer = Math.sqrt(distanceToPlayerSq);
+                const distanceRatio = Math.max(0, Math.min(1, 1 - distanceToPlayer / this.proximityDistance));
+                const calculatedVolume = distanceRatio * this.initialVolume;
+                this.videoSource.setVolume(calculatedVolume);
                 this.play();
             } else {
+                this.videoSource.setVolume(0);
                 this.pause();
             }
         }

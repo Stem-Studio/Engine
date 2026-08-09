@@ -5,6 +5,8 @@
  */
 
 
+import * as THREE from "three";
+
 import BaseSerializer from "../BaseSerializer";
 import LineBasicMaterialSerializer from "./LineBasicMaterialSerializer";
 import LineBasicNodeMaterialSerializer from "./LineBasicNodeMaterialSerializer";
@@ -52,38 +54,79 @@ const Serializers = {
     SpriteNodeMaterial: SpriteNodeMaterialSerializer,
 };
 
+function ensureMaterialType(json, material) {
+    if (json && typeof json === "object" && !json.type && material?.type) {
+        // Keep the compact default-valued representation, but retain the
+        // concrete type so legacy/custom serializers cannot emit an entry
+        // that looks empty to inspectors.
+        json.type = material.type;
+    }
+    return json;
+}
+
 /**
  * MaterialsSerializer
  *
  */
 class MaterialsSerializer extends BaseSerializer {
+    createFallbackMaterial() {
+        // An empty material slot makes a mesh render nothing (and an empty
+        // material array is rejected by some WebGPU paths). Keep the scene
+        // usable when an older or partially-written project contains a
+        // malformed entry. Quick Build will replace this with its authored
+        // kind-specific material during scene repair when metadata exists.
+        return new THREE.MeshStandardMaterial({color: 0xffffff});
+    }
+
+    serializerForJSON(json) {
+        const generator = typeof json?.metadata?.generator === "string"
+            ? json.metadata.generator.replace("Serializer", "")
+            : typeof json?.type === "string"
+                ? json.type
+                : "";
+        return Serializers[generator];
+    }
+
     toJSON(obj) {
         if (Array.isArray(obj)) {
 
             var list = [];
 
             obj.forEach(n => {
-                var serializer = Serializers[n.type];
+                var serializer = n && Serializers[n.type];
 
-                if (serializer === undefined) {
-                    console.warn(`MaterialsSerializer: No serializer with ${n.type}.`);
+                if (!serializer) {
+                    // Preserve the slot instead of serializing an empty
+                    // array, which would make the mesh disappear after a
+                    // reload.
+                    list.push(ensureMaterialType(
+                        new MeshStandardMaterialSerializer().toJSON(this.createFallbackMaterial()),
+                        this.createFallbackMaterial(),
+                    ));
                     return;
                 }
 
-                list.push(new serializer().toJSON(n));
+                list.push(ensureMaterialType(new serializer().toJSON(n), n));
             });
 
-            return list;
+            return list.length > 0
+                ? list
+                : ensureMaterialType(
+                    new MeshStandardMaterialSerializer().toJSON(this.createFallbackMaterial()),
+                    this.createFallbackMaterial(),
+                );
         } else {
 
-            var serializer = Serializers[obj.type];
+            var serializer = obj && Serializers[obj.type];
 
-            if (serializer === undefined) {
-                console.warn(`MaterialsSerializer: No serializer with ${obj.type}.`);
-                return null;
+            if (!serializer) {
+                return ensureMaterialType(
+                    new MeshStandardMaterialSerializer().toJSON(this.createFallbackMaterial()),
+                    this.createFallbackMaterial(),
+                );
             }
 
-            return new serializer().toJSON(obj);
+            return ensureMaterialType(new serializer().toJSON(obj), obj);
         }
     }
 
@@ -93,31 +136,35 @@ class MaterialsSerializer extends BaseSerializer {
             var list = [];
 
             json.forEach(n => {
-                var generator = n.metadata.generator;
-
-                var serializer = Serializers[generator.replace("Serializer", "")];
+                var serializer = this.serializerForJSON(n);
 
                 if (serializer === undefined) {
-                    console.warn(`MaterialsSerializer: No deserializer with ${generator}.`);
-                    return null;
+                    list.push(this.createFallbackMaterial());
+                    return;
                 }
 
-                list.push(new serializer().fromJSON(n, parent, options));
+                try {
+                    list.push(new serializer().fromJSON(n, parent, options));
+                } catch (error) {
+                    console.warn("MaterialsSerializer: malformed material entry; using fallback.", error);
+                    list.push(this.createFallbackMaterial());
+                }
             });
 
-            return list;
+            return list.length > 0 ? list : [this.createFallbackMaterial()];
         } else {
-
-            var generator = json.metadata.generator;
-
-            var serializer = Serializers[generator.replace("Serializer", "")];
+            var serializer = this.serializerForJSON(json);
 
             if (serializer === undefined) {
-                console.warn(`MaterialsSerializer: No deserializer with ${generator}.`);
-                return null;
+                return this.createFallbackMaterial();
             }
 
-            return new serializer().fromJSON(json, parent, options);
+            try {
+                return new serializer().fromJSON(json, parent, options);
+            } catch (error) {
+                console.warn("MaterialsSerializer: malformed material entry; using fallback.", error);
+                return this.createFallbackMaterial();
+            }
         }
     }
 }

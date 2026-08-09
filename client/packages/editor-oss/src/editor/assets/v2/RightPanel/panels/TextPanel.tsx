@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import {useState, useEffect} from "react";
 import styled from "styled-components";
-import { FontLoader } from "three/examples/jsm/loaders/FontLoader.js";
+import { FontLoader } from "three/addons/loaders/FontLoader.js";
 
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";

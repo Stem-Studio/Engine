@@ -1,7 +1,7 @@
-import {MTLLoader as MTLLoaderImpl} from "three/examples/jsm/loaders/MTLLoader.js";
+import {MTLLoader as MTLLoaderImpl} from "three/addons/loaders/MTLLoader.js";
+import {OBJLoader as OBJLoaderImpl} from "three/addons/loaders/OBJLoader.js";
 
 import BaseLoader from "./BaseLoader";
-import {OBJLoader2 as OBJLoaderImpl} from "./OBJLoader2";
 
 /**
  * OBJLoader
@@ -34,13 +34,13 @@ class OBJLoader extends BaseLoader {
             promise.then(mtl => {
                 if (mtl) {
                     mtl.preload();
-                    objLoader.setMaterials(mtl.materials);
+                    objLoader.setMaterials(mtl);
                 }
 
                 objLoader.load(
                     url[0],
                     obj => {
-                        resolve(obj.detail.loaderRootNode);
+                        resolve(obj);
                     },
                     undefined,
                     e => {

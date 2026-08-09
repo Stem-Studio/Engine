@@ -48,7 +48,7 @@ vi.mock("./AiCopilot.styles", () => {
 
 const mocks = vi.hoisted(() => ({
     advancedMode: true,
-    appGlobal: {app: null as any, three$1: {}},
+    appGlobal: {app: null as any},
     isPlayground: false,
     provider: null as any,
     setAdvancedMode: vi.fn(),

@@ -1,8 +1,8 @@
 import type { SparkWebGpuRenderer } from '@querielo/spark';
 import { bayer16 } from "three/addons/tsl/math/Bayer.js";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import { gaussianBlur } from "three/examples/jsm/tsl/display/GaussianBlurNode.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
+import { gaussianBlur } from "three/addons/tsl/display/GaussianBlurNode.js";
 import { depth, float, pass, texture, uniform, uv, vec3, vec4 } from "three/tsl";
 import {
     AmbientLight,
@@ -10,31 +10,43 @@ import {
     DirectionalLight,
     EquirectangularReflectionMapping,
     Group,
+    Material,
     Mesh,
-    MeshBasicNodeMaterial,
     Object3D,
     OrthographicCamera,
     PCFShadowMap,
     PerspectiveCamera,
     PlaneGeometry,
-    RenderPipeline,
     RenderTarget,
     Scene,
     Texture,
     Vector3,
-    WebGPURenderer,
-} from 'three/webgpu';
+} from 'three';
+import {MeshBasicNodeMaterial, RenderPipeline} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 
 import { getObjectBoundingBox, isGaussianSplatObject } from '@stem/editor-oss/model/gaussianSplats';
-import { disposeSparkComposite, ensureSparkComposite } from '../../../../../../../../render/SparkCompositeBridge';
 import { positionCameraForModel } from "../../../../../utils/positionCameraForModel";
+import {disposePreviewModel} from "./previewModelResources";
+
+type SparkCompositeBridgeModule = typeof import("../../../../../../../../render/SparkCompositeBridge");
+type ThreeWebGPUModule = typeof import("three/webgpu");
+
+let threeWebGPUModulePromise: Promise<ThreeWebGPUModule> | null = null;
+
+function loadThreeWebGPU(): Promise<ThreeWebGPUModule> {
+    if (!threeWebGPUModulePromise) {
+        threeWebGPUModulePromise = import("three/webgpu");
+    }
+    return threeWebGPUModulePromise;
+}
 
 const PREVIEW_AMBIENT_INTENSITY = 1.8;
 const PREVIEW_DIRECTIONAL_INTENSITY = 0.6;
 const PREVIEW_ENVIRONMENT_INTENSITY = 0.45;
 
 export class ModelPreviewRenderer {
-    renderer: WebGPURenderer;
+    renderer: WebGPURenderer | null = null;
     scene: Scene;
     camera: PerspectiveCamera;
     controls: OrbitControls;
@@ -49,6 +61,10 @@ export class ModelPreviewRenderer {
     };
     directionalLight: DirectionalLight;
     private sparkComposite: SparkWebGpuRenderer | null;
+    private sparkCompositeBridge: SparkCompositeBridgeModule | null = null;
+    private sparkLoadGeneration = 0;
+    private environmentTexture: Texture | null = null;
+    private disposed = false;
 
     private model?: Object3D;
     private isGaussianSplatModel = false;
@@ -56,22 +72,14 @@ export class ModelPreviewRenderer {
     private isRunning = false;
     private width = 100;
     private height = 100;
+    private pixelRatio = 1;
+    private readonly canvas: HTMLCanvasElement | OffscreenCanvas;
 
     constructor(canvas: HTMLCanvasElement | OffscreenCanvas, width: number, height: number, pixelRatio: number) {
+        this.canvas = canvas;
         this.width = width;
         this.height = height;
-
-        this.renderer = new WebGPURenderer({
-            canvas: canvas,
-            antialias: true,
-            alpha: false,
-        });
-
-        this.renderer.setPixelRatio(pixelRatio);
-        this.renderer.setSize(width, height, false);
-        this.renderer.setClearColor(new Color(0x27272a));
-        this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = PCFShadowMap;
+        this.pixelRatio = pixelRatio;
 
         this.scene = new Scene();
         this.scene.name = "ModelPreviewScene";
@@ -86,7 +94,14 @@ export class ModelPreviewRenderer {
         new HDRLoader().load(
             "/assets/hdr/studio.hdr",
             (loadedTexture: Texture) => {
+                if (this.disposed) {
+                    loadedTexture.dispose();
+                    return;
+                }
+
                 loadedTexture.mapping = EquirectangularReflectionMapping;
+                this.environmentTexture?.dispose();
+                this.environmentTexture = loadedTexture;
                 this.scene.environment = loadedTexture;
                 this.scene.environmentIntensity = PREVIEW_ENVIRONMENT_INTENSITY;
             },
@@ -160,23 +175,48 @@ export class ModelPreviewRenderer {
     }
 
     async init() {
-        await this.renderer.init();
+        const {WebGPURenderer} = await loadThreeWebGPU();
+        if (this.disposed) return;
+
+        const renderer = new WebGPURenderer({
+            canvas: this.canvas,
+            antialias: true,
+            alpha: false,
+        });
+        this.renderer = renderer;
+        renderer.setPixelRatio(this.pixelRatio);
+        renderer.setSize(this.width, this.height, false);
+        renderer.setClearColor(new Color(0x27272a));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = PCFShadowMap;
+
+        await renderer.init();
+        if (this.disposed) {
+            renderer.dispose();
+            if (this.renderer === renderer) {
+                this.renderer = null;
+            }
+            return;
+        }
 
         const scenePass = pass(this.scene, this.camera);
         const colorTex = scenePass.getTextureNode("output");
 
-        const pp = new RenderPipeline(this.renderer);
+        const pp = new RenderPipeline(renderer);
         pp.outputNode = colorTex;
 
         this.postProcessing = pp;
         this.isRunning = true;
+        if (this.isGaussianSplatModel && this.model && !this.sparkComposite) {
+            this.ensureSparkCompositeForCurrentModel(++this.sparkLoadGeneration);
+        }
         this.animate();
     }
 
     updateModel(model: Object3D) {
         if (this.model) {
             this.scene.remove(this.model);
-            this.disposeModel(this.model);
+            disposePreviewModel(this.model);
         }
 
         this.model = model;
@@ -184,16 +224,37 @@ export class ModelPreviewRenderer {
         this.scene.add(this.model);
         this.model.updateMatrixWorld(true);
         this.isGaussianSplatModel = isGaussianSplatObject(this.model);
+        const sparkGeneration = ++this.sparkLoadGeneration;
         if (this.isGaussianSplatModel) {
-            this.sparkComposite = ensureSparkComposite(this.scene, this.renderer);
+            this.ensureSparkCompositeForCurrentModel(sparkGeneration);
         } else if (this.sparkComposite) {
-            disposeSparkComposite(this.sparkComposite);
+            this.sparkCompositeBridge?.disposeSparkComposite(this.sparkComposite);
             this.sparkComposite = null;
         }
         this.cameraWarmupFramesRemaining = this.isGaussianSplatModel ? 45 : 0;
 
         positionCameraForModel(this.model, this.camera, this.controls);
         this.updateShadowBounds();
+    }
+
+    private async ensureSparkCompositeForCurrentModel(generation: number) {
+        try {
+            const bridge = this.sparkCompositeBridge ?? await import("../../../../../../../../render/SparkCompositeBridge");
+            this.sparkCompositeBridge = bridge;
+            if (
+                generation !== this.sparkLoadGeneration ||
+                !this.isGaussianSplatModel ||
+                !this.model ||
+                this.sparkComposite
+            ) {
+                return;
+            }
+
+            if (!this.renderer) return;
+            this.sparkComposite = bridge.ensureSparkComposite(this.scene, this.renderer);
+        } catch (error) {
+            console.warn("[ModelPreviewRenderer] Failed to load Spark preview support", error);
+        }
     }
 
     updateShadowBounds() {
@@ -255,7 +316,7 @@ export class ModelPreviewRenderer {
         this.height = height;
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(width, height, false);
+        this.renderer?.setSize(width, height, false);
     }
 
     animate = () => {
@@ -277,29 +338,31 @@ export class ModelPreviewRenderer {
             const { shadowCamera, renderTarget, shadowPlane, fillPlane, depthMaterial } = this.shadowState;
 
             if (!this.isGaussianSplatModel) {
+                const renderer = this.renderer;
+                if (!renderer) return;
                 const prevOverride = this.scene.overrideMaterial;
-                const prevAutoClear = this.renderer.autoClear;
-                const hasGetClearAlpha = typeof this.renderer.getClearAlpha === "function";
-                const prevClearAlpha = hasGetClearAlpha ? this.renderer.getClearAlpha() : undefined;
+                const prevAutoClear = renderer.autoClear;
+                const hasGetClearAlpha = typeof renderer.getClearAlpha === "function";
+                const prevClearAlpha = hasGetClearAlpha ? renderer.getClearAlpha() : undefined;
 
                 shadowPlane.visible = false;
                 fillPlane.visible = false;
 
                 this.scene.overrideMaterial = depthMaterial;
-                this.renderer.autoClear = true;
-                if (hasGetClearAlpha && prevClearAlpha !== undefined && this.renderer.setClearAlpha) {
-                    this.renderer.setClearAlpha(0);
+                renderer.autoClear = true;
+                if (hasGetClearAlpha && prevClearAlpha !== undefined && renderer.setClearAlpha) {
+                    renderer.setClearAlpha(0);
                 }
 
-                this.renderer.setRenderTarget(renderTarget);
-                this.renderer.clear();
-                this.renderer.render(this.scene, shadowCamera);
+                renderer.setRenderTarget(renderTarget);
+                renderer.clear();
+                renderer.render(this.scene, shadowCamera);
 
                 this.scene.overrideMaterial = prevOverride;
-                this.renderer.setRenderTarget(null);
-                this.renderer.autoClear = prevAutoClear;
-                if (hasGetClearAlpha && prevClearAlpha !== undefined && this.renderer.setClearAlpha) {
-                    this.renderer.setClearAlpha(prevClearAlpha);
+                renderer.setRenderTarget(null);
+                renderer.autoClear = prevAutoClear;
+                if (hasGetClearAlpha && prevClearAlpha !== undefined && renderer.setClearAlpha) {
+                    renderer.setClearAlpha(prevClearAlpha);
                 }
 
                 shadowPlane.visible = true;
@@ -313,44 +376,55 @@ export class ModelPreviewRenderer {
     };
 
     dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
         this.isRunning = false;
         if (this.model) {
-            this.disposeModel(this.model);
+            disposePreviewModel(this.model);
             this.model = undefined;
         }
-        disposeSparkComposite(this.sparkComposite);
+        this.sparkLoadGeneration++;
+        this.sparkCompositeBridge?.disposeSparkComposite(this.sparkComposite);
         this.sparkComposite = null;
-        this.renderer.dispose();
+        this.postProcessing?.dispose?.();
+        this.postProcessing = undefined;
+        this.disposeEnvironmentTexture();
+        this.disposeShadowState();
+        this.renderer?.dispose();
+        this.renderer = null;
         this.scene.clear();
         this.controls.dispose();
-        this.shadowState.renderTarget.dispose();
     }
 
-    private disposeModel(model: Object3D) {
-        if (model.userData?.skipPreviewDispose) {
+    private disposeEnvironmentTexture(): void {
+        if (!this.environmentTexture) return;
+        if (this.scene.environment === this.environmentTexture) {
+            this.scene.environment = null;
+        }
+        this.environmentTexture.dispose();
+        this.environmentTexture = null;
+    }
+
+    private disposeShadowState(): void {
+        const {shadowPlane, fillPlane, depthMaterial, renderTarget} = this.shadowState;
+        const shadowGeometry = shadowPlane.geometry;
+        const fillGeometry = fillPlane.geometry;
+        this.disposeMaterial(shadowPlane.material);
+        this.disposeMaterial(fillPlane.material);
+        depthMaterial.dispose();
+        shadowGeometry.dispose();
+        if (fillGeometry !== shadowGeometry) {
+            fillGeometry.dispose();
+        }
+        renderTarget.dispose();
+    }
+
+    private disposeMaterial(material: Material | Material[]): void {
+        if (Array.isArray(material)) {
+            material.forEach(item => item.dispose());
             return;
         }
-
-        model.traverse((child) => {
-            if (child instanceof Mesh) {
-                child.geometry?.dispose();
-                const materials = Array.isArray(child.material) ? child.material : [child.material];
-                for (const mat of materials) {
-                    if (!mat) continue;
-                    for (const key of Object.keys(mat)) {
-                        const value = (mat)[key];
-                        if (value instanceof Texture) {
-                            value.dispose();
-                        }
-                    }
-                    mat.dispose();
-                }
-            }
-        });
-
-        const disposable = model as Object3D & { dispose?: () => void };
-        if (typeof disposable.dispose === 'function') {
-            disposable.dispose();
-        }
+        material.dispose();
     }
+
 }

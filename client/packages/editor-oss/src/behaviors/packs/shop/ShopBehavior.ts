@@ -2,9 +2,7 @@ import * as THREE from "three";
 
 import { AssetRef } from '@stem/editor-oss/asset-management/AssetRef';
 import { PrefabManager } from "@stem/editor-oss/prefab/PrefabManager";
-import { COLLISION_TYPE } from "@stem/editor-oss/types/editor";
 import { BehaviorBase } from "../../Behavior";
-import CollisionDetector from "../../collisions/CollisionDetector";
 import GameManager from "../../game/GameManager";
 
 type ShopItem = {
@@ -21,28 +19,22 @@ const PAYMENT_IMAGE_URL = "data:image/svg+xml;charset=UTF-8," +
     encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect width="15" height="15" fill="transparent" stroke="white" stroke-width="1"/></svg>`);
 
 class ShopBehavior extends BehaviorBase {
-    teleportTargetUuid?: string;
-
     private game?: GameManager;
     private prefabManager?: PrefabManager;
-    private collisionDetector?: CollisionDetector;
-    private listenerId?: string;
     private isMenuOpen: boolean = false;
+    private readonly playerBounds = new THREE.Box3();
+    private readonly targetBounds = new THREE.Box3();
 
     init(game: GameManager) {
         this.game = game;
         this.prefabManager = game.prefabManager;
-        this.collisionDetector = game.collisionDetector;
-        this.physics = game.collisionDetector?.physics;
     }
 
     onAdded() {
-        this.addCollisionListener();
         this.preloadPrefabs();
     }
 
     onRemoved(): void {
-        this.removeCollisionListener();
         this.closeShopMenu();
     }
 
@@ -58,13 +50,11 @@ class ShopBehavior extends BehaviorBase {
         }
     }
 
-    onCollision() {}
-
     update() {
         if (!this.game?.player || !this.target) return;
 
-        const playerBox = new THREE.Box3().setFromObject(this.game.player);
-        const targetBox = new THREE.Box3().setFromObject(this.target);
+        const playerBox = this.playerBounds.setFromObject(this.game.player);
+        const targetBox = this.targetBounds.setFromObject(this.target);
 
         if (playerBox.intersectsBox(targetBox)) {
             if (!this.isMenuOpen) {
@@ -314,29 +304,6 @@ class ShopBehavior extends BehaviorBase {
         return buttonRow;
     }
 
-    addCollisionListener() {
-        if (!this.collisionDetector || !this.target) {
-            return;
-        }
-
-        this.listenerId = this.collisionDetector.addListener(
-            this.target,
-            {
-                type: COLLISION_TYPE.WITH_PLAYER,
-                callback: this.onCollision.bind(this),
-                useBoundingBoxes: true,
-            },
-            true,
-        );
-    }
-
-    removeCollisionListener() {
-        if (!this.collisionDetector || !this.target || !this.listenerId) {
-            return;
-        }
-        this.collisionDetector.deleteListener(this.target, this.listenerId);
-        this.listenerId = undefined;
-    }
 }
 
 export default ShopBehavior;

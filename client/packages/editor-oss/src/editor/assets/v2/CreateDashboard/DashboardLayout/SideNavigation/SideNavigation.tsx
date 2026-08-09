@@ -17,12 +17,14 @@ import {
     Socials,
 } from "./SideNavigation.style";
 import {ROUTES} from "@web-shared/routes";
-import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {Avatar} from "../../../Avatar/Avatar";
 import logo from "../../../HUD/HUDView/FloatingNav/AppVersion/stem-studio-alpha.png";
 import {DASHBOARD_MENU, PAGES} from "../../constants";
 import {getConfiguredSocialLinks} from "@stem/editor-oss/v2/pages/constants";
 import {MOBILE_DASHBOARD_BREAKPOINT} from "../DashboardHeader/DashboardHeader.style";
+import {getEditorDocsUrl} from "../../../common/docsUrl";
 
 // Map env-configured channels to local logo assets. Channels with no env
 // value are omitted from the list by `getConfiguredSocialLinks()`, so the
@@ -47,12 +49,12 @@ export const SideNavigation = ({mobileOpen = false, onClose}: Props) => {
 
     const handleActivePage = async (label: PAGES) => {
         if (label === PAGES.TUTORIALS) {
-            window.open(`https://docs.${window.location.hostname}`, "_blank");
+            window.open(getEditorDocsUrl(), "_blank");
             onClose?.();
             return;
         }
         if (label === PAGES.LEARN) {
-            window.open(`https://docs.${window.location.hostname}`, "_blank");
+            window.open(getEditorDocsUrl(), "_blank");
             onClose?.();
             return;
         }

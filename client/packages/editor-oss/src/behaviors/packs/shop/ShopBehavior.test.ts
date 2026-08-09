@@ -105,4 +105,18 @@ describe("ShopBehavior", () => {
         expect(preloadPrefab).toHaveBeenCalledWith({assetId: "item-2", revisionId: "rev-2"});
         expect(preloadPrefab).toHaveBeenCalledTimes(2);
     });
+
+    it("does not register the removed no-op physics collision listener", () => {
+        const behavior = createShopBehavior({items: []});
+        const addListener = vi.fn();
+        behavior.init({
+            scene: new THREE.Scene(),
+            prefabManager: {preloadPrefab: vi.fn()},
+            collisionDetector: {addListener},
+        } as any);
+
+        behavior.onAdded();
+
+        expect(addListener).not.toHaveBeenCalled();
+    });
 });

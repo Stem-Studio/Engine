@@ -5,8 +5,7 @@ import styled from "styled-components";
 import {createSceneScreenShot} from "@stem/network/api/scene";
 import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
 import global from "@stem/editor-oss/global";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {showToast} from "@stem/editor-oss/showToast";
 import {getAIBackend} from "@stem/editor-oss/ai";
 import Converter from "@stem/editor-oss/utils/Converter";
@@ -18,7 +17,6 @@ import {StyledTextarea} from "../../../../common/StyledTextarea";
 import {AssetTagsInput} from "../../../../common/Tags/AssetTagsInput";
 import {TextInput} from "../../../../common/TextInput";
 import {UploadField} from "../../../../common/UploadField/UploadField";
-import clockIcon from "../../../../icons/clock.svg";
 import searchIcon from "../../../../icons/search.svg";
 import {ContentItem} from "../../../common/ContentItem";
 import expandArrow from "../../../icons/expand-arrow.svg";
@@ -171,7 +169,7 @@ const GameDetailsSectionComponent = ({
     debouncedSceneChange,
 }: GameDetailsProps) => {
     const editor = global.app!.editor!;
-    const {sceneSize, openSceneHistoryModal} = useAppGlobalContext();
+    const {sceneSize} = useAppGlobalContext();
     const {isAdmin} = useAuthorizationContext();
     const [gameDetailsExpanded, setGameDetailsExpanded] = useState(() => {
         const hasCustomTitle = !!name && name !== "Game Title";
@@ -262,26 +260,6 @@ const GameDetailsSectionComponent = ({
                     />
                 </ExpandButton>
             </ContentItem>
-            {/* OSS builds (incl. the playground iframe) ship no
-                server-backed revision store, so opening the modal would
-                show an empty list and a dead Restore button. Hide the
-                affordance entirely until an OSS-friendly local history
-                feature lands. */}
-            {!IS_OSS && (
-                <StyledButton
-                    isSecondaryDialogBtn
-                    customIcon={clockIcon}
-                    margin="0 auto"
-                    onClick={() =>
-                        openSceneHistoryModal({
-                            assetID: editor.sceneAssetId || "unknown-scene-asset-id",
-                            scene: editor.sceneConfig,
-                        })
-                    }
-                >
-                    Version History
-                </StyledButton>
-            )}
             {gameDetailsExpanded && (
                 <Section style={{marginTop: "-8px"}}>
                     {sceneSize && (

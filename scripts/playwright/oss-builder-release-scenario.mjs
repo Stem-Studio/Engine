@@ -481,6 +481,23 @@ async function getQuickBuildSummary(page) {
     const app = window.app || globalThis.app;
     const scene = app?.editor?.scene;
     const analysis = tools.analyzeQuickBuildScene(scene);
+    const materialSummary = {meshCount: 0, emptyCount: 0, materialEntryCount: 0, materialTypeCounts: {}};
+    for (const object of tools.collectQuickBuildObjects(scene)) {
+      object.traverse?.((child) => {
+        if (!child?.isMesh) return;
+        materialSummary.meshCount++;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) {
+          materialSummary.materialEntryCount++;
+          if (!material || typeof material !== "object" || !material.type) {
+            materialSummary.emptyCount++;
+            return;
+          }
+          materialSummary.materialTypeCounts[material.type] =
+            (materialSummary.materialTypeCounts[material.type] || 0) + 1;
+        }
+      });
+    }
     return {
       objectCount: analysis.objectCount,
       duplicateCount: analysis.duplicateCount,
@@ -489,6 +506,7 @@ async function getQuickBuildSummary(page) {
         .collectQuickBuildObjects(scene)
         .filter((object) => object.userData?.quickBuildTexture)
         .length,
+      materialSummary,
     };
   });
 }
@@ -758,7 +776,9 @@ try {
     quickAfterReload.objectCount >= 200 &&
       quickAfterReload.duplicateCount === 0 &&
       quickAfterReload.bakedBatchCount >= 1 &&
-      quickAfterReload.texturedCount >= 200,
+      quickAfterReload.texturedCount >= 200 &&
+      quickAfterReload.materialSummary?.meshCount >= 200 &&
+      quickAfterReload.materialSummary?.emptyCount === 0,
     JSON.stringify(quickAfterReload),
   );
 

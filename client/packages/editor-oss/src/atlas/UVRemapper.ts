@@ -1,6 +1,7 @@
 import { BufferAttribute, BufferGeometry, Mesh, Object3D } from 'three';
 
 import { AtlasConfig, AtlasRegion } from './types';
+import {traverseObjectDepthFirst} from '../utils/SceneTraverser';
 
 /**
  * UV transform parameters for mapping to atlas region
@@ -54,22 +55,21 @@ export function remapGeometryUVs(
     }
 
     const transform = calculateUVTransform(region, atlasWidth, atlasHeight);
-    const uvArray = uvAttr.array;
-
-    // Create a new Float32Array if the original is not writable
-    const isWritable = uvArray instanceof Float32Array;
-    const newArray = isWritable ? uvArray : new Float32Array(uvArray);
-
-    for (let i = 0; i < newArray.length; i += 2) {
-        // Scale and offset UVs to map to the atlas region
-        const u = newArray[i]!;
-        const v = newArray[i + 1]!;
-        newArray[i] = u * transform.scaleX + transform.offsetX;
-        newArray[i + 1] = v * transform.scaleY + transform.offsetY;
-    }
-
-    if (!isWritable) {
-        geometry.setAttribute('uv', new BufferAttribute(newArray, 2));
+    if (uvAttr instanceof BufferAttribute && uvAttr.array instanceof Float32Array && uvAttr.itemSize >= 2) {
+        const uvArray = uvAttr.array;
+        for (let index = 0; index < uvAttr.count; index++) {
+            const offset = index * uvAttr.itemSize;
+            uvArray[offset] = uvArray[offset]! * transform.scaleX + transform.offsetX;
+            uvArray[offset + 1] = uvArray[offset + 1]! * transform.scaleY + transform.offsetY;
+        }
+    } else {
+        for (let index = 0; index < uvAttr.count; index++) {
+            uvAttr.setXY(
+                index,
+                uvAttr.getX(index) * transform.scaleX + transform.offsetX,
+                uvAttr.getY(index) * transform.scaleY + transform.offsetY,
+            );
+        }
     }
 
     uvAttr.needsUpdate = true;
@@ -127,10 +127,39 @@ export function applyAtlasToObject(
     atlasConfig: AtlasConfig,
     materialToRegionMap?: Map<string, string>,
 ): void {
-    object.traverse((child) => {
-        if (!(child instanceof Mesh)) return;
+    const regionEntries = Object.entries(atlasConfig.regions);
+    const regionsByLowerName = new Map<string, AtlasRegion>();
+    const regionsByLowerStem = new Map<string, AtlasRegion>();
+    for (const [name, region] of regionEntries) {
+        const lowerName = name.toLowerCase();
+        if (!regionsByLowerName.has(lowerName)) regionsByLowerName.set(lowerName, region);
+        const lowerStem = name.replace(/\.[^/.]+$/, '').toLowerCase();
+        if (!regionsByLowerStem.has(lowerStem)) regionsByLowerStem.set(lowerStem, region);
+    }
+    const resolveRegion = (name: string): AtlasRegion | null => {
+        const stem = name.replace(/\.[^/.]+$/, '');
+        return atlasConfig.regions[name] ??
+            regionsByLowerName.get(name.toLowerCase()) ??
+            atlasConfig.regions[stem] ??
+            regionsByLowerStem.get(stem.toLowerCase()) ??
+            null;
+    };
 
+    type GeometryUsage = {
+        users: number;
+        tasks: Array<{mesh: Mesh; region: AtlasRegion}>;
+    };
+    const geometryUsage = new Map<BufferGeometry, GeometryUsage>();
+
+    traverseObjectDepthFirst(object, child => {
         const mesh = child as Mesh;
+        if (!mesh.isMesh || !mesh.geometry) return;
+        let usage = geometryUsage.get(mesh.geometry);
+        if (!usage) {
+            usage = {users: 0, tasks: []};
+            geometryUsage.set(mesh.geometry, usage);
+        }
+        usage.users += 1;
 
         // Determine region name from mapping or mesh/material name
         let regionName: string | undefined;
@@ -153,14 +182,31 @@ export function applyAtlasToObject(
 
         if (!regionName) return;
 
-        const region = findRegionByName(regionName, atlasConfig.regions);
+        const region = resolveRegion(regionName);
         if (!region) return;
-
-        remapGeometryUVs(
-            mesh.geometry,
-            region,
-            atlasConfig.width,
-            atlasConfig.height,
-        );
+        usage.tasks.push({mesh, region});
     });
+
+    for (const [geometry, usage] of geometryUsage) {
+        if (!geometry.hasAttribute('uv') || usage.tasks.length === 0) continue;
+
+        const meshesByRegion = new Map<AtlasRegion, Mesh[]>();
+        for (const {mesh, region} of usage.tasks) {
+            const meshes = meshesByRegion.get(region);
+            if (meshes) meshes.push(mesh);
+            else meshesByRegion.set(region, [mesh]);
+        }
+
+        if (usage.tasks.length === usage.users && meshesByRegion.size === 1) {
+            const region = meshesByRegion.keys().next().value as AtlasRegion;
+            remapGeometryUVs(geometry, region, atlasConfig.width, atlasConfig.height);
+            continue;
+        }
+
+        for (const [region, meshes] of meshesByRegion) {
+            const remappedGeometry = geometry.clone();
+            remapGeometryUVs(remappedGeometry, region, atlasConfig.width, atlasConfig.height);
+            for (const mesh of meshes) mesh.geometry = remappedGeometry;
+        }
+    }
 }

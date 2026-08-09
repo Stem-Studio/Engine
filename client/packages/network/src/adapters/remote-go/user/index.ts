@@ -1,8 +1,6 @@
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 
-import {IS_OSS} from "../../../buildMode";
-
 export type AccountType = "regular" | "influencer" | "admin";
 
 export type AiCreditsConfig = {
@@ -22,46 +20,16 @@ export type UserData = {
 
 // Get user data
 export const getUser = async (): Promise<UserData> => {
-    if (IS_OSS) {
-        return {
-            ID: "local",
-            Email: "local@stemstudio.invalid",
-            AiCredits: 0,
-        };
-    }
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath("/api/User/Get"),
-        });
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to get user.");
-        }
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error getting user:", message);
-        throw new Error(message || "Failed to get user.");
-    }
+    return {
+        ID: "local",
+        Email: "local@stemstudio.invalid",
+        AiCredits: 0,
+    };
 };
 
 // Get AI credits configuration (default amount and refresh rate)
 export const getAiCreditsConfig = async (): Promise<AiCreditsConfig> => {
-    if (IS_OSS) return {DefaultAmount: 0, CreditsRefreshRate: 0};
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath("/api/User/AiCreditsConfig"),
-            needAuthorization: false,
-        });
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to get AI credits config.");
-        }
-        console.log("AI Credits Config:", response.data.Data);
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error getting AI credits config:", message);
-        throw new Error(message || "Failed to get AI credits config.");
-    }
+    return {DefaultAmount: 0, CreditsRefreshRate: 0};
 };
 
 

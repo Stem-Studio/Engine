@@ -59,7 +59,6 @@ const Value = styled.span`
 interface PresetDetailPanelProps {
     anchorRef: React.RefObject<HTMLElement | null>;
     presetKey: string;
-    schedulerEnabled: boolean;
     onClose: () => void;
 }
 
@@ -73,7 +72,7 @@ function formatValue(v: unknown): string {
     return String(v);
 }
 
-export const PresetDetailPanel = ({ anchorRef, presetKey, schedulerEnabled, onClose }: PresetDetailPanelProps) => {
+export const PresetDetailPanel = ({ anchorRef, presetKey, onClose }: PresetDetailPanelProps) => {
     const panelRef = useRef<HTMLDivElement>(null);
     const preset = QualityPresets.getPreset(presetKey);
     const settings = preset?.settings;
@@ -106,7 +105,6 @@ export const PresetDetailPanel = ({ anchorRef, presetKey, schedulerEnabled, onCl
             rows: [
                 ["Pixel Ratio", formatValue(settings.rendering.pixelRatio)],
                 ["Shadow Quality", formatValue(settings.rendering.shadowQuality)],
-                ["Shadow Map Size", formatValue(settings.rendering.shadowMapSize)],
                 ["Antialiasing", formatValue(settings.rendering.antialiasing)],
                 ["Max Lights", formatValue(settings.rendering.maxLights)],
                 ["Texture Quality", formatValue(settings.rendering.textureQuality)],
@@ -122,9 +120,8 @@ export const PresetDetailPanel = ({ anchorRef, presetKey, schedulerEnabled, onCl
             rows: [
                 ["Update Rate", `${settings.physics.updateRate} Hz`],
                 ["Substeps", formatValue(settings.physics.substeps)],
-                ["Collision Quality", formatValue(settings.physics.collisionQuality)],
-                ["Max Active Bodies", formatValue(settings.physics.maxActiveBodies)],
-                ["Sleep Threshold", formatValue(settings.physics.sleepThreshold)],
+                ["Max Steps Per Frame", formatValue(settings.physics.maxStepsPerFrame)],
+                ["Solver Iterations", formatValue(settings.physics.solverIterations ?? 4)],
             ],
         },
         {
@@ -139,17 +136,6 @@ export const PresetDetailPanel = ({ anchorRef, presetKey, schedulerEnabled, onCl
             ],
         },
     ];
-
-    if (schedulerEnabled) {
-        sections.push({
-            title: "Scheduler",
-            rows: [
-                ["Frame Budget", `${settings.scheduler.frameBudgetMs} ms`],
-                ["Fixed Timestep", `${settings.scheduler.fixedTimestepHz} Hz`],
-                ["Max Fixed Steps", formatValue(settings.scheduler.maxFixedStepsPerFrame)],
-            ],
-        });
-    }
 
     return createPortal(
         <>

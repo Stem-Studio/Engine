@@ -35,7 +35,9 @@ class PlayerViewport extends Component {
 
     componentWillUnmount() {
         const app = global.app as EngineRuntime | undefined;
-        app?.stop();
+        void app?.stop().catch(error => {
+            console.error("[PlayerViewport] Could not stop runtime cleanly", error);
+        });
         app?.on("appStarted.PlayerViewport", null);
         app?.on("enableVR.PlayerViewport", null);
     }

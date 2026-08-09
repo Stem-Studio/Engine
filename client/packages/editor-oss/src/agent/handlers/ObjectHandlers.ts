@@ -20,6 +20,8 @@ import EngineRuntime from "../../EngineRuntime";
 import {uploadModelFromUrl} from "../../model/uploadModelFromUrl";
 import {GENERATOR_TYPES} from "../../utils/ModelGeneratorProvider";
 import TagUtil from "../../utils/TagUtil";
+import {cloneJsonCompatible} from "../../utils/cloneJsonCompatible";
+import {findObjectByUuidOrNameDepthFirst, findObjectDepthFirst} from "../../utils/SceneTraverser";
 import {SupportedCommands} from "../CommandsRegistry";
 import {CommandResult} from "../types/ACPTypes";
 import {getObjectBaseMetaData, serializeObjectForAI} from "../utils/serialization";
@@ -149,19 +151,10 @@ export class ObjectHandlers {
     }
 
     private objectHasMaterialTarget(object: Object3D): boolean {
-        let hasMaterial = false;
-
-        object.traverse(child => {
-            if (hasMaterial) {
-                return;
-            }
-
-            if ((child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh) && child.material) {
-                hasMaterial = true;
-            }
-        });
-
-        return hasMaterial;
+        return findObjectDepthFirst(
+            object,
+            child => (child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh) && !!child.material,
+        ) !== null;
     }
 
     private clonePlainValue<T>(value: T): T {
@@ -170,7 +163,7 @@ export class ObjectHandlers {
         }
 
         try {
-            return JSON.parse(JSON.stringify(value)) as T;
+            return cloneJsonCompatible(value);
         } catch {
             return value;
         }
@@ -185,16 +178,10 @@ export class ObjectHandlers {
     }
 
     private findFirstMesh(object: Object3D): THREE.Mesh | THREE.SkinnedMesh | null {
-        let mesh: THREE.Mesh | THREE.SkinnedMesh | null = null;
-        object.traverse(child => {
-            if (mesh) {
-                return;
-            }
-            if (child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh) {
-                mesh = child;
-            }
-        });
-        return mesh;
+        return findObjectDepthFirst(
+            object,
+            child => child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh,
+        ) as THREE.Mesh | THREE.SkinnedMesh | null;
     }
 
     private findFirstMaterial(object: Object3D): THREE.Material | null {
@@ -1223,7 +1210,7 @@ export class ObjectHandlers {
             return {status: "failed", message: "No scene is currently open.", data: null};
         }
 
-        // This OSS build has no server-side generation jobs, so generate
+        // This app has no server-side generation jobs, so generate
         // synchronously: create the provider task, poll to completion, fetch
         // the GLB URL, import it, and place it in the scene.
         const generator = resolveGenerator(provider);
@@ -1549,34 +1536,32 @@ export class ObjectHandlers {
     }
 
     private findObject(identifier: string): THREE.Object3D | null {
-        // Try by UUID first
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-
-        // Try by name if UUID search fails
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
-
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
     }
 
     private traverseSceneObjects(scene: Object3D, callback: (object: Object3D) => void) {
-        const traverse = (object: THREE.Object3D) => {
-            if (object.name === "[Dynamic]" || object.userData?.isRuntimeOnly) {
-                return; // Skip dynamic group and runtime-only objects
-            }
-            if (object.userData?.Server) {
-                callback(object);
-                return;
-            }
-            callback(object);
-            object.children.forEach(child => {
-                traverse(child);
-            });
-        };
+        const stack: Object3D[] = [];
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child) stack.push(child);
+        }
 
-        scene.children.forEach(child => {
-            traverse(child);
-        });
+        while (stack.length > 0) {
+            const object = stack.pop()!;
+            if (object.name === "[Dynamic]" || object.userData?.isRuntimeOnly) {
+                continue;
+            }
+
+            callback(object);
+
+            if (object.userData?.Server) {
+                continue;
+            }
+
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                const child = object.children[i];
+                if (child) stack.push(child);
+            }
+        }
     }
 }

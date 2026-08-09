@@ -6,16 +6,19 @@
 
 
 import Ease from "../../utils/Ease";
+import {findObjectByUuidDepthFirst} from "../../utils/SceneTraverser";
 import PlayerComponent from "../component/PlayerComponent";
 
 class TweenAnimator extends PlayerComponent {
     constructor(app) {
         super(app);
+        this.targetCache = new WeakMap();
     }
 
     create(scene, camera, renderer, animations) {
         this.scene = scene;
-        this.animations = animations;
+        this.animations = animations || [];
+        this.targetCache = new WeakMap();
 
         return new Promise(resolve => {
             resolve();
@@ -36,6 +39,7 @@ class TweenAnimator extends PlayerComponent {
             this.animations.push(layer);
         }
 
+        this.targetCache.delete(animation);
         layer.animations.push(animation);
     }
 
@@ -48,14 +52,22 @@ class TweenAnimator extends PlayerComponent {
             return;
         }
 
-        layer.animations = layer.animations.filter(n => {
-            return n.target !== uuid;
-        });
+        for (let i = layer.animations.length - 1; i >= 0; i--) {
+            const animation = layer.animations[i];
+            if (animation.target !== uuid) {
+                continue;
+            }
+            this.targetCache.delete(animation);
+            layer.animations.splice(i, 1);
+        }
     }
 
     update(clock, deltaTime, time) {
-        this.animations.forEach(n => {
-            n.animations.forEach(m => {
+        const layers = this.animations;
+        for (let i = 0; i < layers.length; i++) {
+            const animations = layers[i].animations;
+            for (let j = 0; j < animations.length; j++) {
+                const m = animations[j];
                 if (m.model && m.model.userData) {
                     if (m.model.userData.triggerMovement === true && m.model.userData.startOnTrigger === true) {
                         this.tweenObject(m, 0);
@@ -68,8 +80,8 @@ class TweenAnimator extends PlayerComponent {
                         this.tweenObject(m, time);
                     }
                 }
-            });
-        });
+            }
+        }
     }
 
     tweenObject(animation, time) {
@@ -103,7 +115,7 @@ class TweenAnimator extends PlayerComponent {
             }
         }
 
-        var target = this.scene.getObjectByProperty("uuid", animation.target);
+        var target = this.resolveAnimationTarget(animation);
         if (!target) {
             //console.warn(`[Animator]: There is no object that uuid equals to ${animation.target}.`);
             return;
@@ -144,9 +156,44 @@ class TweenAnimator extends PlayerComponent {
         target.scale.z = scaleZ;
     }
 
+    resolveAnimationTarget(animation) {
+        if (!animation || !this.scene || !animation.target) {
+            return null;
+        }
+
+        const cachedTarget = this.targetCache.get(animation);
+        if (
+            cachedTarget &&
+            cachedTarget.uuid === animation.target &&
+            this.isObjectInScene(cachedTarget)
+        ) {
+            return cachedTarget;
+        }
+
+        const target = findObjectByUuidDepthFirst(this.scene, animation.target);
+        if (target) {
+            this.targetCache.set(animation, target);
+        } else {
+            this.targetCache.delete(animation);
+        }
+        return target || null;
+    }
+
+    isObjectInScene(object) {
+        let current = object;
+        while (current) {
+            if (current === this.scene) {
+                return true;
+            }
+            current = current.parent;
+        }
+        return false;
+    }
+
     dispose() {
         this.scene = null;
         this.animations = null;
+        this.targetCache = new WeakMap();
     }
 }
 

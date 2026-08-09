@@ -14,7 +14,7 @@ class HingeJointBehavior extends BehaviorBase {
 
     onStart(): void {
         const objectA = this.target;
-        const objectB = this.game?.scene?.getObjectByProperty("uuid", this.attributes.objectB);
+        const objectB = this.game?.getObjectByUUID(this.attributes.objectB);
 
         if (!objectB) {
             console.warn("FixedJointBehavior: object B is not found in the scene: "+this.attributes.objectB);

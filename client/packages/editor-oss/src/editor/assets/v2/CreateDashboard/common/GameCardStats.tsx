@@ -6,7 +6,7 @@ import {CardStat, CardStatsRow} from "./GameCard.style";
 import {addLikedGame} from "@stem/network/api/updateUser";
 import {ROUTES} from "@web-shared/routes";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {HeartIcon} from "../../../../../v2/pages/Home/PlayPage/HeartIcon";
 import {FileData} from "../../types/file";
 import heartOutlineIcon from "../icons/heart-outline.svg";

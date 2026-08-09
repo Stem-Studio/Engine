@@ -70,6 +70,7 @@ describe('ClimbingHelper', () => {
 
     it('should add listeners to existing climbable objects', () => {
         helper.addLisiteners();
+        expect(TagUtil.getObjectsByTag).toHaveBeenCalledWith(mockScene, ["climbable", "physics.climbable"]);
         expect(mockCollisionDetector.addListener).toHaveBeenCalledWith(
             mockClimbable,
             expect.objectContaining({ type: COLLISION_TYPE.WITH_PLAYER }),
@@ -165,7 +166,7 @@ describe('ClimbingHelper', () => {
     it('should call onClimbableCollision on collision with climbable', () => {
         const climbable = new Object3D();
         climbable.uuid = 'climbable-123';
-        vi.spyOn(mockScene, 'getObjectByProperty').mockReturnValue(climbable);
+        mockScene.add(climbable);
         helper['onCollision']('climbable-123');
         expect(onClimbableCollision).toHaveBeenCalledWith(climbable);
     });

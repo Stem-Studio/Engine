@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import * as THREE from "three";
 
 import {
@@ -81,14 +81,50 @@ describe("planCadCore", () => {
         registry.register(joinedWall, joinedObject);
 
         const processed = processDirtyPlanNodes(state, registry);
+        const firstSegment = object.children[0] as THREE.Mesh;
+        const firstMaterial = firstSegment.material as THREE.MeshStandardMaterial;
 
         expect(processed.some(item => item.id === wall.id && item.updated)).toBe(true);
         expect(object.children.length).toBeGreaterThan(1);
+        expect(firstSegment.userData).toMatchObject({
+            isRuntimeOnly: true,
+            isBatchable: false,
+            isPlanCadGeneratedChild: true,
+            managedBy: "BIM Plan",
+            planCadOwnerNodeId: wall.id,
+            planCadOwnerNodeType: "wall",
+        });
+        expect(firstSegment.userData.planNodeId).toBeUndefined();
+        expect(firstMaterial.emissiveIntensity).toBeGreaterThan(0);
+        expect(firstMaterial.side).toBe(THREE.FrontSide);
         expect(object.userData.planCad.openingCount).toBe(1);
         expect(object.userData.planCad.miterJoints).toEqual([
             expect.objectContaining({end: "end", connectedWallId: joinedWall.id}),
         ]);
         expect(state.dirtyNodeIds.has(wall.id)).toBe(false);
+    });
+
+    it("reuses generated BIM materials across wall regenerations", () => {
+        const {state, level} = createBasicPlan();
+        const wall = createPlanWallToolNode(level.id, {x: 0, z: 0}, {x: 6, z: 0}, {id: "wall_material"});
+        insertPlanNode(state, wall);
+
+        const registry = new PlanSceneRegistry();
+        const object = new THREE.Group();
+        registry.register(wall, object);
+
+        processDirtyPlanNodes(state, registry);
+        const firstMaterial = (object.children[0] as THREE.Mesh).material;
+
+        updatePlanNode<typeof wall>(state, wall.id, {
+            openings: [{id: "door_a", kind: "door", t: 0.5, width: 1, sillHeight: 0, height: 2.1}],
+        });
+        processDirtyPlanNodes(state, registry);
+
+        expect(object.children.length).toBeGreaterThan(1);
+        for (const child of object.children) {
+            expect((child as THREE.Mesh).material).toBe(firstMaterial);
+        }
     });
 
     it("generates slab and item geometry from node data", () => {
@@ -124,6 +160,43 @@ describe("planCadCore", () => {
         expect((proxyMesh.geometry as THREE.BufferGeometry).getAttribute("position").count).toBeGreaterThan(0);
         expect(itemObject.position.toArray()).toEqual([2, 0.2, 2]);
         expect(proxyMesh.position.toArray()).toEqual([0, 0.5, 0]);
+        expect(proxyMesh.userData).toMatchObject({
+            isRuntimeOnly: true,
+            isPlanCadGeneratedChild: true,
+            planCadOwnerNodeId: item.id,
+            planCadOwnerNodeType: "item",
+        });
+    });
+
+    it("regenerates deep item children without recursive Object3D traversal", () => {
+        const {state, level} = createBasicPlan();
+        const item = createPlanItemToolNode(level.id, {
+            id: "item_deep_regenerate",
+            position: {x: 2, y: 0.2, z: 2},
+            dimensions: {x: 1, y: 1, z: 1},
+        });
+        insertPlanNode(state, item);
+
+        const registry = new PlanSceneRegistry();
+        const itemObject = new THREE.Group();
+        let cursor: THREE.Object3D = new THREE.Group();
+        itemObject.add(cursor);
+        for (let index = 0; index < 12000; index++) {
+            const child = new THREE.Group();
+            cursor.add(child);
+            cursor = child;
+        }
+        registry.register(item, itemObject);
+
+        const traverseSpy = vi.spyOn(THREE.Object3D.prototype, "traverse");
+        try {
+            processDirtyPlanNodes(state, registry);
+
+            expect(traverseSpy).not.toHaveBeenCalled();
+            expect(itemObject.children[0]?.name).toBe("proxy");
+        } finally {
+            traverseSpy.mockRestore();
+        }
     });
 
     it("validates floor and wall placement with spatial checks", () => {

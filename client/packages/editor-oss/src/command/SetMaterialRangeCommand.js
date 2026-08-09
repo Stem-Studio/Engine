@@ -22,10 +22,10 @@ class SetMaterialRangeCommand extends Command {
         this.object = object;
         this.materialSlot = materialSlot;
 
-        const material = object !== null ? editor.getObjectMaterial(object, materialSlot) : null;
+        const material = object !== null ? this.editor.getObjectMaterial(object, materialSlot) : null;
 
         this.oldRange =
-            material !== null && material[attributeName] !== undefined ? [...this.material[attributeName]] : null;
+            material !== null && material[attributeName] !== undefined ? [...material[attributeName]] : null;
         this.newRange = [newMinValue, newMaxValue];
 
         this.attributeName = attributeName;

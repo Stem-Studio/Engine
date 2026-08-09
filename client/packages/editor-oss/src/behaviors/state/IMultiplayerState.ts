@@ -1,6 +1,6 @@
 import {Object3D} from "three";
 
-import {Player} from "../../multiplayer/GameRoomState";
+import type {Player} from "../../multiplayer/GameRoomState";
 
 export enum PlayerAnimations{
     IDLE = "Idle"

@@ -14,6 +14,28 @@ import type Editor from "../Editor";
 type FacePickMesh = THREE.Mesh & {userData: {cadFaceId?: number}};
 type EdgePickLine = THREE.Line & {userData: {cadEdgeId?: number}};
 
+function addPositionToVector(target: THREE.Vector3, position: THREE.Vector3Like): THREE.Vector3 {
+    target.x += position.x;
+    target.y += position.y;
+    target.z += position.z;
+    return target;
+}
+
+function setVectorFromPosition(target: THREE.Vector3, position: THREE.Vector3Like): THREE.Vector3 {
+    return target.set(position.x, position.y, position.z);
+}
+
+function getPositionDistance(first: THREE.Vector3Like, second: THREE.Vector3Like): number {
+    return Math.hypot(first.x - second.x, first.y - second.y, first.z - second.z);
+}
+
+function setVectorToPositionMidpoint(target: THREE.Vector3, first: THREE.Vector3Like, second: THREE.Vector3Like): THREE.Vector3 {
+    target.x = (first.x + second.x) * 0.5;
+    target.y = (first.y + second.y) * 0.5;
+    target.z = (first.z + second.z) * 0.5;
+    return target;
+}
+
 export class CADController {
     editor: Editor;
     selectedVertexIds = new Set<number>();
@@ -552,6 +574,10 @@ export class CADController {
                 0.0012,
             );
             const axis = new THREE.Vector3(0, 1, 0);
+            const start = new THREE.Vector3();
+            const end = new THREE.Vector3();
+            const direction = new THREE.Vector3();
+            const center = new THREE.Vector3();
 
             this.selectedEdgeIds.forEach(edgeId => {
                 const edge = meshData.edges.get(edgeId);
@@ -565,15 +591,15 @@ export class CADController {
                     return;
                 }
 
-                const start = new THREE.Vector3(firstVertex.position.x, firstVertex.position.y, firstVertex.position.z);
-                const end = new THREE.Vector3(secondVertex.position.x, secondVertex.position.y, secondVertex.position.z);
-                const direction = end.clone().sub(start);
+                setVectorFromPosition(start, firstVertex.position);
+                setVectorFromPosition(end, secondVertex.position);
+                direction.subVectors(end, start);
                 const length = direction.length();
                 if (length <= 1e-6) {
                     return;
                 }
 
-                const center = start.clone().add(end).multiplyScalar(0.5);
+                setVectorToPositionMidpoint(center, start, end);
                 const cylinder = new THREE.Mesh(
                     new THREE.CylinderGeometry(highlightRadius, highlightRadius, length, 10, 1, false),
                     new THREE.MeshBasicMaterial({
@@ -653,6 +679,9 @@ export class CADController {
         const rendererDom = global.app?.editor?.renderer?.domElement;
         const domWidth = rendererDom?.width || window.innerWidth;
         const domHeight = rendererDom?.height || window.innerHeight;
+        const startWorld = new THREE.Vector3();
+        const endWorld = new THREE.Vector3();
+        const midpoint = new THREE.Vector3();
 
         measuredEdgeIds.forEach(edgeId => {
             const edge = meshData.edges.get(edgeId);
@@ -683,9 +712,9 @@ export class CADController {
                 global.app?.sceneHelpers.add(label);
             }
 
-            const startWorld = new THREE.Vector3(firstVertex.position.x, firstVertex.position.y, firstVertex.position.z).applyMatrix4(object.matrixWorld);
-            const endWorld = new THREE.Vector3(secondVertex.position.x, secondVertex.position.y, secondVertex.position.z).applyMatrix4(object.matrixWorld);
-            const midpoint = startWorld.clone().add(endWorld).multiplyScalar(0.5);
+            setVectorFromPosition(startWorld, firstVertex.position).applyMatrix4(object.matrixWorld);
+            setVectorFromPosition(endWorld, secondVertex.position).applyMatrix4(object.matrixWorld);
+            setVectorToPositionMidpoint(midpoint, startWorld, endWorld);
             const length = startWorld.distanceTo(endWorld);
 
             label.position.copy(midpoint);
@@ -895,18 +924,20 @@ export class CADController {
                 startScale.z !== 0 ? currentScale.z / startScale.z : 1,
             );
 
+            const nextWorldPosition = new THREE.Vector3();
+            const offset = new THREE.Vector3();
             for (const [vertexId, startWorldPosition] of this.dragStartWorldPositions.entries()) {
-                let nextWorldPosition = startWorldPosition.clone();
+                nextWorldPosition.copy(startWorldPosition);
 
                 if (this.activeTransformMode === "move") {
                     nextWorldPosition.add(translationDelta);
                 } else if (this.activeTransformMode === "rotate") {
-                    const offset = startWorldPosition.clone().sub(selectionCenterWorld).applyQuaternion(rotationDelta);
-                    nextWorldPosition = selectionCenterWorld.clone().add(offset);
+                    offset.subVectors(startWorldPosition, selectionCenterWorld).applyQuaternion(rotationDelta);
+                    nextWorldPosition.copy(selectionCenterWorld).add(offset);
                 } else if (this.activeTransformMode === "scale") {
-                    const offset = startWorldPosition.clone().sub(selectionCenterWorld);
+                    offset.subVectors(startWorldPosition, selectionCenterWorld);
                     offset.set(offset.x * scaleDelta.x, offset.y * scaleDelta.y, offset.z * scaleDelta.z);
-                    nextWorldPosition = selectionCenterWorld.clone().add(offset);
+                    nextWorldPosition.copy(selectionCenterWorld).add(offset);
                 }
 
                 const localPosition = nextWorldPosition.applyMatrix4(inverseWorld);
@@ -1167,14 +1198,14 @@ export class CADController {
                 return;
             }
 
-            const position = new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z);
-            const toCenter = centroid.clone().sub(position).multiplyScalar(amount);
-            const planarOffset = toCenter.sub(faceNormal.clone().multiplyScalar(toCenter.dot(faceNormal)));
-            const nextPosition = position.clone().add(planarOffset);
+            const toCenterX = (centroid.x - vertex.position.x) * amount;
+            const toCenterY = (centroid.y - vertex.position.y) * amount;
+            const toCenterZ = (centroid.z - vertex.position.z) * amount;
+            const normalOffset = toCenterX * faceNormal.x + toCenterY * faceNormal.y + toCenterZ * faceNormal.z;
             const newVertex = meshData.addVertex({
-                x: nextPosition.x,
-                y: nextPosition.y,
-                z: nextPosition.z,
+                x: vertex.position.x + toCenterX - faceNormal.x * normalOffset,
+                y: vertex.position.y + toCenterY - faceNormal.y * normalOffset,
+                z: vertex.position.z + toCenterZ - faceNormal.z * normalOffset,
             });
             newVertexIds.push(newVertex.id);
         });
@@ -1217,14 +1248,14 @@ export class CADController {
                 return;
             }
 
-            const position = new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z);
-            const toCenter = centroid.clone().sub(position).multiplyScalar(width);
-            const planarOffset = toCenter.sub(faceNormal.clone().multiplyScalar(toCenter.dot(faceNormal)));
-            const nextPosition = position.clone().add(planarOffset).add(faceNormal.clone().multiplyScalar(lift));
+            const toCenterX = (centroid.x - vertex.position.x) * width;
+            const toCenterY = (centroid.y - vertex.position.y) * width;
+            const toCenterZ = (centroid.z - vertex.position.z) * width;
+            const normalOffset = toCenterX * faceNormal.x + toCenterY * faceNormal.y + toCenterZ * faceNormal.z;
             const newVertex = meshData.addVertex({
-                x: nextPosition.x,
-                y: nextPosition.y,
-                z: nextPosition.z,
+                x: vertex.position.x + toCenterX - faceNormal.x * normalOffset + faceNormal.x * lift,
+                y: vertex.position.y + toCenterY - faceNormal.y * normalOffset + faceNormal.y * lift,
+                z: vertex.position.z + toCenterZ - faceNormal.z * normalOffset + faceNormal.z * lift,
             });
             newVertexIds.push(newVertex.id);
         });
@@ -1340,14 +1371,14 @@ export class CADController {
         const isInsideRect = (point: {x: number; y: number}) =>
             point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
 
+        const projectedPoint = new THREE.Vector3();
         const projectLocalPoint = (position: {x: number; y: number; z: number}) => {
-            const worldPoint = new THREE.Vector3(position.x, position.y, position.z).applyMatrix4(object.matrixWorld);
-            const projected = worldPoint.project(camera);
+            setVectorFromPosition(projectedPoint, position).applyMatrix4(object.matrixWorld).project(camera);
 
             return {
-                x: (projected.x * 0.5 + 0.5) * rect.width + rect.left,
-                y: (-projected.y * 0.5 + 0.5) * rect.height + rect.top,
-                z: projected.z,
+                x: (projectedPoint.x * 0.5 + 0.5) * rect.width + rect.left,
+                y: (-projectedPoint.y * 0.5 + 0.5) * rect.height + rect.top,
+                z: projectedPoint.z,
             };
         };
 
@@ -1444,14 +1475,14 @@ export class CADController {
         }
 
         const rect = viewport.getBoundingClientRect();
+        const projectedPoint = new THREE.Vector3();
         const projectLocalPoint = (position: {x: number; y: number; z: number}) => {
-            const worldPoint = new THREE.Vector3(position.x, position.y, position.z).applyMatrix4(object.matrixWorld);
-            const projected = worldPoint.project(camera);
+            setVectorFromPosition(projectedPoint, position).applyMatrix4(object.matrixWorld).project(camera);
 
             return {
-                x: (projected.x * 0.5 + 0.5) * rect.width + rect.left,
-                y: (-projected.y * 0.5 + 0.5) * rect.height + rect.top,
-                z: projected.z,
+                x: (projectedPoint.x * 0.5 + 0.5) * rect.width + rect.left,
+                y: (-projectedPoint.y * 0.5 + 0.5) * rect.height + rect.top,
+                z: projectedPoint.z,
             };
         };
 
@@ -1666,7 +1697,7 @@ export class CADController {
         selectedVertexIds.forEach(vertexId => {
             const vertex = sourceMeshData.getVertex(vertexId);
             if (vertex) {
-                mergedCenter.add(new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z));
+                addPositionToVector(mergedCenter, vertex.position);
             }
         });
         mergedCenter.divideScalar(selectedVertexIds.length);
@@ -1947,19 +1978,11 @@ export class CADController {
         }
 
         const optionDirect =
-            new THREE.Vector3(firstA.position.x, firstA.position.y, firstA.position.z).distanceTo(
-                new THREE.Vector3(secondA.position.x, secondA.position.y, secondA.position.z),
-            ) +
-            new THREE.Vector3(firstB.position.x, firstB.position.y, firstB.position.z).distanceTo(
-                new THREE.Vector3(secondB.position.x, secondB.position.y, secondB.position.z),
-            );
+            getPositionDistance(firstA.position, secondA.position) +
+            getPositionDistance(firstB.position, secondB.position);
         const optionCross =
-            new THREE.Vector3(firstA.position.x, firstA.position.y, firstA.position.z).distanceTo(
-                new THREE.Vector3(secondB.position.x, secondB.position.y, secondB.position.z),
-            ) +
-            new THREE.Vector3(firstB.position.x, firstB.position.y, firstB.position.z).distanceTo(
-                new THREE.Vector3(secondA.position.x, secondA.position.y, secondA.position.z),
-            );
+            getPositionDistance(firstA.position, secondB.position) +
+            getPositionDistance(firstB.position, secondA.position);
 
         const bridgeFace = optionDirect <= optionCross
             ? [firstEdge.v1Id, firstEdge.v2Id, secondEdge.v2Id, secondEdge.v1Id]
@@ -2476,15 +2499,15 @@ export class CADController {
                 return;
             }
 
-            const start = new THREE.Vector3(v1.position.x, v1.position.y, v1.position.z);
-            const end = new THREE.Vector3(v2.position.x, v2.position.y, v2.position.z);
-            const chord = end.clone().sub(start);
+            const start = setVectorFromPosition(new THREE.Vector3(), v1.position);
+            const end = setVectorFromPosition(new THREE.Vector3(), v2.position);
+            const chord = new THREE.Vector3().subVectors(end, start);
             const chordLen = chord.length();
             if (chordLen < 1e-6) {
                 return;
             }
 
-            const chordDir = chord.clone().normalize();
+            const chordDir = chord.divideScalar(chordLen);
 
             const adjNormal = new THREE.Vector3();
             edge.faceIds.forEach(faceId => {
@@ -2509,12 +2532,12 @@ export class CADController {
             const centerOffset = radius - sagitta;
 
             const arcVertexIds: number[] = [edge.v1Id];
+            const point = new THREE.Vector3();
             for (let i = 1; i < clampedSegments; i++) {
                 const t = i / clampedSegments;
-                const point = start.clone().lerp(end, t);
                 const distFromMid = t * chordLen - halfChord;
                 const arcHeight = Math.sqrt(Math.max(0, radius * radius - distFromMid * distFromMid)) - centerOffset;
-                point.add(perpDir.clone().multiplyScalar(arcHeight));
+                point.copy(start).lerp(end, t).addScaledVector(perpDir, arcHeight);
                 const newVertex = meshData.addVertex({x: point.x, y: point.y, z: point.z});
                 arcVertexIds.push(newVertex.id);
             }
@@ -2606,7 +2629,7 @@ export class CADController {
             group.forEach(vertexId => {
                 const vertex = meshData.getVertex(vertexId);
                 if (vertex) {
-                    avg.add(new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z));
+                    addPositionToVector(avg, vertex.position);
                     count++;
                 }
             });
@@ -2642,13 +2665,12 @@ export class CADController {
 
         // Order vertices around their centroid to form a proper polygon
         const centroid = new THREE.Vector3();
-        const positions: THREE.Vector3[] = [];
+        const positions: THREE.Vector3Like[] = [];
         vertexIds.forEach(vertexId => {
             const vertex = meshData.getVertex(vertexId);
             if (vertex) {
-                const p = new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z);
-                positions.push(p);
-                centroid.add(p);
+                positions.push(vertex.position);
+                addPositionToVector(centroid, vertex.position);
             }
         });
         centroid.divideScalar(positions.length);
@@ -2671,8 +2693,13 @@ export class CADController {
 
         const sorted = vertexIds
             .map((vertexId, i) => {
-                const offset = positions[i]!.clone().sub(centroid);
-                return {vertexId, angle: Math.atan2(offset.dot(bitangent), offset.dot(tangent))};
+                const position = positions[i]!;
+                const offsetX = position.x - centroid.x;
+                const offsetY = position.y - centroid.y;
+                const offsetZ = position.z - centroid.z;
+                const tangentDot = offsetX * tangent.x + offsetY * tangent.y + offsetZ * tangent.z;
+                const bitangentDot = offsetX * bitangent.x + offsetY * bitangent.y + offsetZ * bitangent.z;
+                return {vertexId, angle: Math.atan2(bitangentDot, tangentDot)};
             })
             .sort((a, b) => a.angle - b.angle)
             .map(entry => entry.vertexId);
@@ -2865,7 +2892,7 @@ export class CADController {
         }
 
         // Collect edge vertex positions for multi-edge lookup after topology changes
-        const edgePositions: Array<[THREE.Vector3, THREE.Vector3]> = [];
+        const edgePositions: Array<[THREE.Vector3Like, THREE.Vector3Like]> = [];
         for (const eid of this.selectedEdgeIds) {
             const e = sourceMeshData.edges.get(eid);
             if (!e) continue;
@@ -2873,8 +2900,8 @@ export class CADController {
             const v2 = sourceMeshData.getVertex(e.v2Id);
             if (!v1 || !v2) continue;
             edgePositions.push([
-                new THREE.Vector3(v1.position.x, v1.position.y, v1.position.z),
-                new THREE.Vector3(v2.position.x, v2.position.y, v2.position.z),
+                {...v1.position},
+                {...v2.position},
             ]);
         }
 
@@ -2888,10 +2915,8 @@ export class CADController {
                 const va = meshData.getVertex(edge.v1Id);
                 const vb = meshData.getVertex(edge.v2Id);
                 if (!va || !vb) continue;
-                const a = new THREE.Vector3(va.position.x, va.position.y, va.position.z);
-                const b = new THREE.Vector3(vb.position.x, vb.position.y, vb.position.z);
-                if ((a.distanceTo(p1) < eps && b.distanceTo(p2) < eps) ||
-                    (a.distanceTo(p2) < eps && b.distanceTo(p1) < eps)) {
+                if ((getPositionDistance(va.position, p1) < eps && getPositionDistance(vb.position, p2) < eps) ||
+                    (getPositionDistance(va.position, p2) < eps && getPositionDistance(vb.position, p1) < eps)) {
                     targetEdgeId = edge.id;
                     break;
                 }
@@ -3440,7 +3465,7 @@ export class CADController {
                 return;
             }
 
-            centroid.add(new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z));
+            addPositionToVector(centroid, vertex.position);
             count++;
         });
 
@@ -3459,9 +3484,17 @@ export class CADController {
             return new THREE.Vector3(0, 1, 0);
         }
 
-        const a = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
-        const b = new THREE.Vector3(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
-        const normal = new THREE.Vector3().crossVectors(a, b);
+        const ux = p1.x - p0.x;
+        const uy = p1.y - p0.y;
+        const uz = p1.z - p0.z;
+        const vx = p2.x - p0.x;
+        const vy = p2.y - p0.y;
+        const vz = p2.z - p0.z;
+        const normal = new THREE.Vector3(
+            uy * vz - uz * vy,
+            uz * vx - ux * vz,
+            ux * vy - uy * vx,
+        );
         return normal.lengthSq() > 0 ? normal.normalize() : new THREE.Vector3(0, 1, 0);
     }
 
@@ -3506,13 +3539,14 @@ export class CADController {
         }
 
         const center = new THREE.Vector3();
+        const worldPosition = new THREE.Vector3();
         selectedVertexIds.forEach(vertexId => {
             const vertex = meshData.getVertex(vertexId);
             if (!vertex) {
                 return;
             }
 
-            center.add(new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z).applyMatrix4(object.matrixWorld));
+            center.add(setVectorFromPosition(worldPosition, vertex.position).applyMatrix4(object.matrixWorld));
         });
 
         center.divideScalar(selectedVertexIds.length);
@@ -3547,7 +3581,7 @@ export class CADController {
                     return;
                 }
 
-                centerLocal.add(new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z));
+                addPositionToVector(centerLocal, vertex.position);
                 vertexCount++;
             });
 

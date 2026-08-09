@@ -3,9 +3,9 @@
 import { MeshoptDecoder } from "meshoptimizer";
 import * as THREE from "three";
 import { LoadingManager } from "three";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
 import { acceleratedRaycast, MeshBVH } from "three-mesh-bvh";
 
 import BaseLoader from "./BaseLoader";
@@ -14,6 +14,7 @@ import global from "../../../global";
 import { DetectDevice } from '../../../utils/DetectDevice';
 import { loadGLTFWithAssetResolution } from "../../../utils/LoaderWrappers";
 import MeshUtils from "../../../utils/MeshUtils";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 import GLTFLoaderExtended from "./GLTFLoaderExtended";
 
 const GEOMETRY_CACHE = new Map();
@@ -46,7 +47,6 @@ const clearLoaderTimer = (timer) => {
 const initSharedDracoLoader = (loadingManager) => {
     const loader = new DRACOLoader(loadingManager);
     loader.setDecoderPath(`/assets/js/draco/gltf/`);
-    loader.setDecoderConfig({ type: "wasm" });
     loader.setWorkerLimit(DRACO_WORKER_LIMIT);
     loader.preload?.();
     return loader;
@@ -177,23 +177,22 @@ const applyGeometryCache = (urlKey, scene) => {
         GEOMETRY_CACHE.set(urlKey, urlCache);
     }
 
+    const meshNodes = [];
     const skinnedGeometries = new Set();
-
-    scene.traverse((node) => {
-        const obj = node;
-        if (!MeshUtils.isMesh(obj)) return;
-        if (!obj.isSkinnedMesh) return;
-        if (!obj.geometry) return;
-        skinnedGeometries.add(obj.geometry);
+    traverseObjectDepthFirst(scene, (node) => {
+        if (!MeshUtils.isMesh(node)) return;
+        meshNodes.push(node);
+        if (node.isSkinnedMesh && node.geometry) {
+            skinnedGeometries.add(node.geometry);
+        }
     });
 
-    scene.traverse((node) => {
-        const obj = node;
-        if (!MeshUtils.isMesh(obj)) return;
+    for (let i = 0; i < meshNodes.length; i++) {
+        const obj = meshNodes[i];
         // NOTE: do not reuse/cache geometry for SkinnedMesh
-        if (obj.isSkinnedMesh) return; 
+        if (obj.isSkinnedMesh) continue;
         const mesh = obj;
-        if (!mesh.geometry) return;
+        if (!mesh.geometry) continue;
         const nodePath = getIndexPath(obj);
         const cached = urlCache.get(nodePath);
         let sharedGeometry = mesh.geometry;
@@ -228,7 +227,7 @@ const applyGeometryCache = (urlKey, scene) => {
         }
 
         if (skinnedGeometries.has(sharedGeometry)) {
-            return;
+            continue;
         }
 
         if (sharedGeometry.getAttribute?.("position")) {
@@ -238,7 +237,7 @@ const applyGeometryCache = (urlKey, scene) => {
         if (!sharedGeometry.boundsTree && sharedGeometry.getAttribute?.("position")) {
             sharedGeometry.boundsTree = new MeshBVH(sharedGeometry);
         }
-    });
+    }
 };
 const getMaterialTextures = (material) => {
     const slots = [
@@ -262,7 +261,7 @@ const applyTextureCache = (urlKey, scene) => {
     const urlCache = existing instanceof Map ? existing : new Map();
     if (!existing) TEXTURE_CACHE.set(urlKey, urlCache);
 
-    scene.traverse((node) => {
+    traverseObjectDepthFirst(scene, (node) => {
         const obj = node;
         if (!MeshUtils.isMesh(obj)) return;
         const mesh = obj;
@@ -359,7 +358,7 @@ const dropMipmapsToMaxSize = (texture, maxSize, visited) => {
 const dropMipmapsInObject = (root, maxSize) => {
   const visited = new Set();
 
-  root.traverse((obj) => {
+  traverseObjectDepthFirst(root, (obj) => {
     if (!obj.material) return;
 
     const materials = Array.isArray(obj.material)

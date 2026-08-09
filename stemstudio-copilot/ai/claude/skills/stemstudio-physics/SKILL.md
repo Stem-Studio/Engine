@@ -34,17 +34,13 @@ Engine choice is **scene-level** — every physics-enabled object in the scene s
 
 ```bash
 python scripts/set_physics_engine.py --type ammo                  # default; widest feature coverage
-python scripts/set_physics_engine.py --type rapier --gravity -9.81  # no vehicle support
-python scripts/set_physics_engine.py --type jolt --gravity -15
-python scripts/set_physics_engine.py --type physx
+python scripts/set_physics_engine.py --type rapier --gravity -9.81
 ```
 
 | Engine | Status | Notes |
 |--------|--------|-------|
 | `ammo` | Default, most mature | Widest feature coverage (vehicles, character controller, joints) |
-| `rapier` | Stable | **No vehicle support** — `addVehicleObject` is a runtime error on Rapier |
-| `jolt` | New (PR #4538) | Fast; verify feature parity for the specific scene |
-| `physx` | New (PR #4538) | Heaviest WASM payload; verify feature parity |
+| `rapier` | Stable | Alternative backend with rigid bodies, vehicles, character controllers, and joints |
 
 Gravity is on the Y axis; negative = down (Earth-like is `-9.81`). Omit `--gravity` to leave the scene's current value unchanged.
 

@@ -24,6 +24,7 @@ import BehaviorData from "../../behaviors/BehaviorData";
 import i18n from "@stem/editor-oss/i18n/config";
 import {showToast} from "@stem/editor-oss/showToast";
 import {BEHAVIOR_UI_CONTAINER_ID} from "@stem/editor-oss/types/editor";
+import {findObjectByUuidDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 const BehaviorWidgetsContainer = styled.div`
     display: flex;
@@ -321,6 +322,7 @@ class BehaviorUIManager {
                                 plugin.onEditorButtonClicked?.(value.action);
                                 // Sync attributes from behavior back to behaviorData after the action
                                 Object.assign(behaviorData.attributesData ?? {}, plugin.attributes);
+                                this.behaviorPluginManager.refreshEditorPreviewInstancingBudget?.();
                             }
 
                             // Update the runtime behavior through GameManager
@@ -348,6 +350,7 @@ class BehaviorUIManager {
                             (plugin as any).attributes = behaviorData.attributesData;
                             // Note: NumberWidget debounces calls to updateBehaviorField, so this is safe
                             plugin.onEditorAttributesUpdated?.();
+                            this.behaviorPluginManager.refreshEditorPreviewInstancingBudget?.();
                         }
 
                         // Check if this field affects visibility of other attributes
@@ -429,6 +432,7 @@ class BehaviorUIManager {
         if (plugin) {
             (plugin as any).attributes = this.currentBehaviorData.attributesData;
             plugin.onEditorAttributesUpdated?.();
+            this.behaviorPluginManager.refreshEditorPreviewInstancingBudget?.();
         }
 
         this.validateTriggerConfigurationAndDisableIfInvalid();
@@ -463,7 +467,7 @@ class BehaviorUIManager {
 
         const isGlobalBehaviorHost = (uuid?: string): boolean => {
             if (!uuid || !scene) return false;
-            const object = scene.getObjectByProperty("uuid", uuid);
+            const object = findObjectByUuidDepthFirst(scene, uuid);
             return object?.name === "GlobalBehaviorHost";
         };
 

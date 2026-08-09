@@ -1,36 +1,7 @@
-import {GridHelper, type Object3D} from "three";
+import type {Object3D} from "three";
 
-import {DYNAMIC_ROOT_NAME} from "../../scene/dynamicRoots";
 import MeshUtils from "../../utils/MeshUtils";
-
-type PickContext = {
-    app: {
-        mode?: string;
-        game?: {
-            player?: {
-                uuid?: string;
-            } | null;
-        } | null;
-    };
-    editor: {
-        scene: Object3D;
-        camera: Object3D;
-        sceneLockedItems?: string[] | null;
-    };
-};
-
-export function isHiddenFromSceneHierarchy(object: Object3D | null | undefined): boolean {
-    let current = object;
-
-    while (current) {
-        if (current.name === DYNAMIC_ROOT_NAME || current.userData?.isRuntimeOnly) {
-            return true;
-        }
-        current = current.parent;
-    }
-
-    return false;
-}
+import {resolvePlanCadSelectionTarget} from "../../utils/PlanCadSelectionMetadata";
 
 export function resolveSelectionTargetFromPickHit(object: Object3D | null | undefined): Object3D | null {
     if (!object) {
@@ -45,19 +16,10 @@ export function resolveSelectionTargetFromPickHit(object: Object3D | null | unde
         return object.parent;
     }
 
-    return MeshUtils.partToMesh(object);
-}
+    const planCadTarget = resolvePlanCadSelectionTarget(object);
+    if (planCadTarget) {
+        return planCadTarget;
+    }
 
-export function getPickBlockReason(object: Object3D | null | undefined, {app, editor}: PickContext): string | null {
-    if (!object) return "null-object";
-    if (isHiddenFromSceneHierarchy(object)) return "hidden-hierarchy";
-    if ((object as Object3D & {tag?: string}).tag === "helper") return "tag-helper";
-    if ((object as Object3D & {tag?: string}).tag === "gizmo") return "tag-gizmo";
-    if (object === editor.scene) return "editor-scene";
-    if (object === editor.camera) return "editor-camera";
-    if (object instanceof GridHelper) return "grid-helper";
-    if (editor.sceneLockedItems?.includes(object.uuid)) return "locked-item";
-    if (object.uuid === app.game?.player?.uuid) return "player-object";
-    if (app.mode === "play" && object.userData?.isSelectable === false) return "isSelectable-false-in-play-mode";
-    return null;
+    return MeshUtils.partToMesh(object);
 }

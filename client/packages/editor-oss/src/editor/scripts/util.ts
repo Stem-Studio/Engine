@@ -5,7 +5,7 @@ import {getScriptRevisionData} from "@stem/network/api/script";
 import {getAssetResolutionContext, resolveAssetRevisionId, setAssetRevision} from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import global from "@stem/editor-oss/global";
 import {seedScriptDependencyEntry} from "../../script-runtime/scriptDependencyCache";
-import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../script-runtime/scriptImports";
+import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../script-runtime/scriptImportCore";
 import {isScriptsEnabled} from "@stem/editor-oss/utils/featureFlags";
 import {updateSceneBehaviorRevision} from "../behaviors/util";
 

@@ -1,7 +1,7 @@
 import axios from "axios";
 import {useEffect, useMemo, useState} from "react";
 
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 import {SearchInput} from "../../../common/SearchInput";

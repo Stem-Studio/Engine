@@ -13,7 +13,7 @@
 //
 // The narrower `eslint.boundary.cjs` is still run separately by
 // `bun run lint:oss-boundary` and remains the load-bearing gate that keeps
-// proprietary imports out of `@stem/editor-oss`. This config does NOT
+// hosted-service imports out of `@stem/editor-oss`. This config does NOT
 // duplicate that boundary contract — keep the two concerns separate.
 
 import js from '@eslint/js';
@@ -53,8 +53,6 @@ export default [
       '**/*.d.ts',
       'packages/editor-oss/src/physics/worker/**',
       '**/__generated__/**',
-      // Vendored / emscripten-generated WASM glue — not hand-written source.
-      '**/mediapipe-pose/wasm/**',
       '**/ammo/*.js',
       '**/draco/**',
       '**/basis/**',

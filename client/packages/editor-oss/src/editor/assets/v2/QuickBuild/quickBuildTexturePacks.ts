@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 import {getQuickBuildMetadata, repairQuickBuildRenderableState} from "./quickBuildObjects";
 import type {QuickBuildStampKind} from "./quickBuildObjects";
@@ -263,7 +264,7 @@ export function applyQuickBuildTexturePreset(
     repairQuickBuildRenderableState(object);
 
     let applied = false;
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         const mesh = child as THREE.Mesh;
         if (!mesh.isMesh || !canApplyTextureToMesh(metadata.kind, mesh.userData?.quickBuildPart)) return;
 

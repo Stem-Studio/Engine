@@ -1,7 +1,6 @@
 import {useEffect, useRef, useState} from "react";
 import {useLocation, useNavigate, useParams} from "react-router-dom";
 
-import {setSceneAiPromptMode} from "@stem/network/api/scene/thumbnail";
 import {useAppGlobalContext, useAuthorizationContext, useHomepageContext} from "../../../context";
 import {writeAdvancedModePreference} from "../../../context/advancedModeStorage";
 import {useAssetResolutionContext} from "../../../context/AssetResolutionContext";
@@ -10,7 +9,6 @@ import LibrariesContextProvider from "../../../context/LibrariesContext";
 import ModelsTabContextProvider from "../../../context/ModelsTabContext";
 import {readDashboardCopilotBootstrap} from "../../../editor/assets/v2/AiCopilot/dashboardCopilotBootstrap";
 import {peekStemscriptImport} from "../../../agent/script-tool/stemscriptImportStaging";
-import {IS_OSS} from "../../../mode/buildMode";
 import {getRandomPlaceholderIdentifier} from "../../../editor/assets/v2/CreateDashboard/GameOverview/placeholderThumbnails";
 import {createSandboxStarter, handleSaveScene} from "../../../editor/assets/v2/TemplatePanel/helpers";
 import EditorComponent from "../../../editor/EditorComponent";
@@ -25,6 +23,8 @@ import {showToast} from "../../../showToast";
 import {StemStudioLoader} from "../../../ui";
 import {isSceneInaccessibleError} from "../../../utils/SceneLoadErrorUtils";
 import {readEditorRouteState} from "../editorHandoff";
+import {ApplicationMode} from "../../../EngineRuntime";
+import {syncPlaygroundSceneRoute} from "../links";
 import {IEditorUser} from "../types";
 
 type CreateLocationState = {
@@ -36,7 +36,8 @@ type CreateLocationState = {
 };
 
 export const Create = () => {
-    const {projectID} = useParams();
+    const {projectID, mode: routeMode} = useParams<{projectID?: string; sceneName?: string; mode?: string}>();
+    const requestedPlaygroundMode = routeMode === "play" || routeMode === "edit" ? routeMode : undefined;
     useRewardReferralTracking(projectID);
     const {isAuthorized, userInitialized, isInitializingAuth, dbUser, isAdmin, updateRecentlyViewed} =
         useAuthorizationContext();
@@ -54,6 +55,7 @@ export const Create = () => {
     const editor = app?.editor;
 
     const [showMask, setShowMask] = useState(true);
+    const [playgroundRouteRevision, setPlaygroundRouteRevision] = useState(0);
     const location = useLocation();
     const handoffStateRef = useRef<CreateLocationState | null>(readEditorRouteState<CreateLocationState>());
     const locationState = (location.state as CreateLocationState | null) ?? handoffStateRef.current;
@@ -69,6 +71,10 @@ export const Create = () => {
     const dbUserRef = useRef<IEditorUser | null>(null);
     const openedDashboardCopilotRef = useRef(false);
     const startedCreateFlowRef = useRef(false);
+    const routeModeFromPath = (typeof window !== "undefined"
+        ? window.location.pathname
+        : location.pathname).match(/\/(edit|play)\/?$/)?.[1] as "edit" | "play" | undefined;
+    const activePlaygroundMode = routeModeFromPath ?? requestedPlaygroundMode;
 
     useEffect(() => {
         dbUserRef.current = dbUser;
@@ -180,6 +186,13 @@ export const Create = () => {
     }, []);
 
     useEffect(() => {
+        if (!isPlaygroundMode()) return;
+        const handlePlaygroundRoute = () => setPlaygroundRouteRevision(value => value + 1);
+        window.addEventListener("stem:playground-route", handlePlaygroundRoute);
+        return () => window.removeEventListener("stem:playground-route", handlePlaygroundRoute);
+    }, []);
+
+    useEffect(() => {
         if (Object.keys(context).length !== 0) {
             app?.on(`prefabPasted.Create`, (object: {id?: string} | undefined) => {
                 if (!object?.id) return;
@@ -241,18 +254,15 @@ export const Create = () => {
             } catch (e) {
                 console.error("Error while loading the project:", e);
                 failedProjectIDRef.current = projectID;
-                // In OSS mode the only durable storage is the local
-                // ProjectStore — any failure here (missing project, corrupt
-                // JSON) is unrecoverable from the editor screen. Send the
-                // user back to the dashboard rather than leaving them on a
-                // half-loaded scene with a retry loop.
-                if (IS_OSS || isSceneInaccessibleError(e)) {
-                    showToast({type: "error", title: i18n.t("Stem Studio project scene could not be loaded.")});
-                    void navigate(ROUTES.DASHBOARD, {replace: true});
-                    return;
+                // The only durable storage is the local ProjectStore. Any
+                // failure here (missing project, corrupt JSON) is unrecoverable
+                // from the editor screen, so return to the dashboard instead of
+                // leaving the editor in a retry loop.
+                if (!isSceneInaccessibleError(e)) {
+                    console.warn("[Create] unexpected scene load failure in local project store", e);
                 }
-                showToast({type: "error", title: i18n.t("Failed to load project scene.")});
-                setShowMask(false);
+                showToast({type: "error", title: i18n.t("Stem Studio project scene could not be loaded.")});
+                void navigate(ROUTES.DASHBOARD, {replace: true});
             } finally {
                 if (loadingProjectIDRef.current === projectID) {
                     loadingProjectIDRef.current = null;
@@ -260,6 +270,54 @@ export const Create = () => {
             }
         })();
     }, [projectID, userInitialized, app, isAuthorized, navigate, revisionIdToLoad, headRevisionId, setIsEditingOldRevision]);
+
+    // Playground links are intentionally self-describing: a refresh of
+    // `/.../:mode?mode=playground&scene=:sceneName` restores the same
+    // editor/runtime state. The scene ID remains authoritative for local
+    // project-store loading; the query slug is a readable URL label only.
+    useEffect(() => {
+        if (!app || !editor || !projectID || !isPlaygroundMode() || !activePlaygroundMode || showMask) return;
+        const desiredMode = activePlaygroundMode === "play" ? ApplicationMode.PLAY : ApplicationMode.EDIT;
+        // The application enters EDIT as part of its normal startup sequence.
+        // Do not enqueue a second EDIT transition while that sequence is still
+        // in IDLE: a user can click Play before the queued transition drains,
+        // which would otherwise run after PLAY and immediately kick the game
+        // back to the editor. A real user-requested PLAY → EDIT transition is
+        // still handled explicitly by the editor controls.
+        if (desiredMode === ApplicationMode.EDIT &&
+            (app.mode === ApplicationMode.IDLE || app.mode === ApplicationMode.PLAY)) return;
+        const alreadyInMode = desiredMode === ApplicationMode.PLAY
+            ? app.mode === ApplicationMode.PLAY || app.isPlaying
+            : app.mode !== ApplicationMode.PLAY && !app.isPlaying;
+        if (alreadyInMode) return;
+
+        let cancelled = false;
+        void app.setMode(desiredMode, {editorSavePolicy: "discard"}).catch(error => {
+            if (!cancelled) console.error("[Create] Could not restore Playground mode from URL", error);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [app, editor, projectID, activePlaygroundMode, showMask, playgroundRouteRevision]);
+
+    useEffect(() => {
+        if (!app || !editor || !projectID || !isPlaygroundMode() || showMask) return;
+        const syncRoute = () => {
+            const mode = app.mode === ApplicationMode.PLAY || app.isPlaying ? "play" : "edit";
+            syncPlaygroundSceneRoute(projectID, editor.sceneName, mode);
+        };
+        syncRoute();
+        app.on("sceneLoaded.CreatePlaygroundRoute", syncRoute);
+        app.on("sceneNameUpdated.CreatePlaygroundRoute", syncRoute);
+        app.on("playerStarted.CreatePlaygroundRoute", syncRoute);
+        app.on("playerStopped.CreatePlaygroundRoute", syncRoute);
+        return () => {
+            app.on("sceneLoaded.CreatePlaygroundRoute", null);
+            app.on("sceneNameUpdated.CreatePlaygroundRoute", null);
+            app.on("playerStarted.CreatePlaygroundRoute", null);
+            app.on("playerStopped.CreatePlaygroundRoute", null);
+        };
+    }, [app, editor, projectID, showMask]);
 
     useEffect(() => {
         if (!app || !isAuthorized || !userInitialized || projectID) return;
@@ -340,17 +398,6 @@ export const Create = () => {
         setAdvancedMode(false);
         writeAdvancedModePreference(false, projectID);
 
-        // Persist the AI-prompt-mode flag on the scene so future opens default
-        // to non-advanced layout. Best-effort: if it fails we log and continue;
-        // the pending/project-level advanced-mode preference has already been
-        // set by the dashboard before navigation.
-        const sceneName = app.editor?.sceneName;
-        if (sceneName && !IS_OSS && !isPlaygroundMode()) {
-            setSceneAiPromptMode(projectID, sceneName, true).catch(err => {
-                console.warn("[Create] Failed to set AiPromptMode on scene", err);
-            });
-        }
-
         const openCopilotWhenReady = (attempt = 0) => {
             const editorComponent = app.editor?.component;
             if (editorComponent?.openAiCopilot) {
@@ -366,14 +413,13 @@ export const Create = () => {
         window.setTimeout(() => openCopilotWhenReady(), 150);
     }, [app, projectID, showMask, setAdvancedMode]);
 
-    // OSS dashboard "Import stemscript folder" handoff. The dashboard
-    // stages the script + asset bytes in IndexedDB and navigates here. We
-    // auto-open the Copilot panel so the inline terminal hook mounts —
-    // that hook consumes the staged payload and runs the same `exec`
-    // pipeline the user would invoke manually.
+    // Dashboard "Import stemscript folder" handoff. The dashboard stages the
+    // script + asset bytes in IndexedDB and navigates here. We auto-open the
+    // Copilot panel so the inline terminal hook mounts — that hook consumes
+    // the staged payload and runs the same `exec` pipeline the user would
+    // invoke manually.
     const openedImportCopilotRef = useRef(false);
     useEffect(() => {
-        if (!IS_OSS) return;
         if (!app || !projectID || showMask) return;
         if (openedImportCopilotRef.current) return;
 

@@ -54,7 +54,7 @@ Every behavior follows a defined lifecycle from creation to cleanup:
 │   ┌─────── Game Loop ────────────────────────────────────┐       │
 │   │                                                      │       │
 │   │  update(deltaTime)         ← every frame             │       │
-│   │  fixedUpdate(fixedDelta)   ← fixed timestep (opt.)   │       │
+│   │  fixedUpdate(delta)        ← each fixed sim step      │       │
 │   │  onEvent(msg, data)        ← when events arrive      │       │
 │   │  onAttributesUpdated()     ← when attrs change       │       │
 │   │  onPaused() / onResumed()  ← pause state changes     │       │
@@ -79,7 +79,7 @@ Every behavior follows a defined lifecycle from creation to cleanup:
 | `init(game)` | Behavior is created, target is set | One-time setup, caching references |
 | `onStart()` | Game play begins (can be async) | Finding other behaviors, subscribing to events |
 | `update(deltaTime)` | Every frame during play | Movement, animation, visual updates |
-| `fixedUpdate(fixedDeltaTime)` | Fixed timestep (e.g. 60Hz). **Requires scheduler behaviorUpdateMode = "fixed".** | Physics-dependent logic, deterministic simulation |
+| `fixedUpdate(fixedDeltaTime)` | Once per fixed simulation step, after physics and collision processing | Physics-coupled gameplay and deterministic rules |
 | `onEvent(msg, data)` | An event is received | Reacting to gameplay events from other behaviors or engine systems |
 | `onAttributesUpdated()` | Any attribute changes in editor | Refreshing internal state from new attribute values |
 | `onPaused()` | Behavior is paused | Stopping sounds, freezing timers |
@@ -91,11 +91,15 @@ Every behavior follows a defined lifecycle from creation to cleanup:
 
 ### fixedUpdate vs update
 
-`update(deltaTime)` runs once per rendered frame. The `deltaTime` value varies depending on frame rate.
+`update(deltaTime)` runs once per rendered frame. Its delta varies with frame
+rate and is appropriate for animation, camera, UI, and visual effects.
 
-`fixedUpdate(fixedDeltaTime)` runs at a fixed rate determined by quality settings (typically 60Hz on desktop). Use it for physics-dependent logic where you need deterministic behavior regardless of frame rate. Visual smoothing should still happen in `update()`.
-
-To use `fixedUpdate`, you must implement it in your behavior class **and** enable the frame-based scheduler with fixed updates in Scene Settings (Scheduler > Behavior Update Mode = "fixed"). Without this setting, `fixedUpdate` will never be called.
+`fixedUpdate(fixedDeltaTime)` runs once for every step selected by the engine's
+authoritative simulation clock. The engine clamps tab spikes and limits
+catch-up work according to the active quality policy. Physics runs first, then
+collision processing, fixed behaviors, and fixed lambdas. A behavior that
+implements both hooks receives both at their respective cadences; a fixed-only
+behavior is not double-called by the variable frame.
 
 ## Runtime Helpers
 

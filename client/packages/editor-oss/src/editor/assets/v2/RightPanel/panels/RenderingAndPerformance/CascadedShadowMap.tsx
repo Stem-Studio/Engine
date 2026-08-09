@@ -4,6 +4,7 @@ import EngineRuntime, { GLOBAL_BEHAVIOR_HOST, CASCADED_SHADOWS_MAP_BEHAVIOR_ID }
 import { AttachBehaviorCommand } from "@stem/editor-oss/command/Commands";
 import global from "@stem/editor-oss/global";
 import { BEHAVIOR_UI_CONTAINER_ID } from "@stem/editor-oss/types/editor";
+import {findObjectByNameDepthFirst, findObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import { ContentItem } from "../../common/ContentItem";
 import { Separator } from "../../common/Separator";
 import { PanelSectionTitle } from "../../RightPanel.style";
@@ -31,7 +32,7 @@ export const CascadedShadowMap = () => {
             return console.error("No scene available");
         }
 
-        let target: any = scene.getObjectByName(GLOBAL_BEHAVIOR_HOST);
+        let target: any = findObjectByNameDepthFirst(scene, GLOBAL_BEHAVIOR_HOST);
         let selectedBehavior: any;
 
         if (target && Array.isArray(target.userData.behaviors)) {
@@ -68,10 +69,7 @@ export const CascadedShadowMap = () => {
 
         if (!selectedBehavior || !target) {
             // Auto-attach CSM to the first directional light found in the scene
-            let firstDirLight: any;
-            scene.traverse((c: any) => {
-                if (c.isDirectionalLight && !firstDirLight) firstDirLight = c;
-            });
+            const firstDirLight = findObjectDepthFirst(scene, c => (c as any).isDirectionalLight) as any;
 
             if (!firstDirLight) {
                 console.warn(`No directional light found to attach ${CASCADED_SHADOWS_MAP_BEHAVIOR_ID}`);

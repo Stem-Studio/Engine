@@ -15,8 +15,8 @@ matching module here that satisfies the same exported API surface but
 implements it against `packages/local-backend/`'s HTTP endpoints.
 
 The active adapter is chosen by `createBackendAdapter` based on the
-`?backend=local|remote` query / `stem.backend.mode` localStorage /
-`REACT_ENGINE_BACKEND_MODE` env precedence — see `network/src/adapter.ts`.
+explicit `?backend=local|remote` query, Playground session, stored preference,
+environment, then the no-flag local default — see `network/src/adapter.ts`.
 
 ## Current state
 

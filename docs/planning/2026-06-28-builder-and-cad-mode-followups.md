@@ -1,5 +1,10 @@
 # Builder and CAD mode follow-ups
 
+> **Status: Superseded.**
+> This foundation was carried into the
+> [Builder/CAD production-hardening plan](./2026-07-06-builder-cad-production-hardening.md).
+> Retain this file as the earlier decision record.
+
 ## Commercial acceptance bar
 
 Do not call builder, CAD, or BIM work complete unless all of these are true:
@@ -89,6 +94,23 @@ Optional texture-pack deployment:
   stay separate from the product source tree.
 - The Quick Build toolbar discovers deployed packs at runtime and shows compatible
   texture presets for the active stamp type.
+
+Texture/rendering TODOs:
+
+- [ ] Investigate the broken/checkerboard texture rendering seen on stamped
+      wall/building surfaces. Verify whether the artifact is missing texture
+      payload, bad UVs, color-space setup, texture atlas addressing, or fallback
+      material behavior.
+- [ ] Evaluate `pascalorg/editor` textures as a replacement/default texture
+      source only after confirming the exact asset license, attribution
+      requirements, and redistribution terms. If compatible, add them through
+      the runtime texture-pack path with license/notice files rather than
+      copying untracked assets directly into source.
+- [ ] Add a plain-color or embedded permissive fallback for Quick Build/BIM
+      surfaces so missing optional texture packs do not render as broken
+      checkerboards.
+- [ ] Add a visual regression for the large patchwork/checkerboard artifact seen
+      on wall/BIM surfaces before switching texture sources.
 
 Remaining productization after the core foundation:
 

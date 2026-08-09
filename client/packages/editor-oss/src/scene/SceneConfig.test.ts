@@ -13,10 +13,9 @@ vi.mock("../editor/defaultRendering", () => ({
 }));
 
 // three.js example modules not resolvable in test environment
-vi.mock("three/examples/jsm/loaders/FontLoader", () => ({ FontLoader: vi.fn() }));
-vi.mock("three/examples/jsm/loaders/SVGLoader", () => ({ SVGLoader: vi.fn() }));
-vi.mock("three/examples/jsm/geometries/TextGeometry", () => ({ TextGeometry: vi.fn() }));
-vi.mock("three/examples/jsm/renderers/CSS3DRenderer", () => ({
+vi.mock("three/addons/loaders/FontLoader", () => ({ FontLoader: vi.fn() }));
+vi.mock("three/addons/geometries/TextGeometry", () => ({ TextGeometry: vi.fn() }));
+vi.mock("three/addons/renderers/CSS3DRenderer", () => ({
     CSS3DObject: vi.fn(),
     CSS3DSprite: vi.fn(),
     CSS3DRenderer: vi.fn(),

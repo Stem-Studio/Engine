@@ -13,9 +13,7 @@
   },
   "PhysicsEngineType": {
     "Ammo": "ammo",
-    "Rapier": "rapier",
-    "Jolt": "jolt",
-    "PhysX": "physx"
+    "Rapier": "rapier"
   },
   "OBJECT_INTERACTION_OPTIONS": {
     "PICKUP_DROP": "Pickup and Drop",

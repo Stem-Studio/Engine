@@ -27,7 +27,6 @@ export class BehaviorWorkerBridge {
     private behavior: Behavior;
     private label: string;
     private raw: boolean;
-    private ready = false;
     private comlinkProxy: Comlink.Remote<BehaviorWorkerAPI> | null = null;
 
     /**
@@ -77,7 +76,6 @@ export class BehaviorWorkerBridge {
                         console.error(`[BehaviorWorker] Error in onWorkerMessage for ${this.label}:`, err);
                     }
                 };
-                this.ready = true;
             } else {
                 this.comlinkProxy = Comlink.wrap<BehaviorWorkerAPI>(this.worker);
             }
@@ -107,9 +105,7 @@ export class BehaviorWorkerBridge {
                 }
             }),
         );
-        this.comlinkProxy.init(initData).then(() => {
-            this.ready = true;
-        }).catch(err => {
+        this.comlinkProxy.init(initData).catch(err => {
             console.error(`[BehaviorWorker] Error initializing worker for ${this.label}:`, err);
         });
     }
@@ -166,7 +162,6 @@ export class BehaviorWorkerBridge {
             this.worker = null;
         }
         this.comlinkProxy = null;
-        this.ready = false;
         this.onRawMessage = undefined;
     }
 }

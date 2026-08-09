@@ -9,6 +9,13 @@ prerequisites: [getting-started/02-editor-tour, editor/02-right-panel]
 
 # Project Settings
 
+> **Playground availability:** this page documents the settings schema, which
+> also contains compatibility fields for API-backed product modes. The current
+> Playground supports local project, scene, rendering, physics, input, and play
+> settings. Hosted collaboration, accounts, publishing, and platform
+> integrations are not deployed and their controls are hidden in Playground
+> mode.
+
 Project settings control how your entire game works -- from its name and description to physics simulation, snapping behavior, multiplayer rules, and platform integrations.
 
 To open project settings:
@@ -32,7 +39,7 @@ The Project Details section contains the metadata that identifies your game.
 | Field | Description |
 |-------|-------------|
 | **Project Size** | Read-only display of the current scene file size in MB. A warning appears if the scene is unusually large. |
-| **Name** | The public title of your game, shown to players and in listings. |
+| **Name** | The project/game title shown in local editor and player surfaces. |
 | **Project Slug** | A subdomain identifier for your game (e.g., `coolgame.erth.ai`). Only lowercase letters, numbers, and hyphens are allowed. Admin access may be required. |
 | **Description** | A short summary used in discovery surfaces and share cards. |
 | **Content Rating** | Age-appropriateness guidance. Options: Unrated, Everyone, Everyone 10+, Teen, Mature 17+, Adults Only. |
@@ -104,7 +111,9 @@ Debug settings help you develop and test your game.
 
 ![Advanced Settings section showing collaborative mode and voice chat options](images/advanceed%20voice.png)
 
-The Advanced Settings section (labeled "Advance Settings" in the editor) controls collaboration and runtime behavior options.
+The Advanced Settings section contains runtime options plus compatibility
+fields for collaboration. Collaboration requires the undeployed API-backed
+mode and is not available in Playground.
 
 | Field | Description |
 |-------|-------------|
@@ -127,7 +136,7 @@ The Physics section sets the global simulation defaults for your scene.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| **Engine** | Selects the runtime physics engine. **Ammo** (Bullet Physics) is the engine currently available in StemStudio. | Ammo |
+| **Engine** | Selects **Ammo** (default) or **Rapier** (Beta). Common APIs are shared, but solver and feature behavior can differ. | Ammo |
 | **Gravity** | Global gravity acceleration applied to all dynamic rigid bodies, in meters per second squared. Negative values pull downward. | -9.81 |
 
 ### Gravity Values
@@ -380,11 +389,13 @@ When you enable Multiplayer, several additional options become available:
 
 ---
 
-## Platform Integrations
+## Platform Integrations (Not Available In Playground)
 
 ![Platform Integrations section showing Discord, Steam, and other integration options](images/platform%20intergrations.PNG)
 
-Platform integrations are only visible when **Enable User Accounts** is turned on in Player Settings. These integrations connect your game with external platforms.
+These schema fields belong to the undeployed account/publishing product mode.
+They are hidden in Playground and configuring them does not create a hosted
+identity service or platform release.
 
 ### Email/Password Auth
 
@@ -406,7 +417,8 @@ Configures Steam platform integration for publishing on the Steam store.
 
 Configures integration with the CrazyGames web gaming platform.
 
-> **Tip:** You do not need to enable all integrations at once. Start with Email/Password or Discord for authentication, and add other platforms as needed when you are ready to publish.
+> **Note:** Treat these values as compatibility metadata only until an
+> API-backed deployment implements the corresponding services.
 
 ---
 
@@ -439,13 +451,17 @@ The settings panel presents sections in this order from top to bottom:
 ## Practical Tips
 
 - **Set Project Details first.** Name and describe your game early so you can identify it easily in your dashboard.
-- **Leave the physics engine on Ammo.** It is the only fully supported engine.
+- **Choose the physics engine early.** Ammo is the default; Rapier remains
+  Beta. Test important joints, contacts, characters, and vehicles on the
+  backend the project will use.
 - **Set the scene background early.** It makes materials and lighting much easier to judge while building.
 - **Match fog color to the background.** This makes the horizon blend cleanly instead of creating a visible seam.
 - **Enable snapping for architectural scenes.** Grid snapping at 1.0 makes walls, floors, and platforms line up perfectly.
 - **Use rotation snap presets.** The 15/30/45/90 degree preset buttons save time when building grid-aligned structures.
-- **Set content rating before publishing.** An "Unrated" game may be filtered out of some discovery surfaces.
-- **Test multiplayer settings with Play mode.** Enable multiplayer, save, and press Play to verify room joining works before publishing.
+- **Do not infer a service from a setting.** Account, collaboration,
+  visibility, and platform fields do not provision a backend in Playground.
+- **Test multiplayer locally.** Start the optional Colyseus sidecar and verify
+  room joining between local tabs.
 
 ## Common Mistakes
 
@@ -458,9 +474,10 @@ The settings panel presents sections in this order from top to bottom:
 - **Setting the time limit but not handling what happens when it expires.** The time limit value is available to your behaviors, but you need to implement the game-over logic yourself (or use a built-in behavior that respects it).
 - **Enabling all platform integrations unnecessarily.** Only enable the platforms you actually plan to deploy on. Each integration requires its own configuration and API keys.
 
-## Collaborator Management
+## Collaborator Management (Not Available In Playground)
 
-When Collaborative Mode is enabled in Advanced Settings, you can manage who has access to edit the scene.
+This section describes the intended API-backed workflow. It is retained as
+design context, but no hosted collaborator service is deployed for Playground.
 
 ### Adding A Collaborator
 
@@ -475,7 +492,8 @@ When Collaborative Mode is enabled in Advanced Settings, you can manage who has 
 2. Find the collaborator in the list.
 3. Click the remove button next to their name.
 
-Collaborators see the project in their **Shared with Me** section on the dashboard. For more on shared projects, see [Dashboard and Project Flow](../getting-started/04-dashboard-and-projects.md).
+The current local dashboard has no functional **Shared with Me** service. See
+[Local Project Flow](../getting-started/04-dashboard-and-projects.md).
 
 ## Next Steps
 

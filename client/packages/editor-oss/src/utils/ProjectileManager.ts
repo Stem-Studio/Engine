@@ -50,6 +50,8 @@ const _tempVec3A = new THREE.Vector3();
 const _tempVec3B = new THREE.Vector3();
 const _tempDirection = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
+const _raycastHits: THREE.Intersection[] = [];
+const _fallbackNormal = new THREE.Vector3(0, 1, 0);
 
 /**
  *
@@ -58,6 +60,10 @@ const _raycaster = new THREE.Raycaster();
 export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
     const definitions = new Map<string, ProjectileDefinition>();
     const active: ActiveProjectile[] = [];
+    const projectilePool: ActiveProjectile[] = [];
+    const projectileMeshes = new Set<THREE.Object3D>();
+    const raycastTargets: THREE.Object3D[] = [];
+    const maxPooledProjectiles = 256;
 
     const sharedGeometry = new THREE.SphereGeometry(0.05, 6, 4);
     const sharedMaterial = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
@@ -68,8 +74,27 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
             mesh.position.set(0, 0, 0);
             mesh.visible = false;
         },
-        maxSize: 256,
+        maxSize: maxPooledProjectiles,
     });
+
+    function getProjectileState(mesh: THREE.Mesh, def: ProjectileDefinition, params: LaunchParams): ActiveProjectile {
+        const projectile = projectilePool.pop() ?? {
+            mesh,
+            velocity: new THREE.Vector3(),
+            prevPosition: new THREE.Vector3(),
+            definition: def,
+            elapsed: 0,
+            owner: null,
+        };
+
+        projectile.mesh = mesh;
+        projectile.velocity.copy(_tempDirection).multiplyScalar(def.speed);
+        projectile.prevPosition.copy(params.origin);
+        projectile.definition = def;
+        projectile.elapsed = 0;
+        projectile.owner = params.owner ?? null;
+        return projectile;
+    }
 
     /**
      *
@@ -77,12 +102,33 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
      */
     function destroyProjectile(index: number): void {
         const proj = active[index]!;
+        projectileMeshes.delete(proj.mesh);
         scene.remove(proj.mesh);
         proj.mesh.visible = false;
         meshPool.release(proj.mesh);
+
         // Swap-remove for O(1) deletion
-        active[index] = active[active.length - 1]!;
-        active.pop();
+        const last = active.pop()!;
+        if (index < active.length) {
+            active[index] = last;
+        }
+        proj.owner = null;
+        proj.elapsed = 0;
+        if (projectilePool.length < maxPooledProjectiles) {
+            projectilePool.push(proj);
+        }
+    }
+
+    function collectRaycastTargets(): THREE.Object3D[] {
+        raycastTargets.length = 0;
+        const children = scene.children;
+        for (let i = 0, l = children.length; i < l; i++) {
+            const child = children[i];
+            if (child && !projectileMeshes.has(child)) {
+                raycastTargets.push(child);
+            }
+        }
+        return raycastTargets;
     }
 
     return {
@@ -99,6 +145,7 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
             mesh.scale.setScalar((def.radius ?? 0.1) / 0.05); // Scale relative to base geometry radius
             mesh.visible = true;
             scene.add(mesh);
+            projectileMeshes.add(mesh);
 
             _tempDirection.copy(params.direction).normalize();
 
@@ -110,14 +157,7 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
                 _tempDirection.normalize();
             }
 
-            active.push({
-                mesh,
-                velocity: _tempDirection.clone().multiplyScalar(def.speed),
-                prevPosition: params.origin.clone(),
-                definition: def,
-                elapsed: 0,
-                owner: params.owner ?? null,
-            });
+            active.push(getProjectileState(mesh, def, params));
         },
 
         update(dt: number): void {
@@ -152,9 +192,13 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
                     _raycaster.set(proj.prevPosition, _tempVec3B.normalize());
                     _raycaster.far = distance;
 
-                    const intersects = _raycaster.intersectObjects(scene.children, true);
-                    for (let j = 0; j < intersects.length; j++) {
-                        const hit = intersects[j]!;
+                    _raycastHits.length = 0;
+                    const targets = collectRaycastTargets();
+                    if (targets.length > 0) {
+                        _raycaster.intersectObjects(targets, true, _raycastHits);
+                    }
+                    for (let j = 0; j < _raycastHits.length; j++) {
+                        const hit = _raycastHits[j]!;
                         // Skip owner and projectile meshes
                         if (proj.owner && isChildOf(hit.object, proj.owner)) continue;
                         if (hit.object === proj.mesh) continue;
@@ -162,7 +206,7 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
                         if (def.onHit) {
                             def.onHit({
                                 point: hit.point,
-                                normal: hit.face?.normal ?? new THREE.Vector3(0, 1, 0),
+                                normal: hit.face?.normal ?? _fallbackNormal,
                                 object: hit.object,
                                 projectileDefinition: def,
                                 damage: def.damage ?? 1,
@@ -172,6 +216,7 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
                         destroyProjectile(i);
                         break;
                     }
+                    _raycastHits.length = 0;
                 }
             }
         },
@@ -181,6 +226,9 @@ export function createProjectileManager(scene: THREE.Scene): ProjectileManager {
                 destroyProjectile(i);
             }
             meshPool.clear();
+            projectilePool.length = 0;
+            projectileMeshes.clear();
+            raycastTargets.length = 0;
             sharedGeometry.dispose();
             sharedMaterial.dispose();
             definitions.clear();

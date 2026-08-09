@@ -1,7 +1,11 @@
 import * as THREE from "three";
-import {describe, expect, it, vi} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import Editor from "./Editor";
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 /**
  * Build a minimal Editor stub. We avoid the real constructor (which spins up
@@ -85,6 +89,84 @@ describe("Editor.runInScriptImportContext", () => {
     });
 });
 
+describe("Editor script import preview reveal", () => {
+    it("reveals runtime-only import preview meshes progressively", () => {
+        const scene = new THREE.Scene();
+        const root = new THREE.Group();
+        root.userData.isRuntimeOnly = true;
+        const first = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+        const second = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+        root.add(first, second);
+        scene.add(root);
+        const editor = makeEditor(scene);
+
+        const callbacks: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+            callbacks.push(callback);
+            return callbacks.length;
+        }));
+        vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+        const controller = editor.prepareScriptImportPreviewReveal({batchSize: 1});
+
+        expect(controller?.stats.hiddenObjects).toBe(2);
+        expect(first.visible).toBe(false);
+        expect(second.visible).toBe(false);
+
+        editor.startScriptImportPreviewReveal();
+        callbacks.shift()?.(16);
+
+        expect(first.visible).toBe(true);
+        expect(second.visible).toBe(false);
+
+        editor.restoreScriptImportPreviewReveal();
+        expect(second.visible).toBe(true);
+    });
+});
+
+describe("Editor scene traversal", () => {
+    const buildTraversalScene = () => {
+        const scene = new THREE.Scene();
+        scene.name = "scene";
+        const a = new THREE.Object3D();
+        a.name = "a";
+        const a1 = new THREE.Object3D();
+        a1.name = "a1";
+        const a2 = new THREE.Object3D();
+        a2.name = "a2";
+        const b = new THREE.Object3D();
+        b.name = "b";
+        a.add(a1, a2);
+        scene.add(a, b);
+        return scene;
+    };
+
+    it("traverses scene descendants in pre-order without visiting the scene root", () => {
+        const editor = makeEditor(buildTraversalScene());
+        const visited: string[] = [];
+
+        editor.traverseSceneObjects((object: THREE.Object3D) => {
+            visited.push(object.name);
+        });
+
+        expect(visited).toEqual(["a", "a1", "a2", "b"]);
+    });
+
+    it("reverse traverses descendants post-order without a scene snapshot array", () => {
+        const scene = buildTraversalScene();
+        const editor = makeEditor(scene);
+        const visited: string[] = [];
+
+        editor.reverseTraverseSceneObjects((object: THREE.Object3D) => {
+            visited.push(object.name);
+            object.removeFromParent();
+        });
+
+        expect(visited).toEqual(["b", "a2", "a1", "a"]);
+        expect(scene.children).toHaveLength(0);
+    });
+});
+
 describe("Editor.clearImportedContent", () => {
     const buildScene = () => {
         const scene = new THREE.Scene();
@@ -125,6 +207,9 @@ describe("Editor.clearImportedContent", () => {
     it("removes only objects flagged userData.isImported", () => {
         const env = buildScene();
         const editor = makeEditor(env.scene);
+        const traverseSpy = vi.spyOn(THREE.Object3D.prototype, "traverse").mockImplementation(() => {
+            throw new Error("recursive traverse should not be used for imported cleanup");
+        });
 
         editor.clearImportedContent();
 
@@ -133,6 +218,7 @@ describe("Editor.clearImportedContent", () => {
         expect(removed).toContain("ImportedChild");
         expect(removed).not.toContain("ManualSphere");
         expect(removed).not.toContain("DefaultCamera");
+        expect(traverseSpy).not.toHaveBeenCalled();
     });
 
     it("removes the deepest imported objects first", () => {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import {Easing} from "@tweenjs/tween.js";
 import {describe, expect, it} from "vitest";
 
 import TweenAnimationBehavior from "./TweenAnimationBehavior";
@@ -31,5 +32,17 @@ describe("TweenAnimationBehavior", () => {
         const expected = startQuaternion.clone().slerp(endQuaternion, 0.5);
         expect(target.quaternion.angleTo(expected)).toBeLessThan(1e-6);
         expect(Math.abs(target.quaternion.length() - 1)).toBeLessThan(1e-6);
+    });
+
+    it("keeps named easing lookup and linear fallback behavior", () => {
+        const target = new THREE.Object3D();
+        const behavior = new TweenAnimationBehavior(target, "tween", {
+            gameObject: {target} as any,
+            erth: {} as any,
+            attributes: {},
+        });
+
+        expect((behavior as any).getEasingFunction("quadOut")).toBe(Easing.Quadratic.Out);
+        expect((behavior as any).getEasingFunction("unknown")).toBe(Easing.Linear.None);
     });
 });

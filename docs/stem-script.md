@@ -25,7 +25,8 @@ Use that repository when you want complete game folders with a root
 
 ## Put StemStudio in Stem Script mode
 
-The public playground opens the editor at `/dashboard?mode=playground`. From
+The public playground opens the editor at `/shell.html?mode=playground` (or the
+dashboard compatibility entrypoint `/dashboard/index.html?mode=playground`). From
 there:
 
 1. Open **Playground** from the public site, or open the editor route with
@@ -42,12 +43,20 @@ The Script Tool is available to project owners/admin users. In playground
 copilot chat, the AI can also return Stem Script directly; the editor validates
 and applies those commands through the same command registry.
 
-On the dashboard, the **Import stemscript folder** banner is the fastest path
-for complete games. Pick a folder that contains a `.stemscript` file plus its
-referenced models, textures, audio, videos, behavior YAMLs, lambda YAMLs, and
-imports. StemStudio stages the folder, executes the script in a fresh project,
-imports the companion files, and saves the result into the active local project
-store.
+In Chromium browsers with the File System Access API, the dashboard's
+**Import project file** action accepts a self-contained
+`.stemscript.json` project. If the project references packaged assets, use
+**Import project folder** and select the folder containing both the project
+file and its matching `oss-<project-id>/` asset directory. Imports are copied
+into the active local project store under fresh local IDs; incomplete bundles
+fail before anything is committed.
+
+On those browsers, **Import project folder** also retains the executable Stem
+Script workflow.
+Pick a folder containing a `.stemscript` file plus its referenced models,
+textures, audio, videos, behavior YAMLs, lambda YAMLs, and imports. StemStudio
+stages the folder, executes the script in a fresh project, imports the companion
+files, and saves the result locally.
 
 ---
 
@@ -170,7 +179,7 @@ included. Use `export scene` when asset URLs are acceptable and you want a
 lighter bundle. Both produce a main `.stemscript` entrypoint plus behavior,
 lambda, import, and asset metadata needed to recreate the scene.
 
-The OSS playground keeps local script assets latest-only. Server-backed
+The local playground keeps script assets latest-only. Self-hosted
 installations can preserve full asset revision history and pin selected
 revisions in the scene's asset resolution context.
 

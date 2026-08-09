@@ -4,7 +4,7 @@
  */
 
 import { defaultBindings } from "./DefaultBindings";
-import { InputManager, Bindings } from "./InputManager";
+import { InputManager, Bindings, TriggerType } from "./InputManager";
 
 type TestActions = "jump" | "run" | "crouch" | "use" | "reload" | "forward" | "lateral" | "steer";
 
@@ -84,6 +84,35 @@ describe("InputManager", () => {
     });
 
     describe("Keyboard Input", () => {
+        it("does not read performance time when there are no timestamped inputs to clear", () => {
+            const nowSpy = vi.spyOn(performance, "now");
+
+            inputManager.update();
+
+            expect(nowSpy).not.toHaveBeenCalled();
+            nowSpy.mockRestore();
+        });
+
+        it("reuses the stuck input scratch list while clearing timed-out inputs", () => {
+            const trigger = TriggerType.Keyboard + "Space";
+            const internals = inputManager as unknown as {
+                inputTimestamps: Map<string, number>;
+                stuckTriggersScratch: string[];
+            };
+            const scratch: string[] = [];
+            internals.inputTimestamps.set(trigger, 0);
+            internals.stuckTriggersScratch = scratch;
+            const nowSpy = vi.spyOn(performance, "now").mockReturnValue(250);
+
+            inputManager.update();
+
+            expect(inputManager.getAction("jump")).toBe(false);
+            expect(internals.inputTimestamps.has(trigger)).toBe(false);
+            expect(internals.stuckTriggersScratch).toBe(scratch);
+            expect(scratch).toHaveLength(0);
+            nowSpy.mockRestore();
+        });
+
         it("should detect key press", () => {
             inputManager.attach();
 
@@ -93,6 +122,28 @@ describe("InputManager", () => {
         });
 
         it("should detect key release", () => {
+            inputManager.attach();
+
+            eventTarget.trigger("keydown", { code: "Space" });
+            expect(inputManager.getAction("jump")).toBe(true);
+
+            eventTarget.trigger("keyup", { code: "Space" });
+            expect(inputManager.getAction("jump")).toBe(false);
+        });
+
+        it("supports raw key shorthand actions for behavior-local toggles", () => {
+            inputManager.attach();
+
+            eventTarget.trigger("keydown", { code: "KeyH" });
+            expect(inputManager.getAction("h" as TestActions)).toBe(true);
+            expect(inputManager.getAction("KeyH" as TestActions)).toBe(true);
+
+            eventTarget.trigger("keyup", { code: "KeyH" });
+            expect(inputManager.getAction("h" as TestActions)).toBe(false);
+        });
+
+        it("does not duplicate listeners when attach is called repeatedly", () => {
+            inputManager.attach();
             inputManager.attach();
 
             eventTarget.trigger("keydown", { code: "Space" });
@@ -294,6 +345,48 @@ describe("InputManager", () => {
 
             expect(touchManager.getAction("touch")).toBe(false);
 
+            touchManager.dispose();
+        });
+
+        it("should release a touch when the browser cancels it", () => {
+            const touchBindings = new Bindings<"touch">();
+            touchBindings.bindMouseClick(0).toAction("touch");
+
+            const touchManager = new InputManager(touchBindings, eventTarget);
+            touchManager.attach();
+
+            eventTarget.trigger("touchstart", {
+                changedTouches: [{ identifier: 0, clientX: 100, clientY: 100 }],
+            });
+            expect(touchManager.getAction("touch")).toBe(true);
+
+            eventTarget.trigger("touchcancel", {
+                changedTouches: [{ identifier: 0 }],
+            });
+
+            expect(touchManager.getAction("touch")).toBe(false);
+            touchManager.dispose();
+        });
+
+        it("prevents browser gesture handling for touches on attached descendants", () => {
+            const touchBindings = new Bindings<"touch">();
+            touchBindings.bindMouseClick(0).toAction("touch");
+
+            const child = {};
+            Object.assign(eventTarget, {
+                contains: (node: unknown) => node === child,
+            });
+            const touchManager = new InputManager(touchBindings, eventTarget);
+            touchManager.attach();
+
+            const preventDefault = vi.fn();
+            eventTarget.trigger("touchstart", {
+                target: child,
+                preventDefault,
+                changedTouches: [{ identifier: 0, clientX: 100, clientY: 100 }],
+            });
+
+            expect(preventDefault).toHaveBeenCalledOnce();
             touchManager.dispose();
         });
     });
@@ -727,6 +820,9 @@ describe("InputManager", () => {
             mockGamepad.buttons[0] = { pressed: true, value: 1 };
             gamepadManager.update();
             expect(gamepadManager.getAction("jump")).toBe(true);
+
+            const internals = gamepadManager as unknown as { gamepadButtonTriggerCache: string[] };
+            expect(internals.gamepadButtonTriggerCache[0]).toBe(TriggerType.GamepadButton + 0);
         });
 
         it("should detect gamepad button release via edge detection", () => {
@@ -776,6 +872,41 @@ describe("InputManager", () => {
             mockGamepad.axes[1] = 0.5;
             gamepadManager.update();
             expect(gamepadManager.getMotion("forward")).toBe(-0.5); // 0.5 * -1 scale
+        });
+
+        it("does not recompute gamepad axis motion when axis values are unchanged", () => {
+            eventTarget.trigger("gamepadconnected", { gamepad: { index: 0 } });
+            const setMotionState = vi.spyOn(gamepadManager as any, "setMotionState");
+
+            mockGamepad.axes[0] = 0.8;
+            gamepadManager.update();
+            expect(gamepadManager.getMotion("lateral")).toBe(0.8);
+            expect(setMotionState).toHaveBeenCalledWith(TriggerType.GamepadAxis + 0, true, 0.8);
+            const internals = gamepadManager as unknown as { gamepadAxisTriggerCache: string[] };
+            const cachedAxisTrigger = internals.gamepadAxisTriggerCache[0];
+            expect(cachedAxisTrigger).toBe(TriggerType.GamepadAxis + 0);
+
+            setMotionState.mockClear();
+            gamepadManager.update();
+
+            expect(gamepadManager.getMotion("lateral")).toBe(0.8);
+            expect(internals.gamepadAxisTriggerCache[0]).toBe(cachedAxisTrigger);
+            expect(setMotionState).not.toHaveBeenCalled();
+        });
+
+        it("clears gamepad axis motion when the axis returns inside the deadzone", () => {
+            eventTarget.trigger("gamepadconnected", { gamepad: { index: 0 } });
+            const setMotionState = vi.spyOn(gamepadManager as any, "setMotionState");
+
+            mockGamepad.axes[0] = 0.8;
+            gamepadManager.update();
+            setMotionState.mockClear();
+
+            mockGamepad.axes[0] = 0.05;
+            gamepadManager.update();
+
+            expect(gamepadManager.getMotion("lateral")).toBe(0);
+            expect(setMotionState).toHaveBeenCalledWith(TriggerType.GamepadAxis + 0, false, 0);
         });
 
         it("should clear gamepad state on disconnect", () => {

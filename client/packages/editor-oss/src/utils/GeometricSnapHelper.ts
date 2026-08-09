@@ -1,5 +1,5 @@
-import * as THREE from "three";
-
+import {Material, Mesh, MeshBasicMaterial, Object3D, Scene, SphereGeometry, Vector3} from "three";
+import {traverseObjectDepthFirst} from "./SceneTraverser";
 export interface GeometricSnapSettings {
     snapToVertex: boolean;
     snapToEdge: boolean;
@@ -9,10 +9,10 @@ export interface GeometricSnapSettings {
 }
 
 export interface SnapResult {
-    position: THREE.Vector3;
+    position: Vector3;
     type: "vertex" | "edge" | "face";
-    target: THREE.Object3D;
-    normal?: THREE.Vector3;
+    target: Object3D;
+    normal?: Vector3;
 }
 
 /**
@@ -22,18 +22,24 @@ export interface SnapResult {
  * Phase 5: Edge and face snapping
  */
 export class GeometricSnapHelper {
-    private scene: THREE.Scene;
-    private sceneHelpers: THREE.Object3D;
+    private static readonly EMPTY_VERTICES = new Float32Array(0);
+
+    private scene: Scene;
+    private sceneHelpers: Object3D;
     private settings: GeometricSnapSettings;
-    private snapIndicator: THREE.Mesh | null = null;
-    private vertexCache: Map<string, THREE.Vector3[]> = new Map();
+    private snapIndicator: Mesh | null = null;
+    private vertexCache: Map<string, Float32Array> = new Map();
     private cacheTimestamps: Map<string, number> = new Map();
+    private excludedObjects: Set<Object3D> = new Set();
+    private closestVertexPosition = new Vector3();
+    private readonly vertexScratch = new Vector3();
+    private readonly meshWorldSphereCenter = new Vector3();
     private readonly CACHE_MAX_SIZE = 100;
     private readonly CACHE_INVALIDATION_TIME = 5000; // 5 seconds
 
     constructor(
-        scene: THREE.Scene,
-        sceneHelpers: THREE.Object3D,
+        scene: Scene,
+        sceneHelpers: Object3D,
         settings: GeometricSnapSettings,
     ) {
         this.scene = scene;
@@ -65,24 +71,24 @@ export class GeometricSnapHelper {
      * @param excludeObjects
      */
     findSnapTarget(
-        position: THREE.Vector3,
-        excludeObjects: THREE.Object3D[],
+        position: Vector3,
+        excludeObjects: Object3D[],
     ): SnapResult | null {
         let closestSnap: SnapResult | null = null;
-        let minDistance = this.settings.snapDistance;
+        let minDistanceSq = this.settings.snapDistance * this.settings.snapDistance;
 
         // Priority: vertex > edge > face (MVP: vertex only)
 
         // 1. Vertex snapping
         if (this.settings.snapToVertex) {
             const vertexSnap = this.findClosestVertex(position, excludeObjects);
-            if (vertexSnap && vertexSnap.distance < minDistance) {
+            if (vertexSnap && vertexSnap.distanceSq < minDistanceSq) {
                 closestSnap = {
                     position: vertexSnap.position,
                     type: "vertex",
                     target: vertexSnap.object,
                 };
-                minDistance = vertexSnap.distance;
+                minDistanceSq = vertexSnap.distanceSq;
             }
         }
 
@@ -128,22 +134,17 @@ export class GeometricSnapHelper {
      * @param excludeObjects
      */
     private findClosestVertex(
-        position: THREE.Vector3,
-        excludeObjects: THREE.Object3D[],
-    ): { position: THREE.Vector3; distance: number; object: THREE.Object3D } | null {
-        let closest: {
-            position: THREE.Vector3;
-            distance: number;
-            object: THREE.Object3D;
-        } | null = null;
-        let minDist = this.settings.snapDistance;
+        position: Vector3,
+        excludeObjects: Object3D[],
+    ): { position: Vector3; distanceSq: number; object: Object3D } | null {
+        let closestObject: Object3D | null = null;
+        let closestDistanceSq = 0;
+        let minDistSq = this.settings.snapDistance * this.settings.snapDistance;
+        const excludedObjects = this.buildExcludedObjectSet(excludeObjects);
 
-        // Collect all meshes to check
-        const meshesToCheck: THREE.Mesh[] = [];
-
-        this.scene.traverse((object) => {
+        traverseObjectDepthFirst(this.scene, (object) => {
             // Skip excluded objects and non-mesh objects
-            if (excludeObjects.includes(object) || !(object instanceof THREE.Mesh)) {
+            if (excludedObjects.has(object) || !(object instanceof Mesh)) {
                 return;
             }
 
@@ -152,42 +153,93 @@ export class GeometricSnapHelper {
                 return;
             }
 
-            meshesToCheck.push(object as THREE.Mesh);
-        });
-
-        // Check each mesh
-        for (const mesh of meshesToCheck) {
+            const mesh = object as Mesh;
             const geometry = mesh.geometry;
 
             if (!geometry || !geometry.attributes.position) {
-                continue;
+                return;
+            }
+
+            if (!this.meshMayContainSnapTarget(mesh, position, minDistSq)) {
+                return;
             }
 
             // Get or compute vertices
             const vertices = this.getWorldVertices(mesh);
 
-            // Check each vertex
-            for (const vertex of vertices) {
-                const dist = position.distanceTo(vertex);
-                if (dist < minDist) {
-                    minDist = dist;
-                    closest = {
-                        position: vertex.clone(),
-                        distance: dist,
-                        object: mesh,
-                    };
+            // Check each vertex from the packed xyz cache.
+            for (let i = 0; i < vertices.length; i += 3) {
+                const x = vertices[i]!;
+                const y = vertices[i + 1]!;
+                const z = vertices[i + 2]!;
+                const dx = position.x - x;
+                const dy = position.y - y;
+                const dz = position.z - z;
+                const distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
+                    closestDistanceSq = distSq;
+                    closestObject = mesh;
+                    this.closestVertexPosition.set(x, y, z);
                 }
             }
+        });
+
+        return closestObject
+            ? {
+                position: this.closestVertexPosition.clone(),
+                distanceSq: closestDistanceSq,
+                object: closestObject,
+            }
+            : null;
+    }
+
+    private buildExcludedObjectSet(excludeObjects: Object3D[]): Set<Object3D> {
+        this.excludedObjects.clear();
+
+        for (let i = 0, l = excludeObjects.length; i < l; i++) {
+            const object = excludeObjects[i];
+            if (!object) {
+                continue;
+            }
+            traverseObjectDepthFirst(object, (child) => {
+                this.excludedObjects.add(child);
+            });
         }
 
-        return closest;
+        return this.excludedObjects;
+    }
+
+    private meshMayContainSnapTarget(mesh: Mesh, position: Vector3, maxDistanceSq: number): boolean {
+        const geometry = mesh.geometry;
+        if (!geometry) {
+            return false;
+        }
+
+        if (geometry.boundingSphere === null) {
+            geometry.computeBoundingSphere();
+        }
+
+        if (!geometry.boundingSphere) {
+            return true;
+        }
+
+        this.meshWorldSphereCenter.copy(geometry.boundingSphere.center).applyMatrix4(mesh.matrixWorld);
+        const e = mesh.matrixWorld.elements;
+        const scaleXSq = e[0]! * e[0]! + e[1]! * e[1]! + e[2]! * e[2]!;
+        const scaleYSq = e[4]! * e[4]! + e[5]! * e[5]! + e[6]! * e[6]!;
+        const scaleZSq = e[8]! * e[8]! + e[9]! * e[9]! + e[10]! * e[10]!;
+        const maxScaleSq = Math.max(scaleXSq, scaleYSq, scaleZSq);
+        const radiusSq = geometry.boundingSphere.radius * geometry.boundingSphere.radius * maxScaleSq;
+        const conservativeDistanceSq = 2 * radiusSq + 2 * maxDistanceSq;
+        return position.distanceToSquared(this.meshWorldSphereCenter) <= conservativeDistanceSq;
     }
 
     /**
      * Get world-space vertices for a mesh (with caching)
      * @param mesh
      */
-    private getWorldVertices(mesh: THREE.Mesh): THREE.Vector3[] {
+    private getWorldVertices(mesh: Mesh): Float32Array {
         const cacheKey = mesh.uuid;
         const now = Date.now();
 
@@ -205,15 +257,18 @@ export class GeometricSnapHelper {
         const geometry = mesh.geometry;
         const positionAttribute = geometry.attributes.position;
         if (!positionAttribute) {
-            return [];
+            return GeometricSnapHelper.EMPTY_VERTICES;
         }
-        const vertices: THREE.Vector3[] = [];
-        const vertex = new THREE.Vector3();
+        const vertices = new Float32Array(positionAttribute.count * 3);
+        const vertex = this.vertexScratch;
 
         for (let i = 0; i < positionAttribute.count; i++) {
             vertex.fromBufferAttribute(positionAttribute, i);
             vertex.applyMatrix4(mesh.matrixWorld);
-            vertices.push(vertex.clone());
+            const offset = i * 3;
+            vertices[offset] = vertex.x;
+            vertices[offset + 1] = vertex.y;
+            vertices[offset + 2] = vertex.z;
         }
 
         // Update cache
@@ -237,15 +292,15 @@ export class GeometricSnapHelper {
      * Create visual indicator for snap points
      */
     private createSnapIndicator(): void {
-        const geometry = new THREE.SphereGeometry(0.15, 8, 8);
-        const material = new THREE.MeshBasicMaterial({
+        const geometry = new SphereGeometry(0.15, 8, 8);
+        const material = new MeshBasicMaterial({
             color: 0x00ff00,
             transparent: true,
             opacity: 0.7,
             depthTest: false,
         });
 
-        this.snapIndicator = new THREE.Mesh(geometry, material);
+        this.snapIndicator = new Mesh(geometry, material);
         this.snapIndicator.visible = false;
         this.snapIndicator.userData.tag = "gizmo";
         this.snapIndicator.name = "SnapIndicator";
@@ -258,7 +313,7 @@ export class GeometricSnapHelper {
      * @param type
      */
     private showSnapIndicator(
-        position: THREE.Vector3,
+        position: Vector3,
         type: "vertex" | "edge" | "face",
     ): void {
         if (!this.snapIndicator) return;
@@ -270,7 +325,7 @@ export class GeometricSnapHelper {
             face: 0xff00ff, // magenta
         };
 
-        (this.snapIndicator.material as THREE.MeshBasicMaterial).color.setHex(
+        (this.snapIndicator.material as MeshBasicMaterial).color.setHex(
             colors[type],
         );
         this.snapIndicator.position.copy(position);
@@ -298,9 +353,11 @@ export class GeometricSnapHelper {
      * Invalidate cache for specific object
      * @param object
      */
-    invalidateObject(object: THREE.Object3D): void {
-        this.vertexCache.delete(object.uuid);
-        this.cacheTimestamps.delete(object.uuid);
+    invalidateObject(object: Object3D): void {
+        traverseObjectDepthFirst(object, (child) => {
+            this.vertexCache.delete(child.uuid);
+            this.cacheTimestamps.delete(child.uuid);
+        });
     }
 
     /**
@@ -311,7 +368,7 @@ export class GeometricSnapHelper {
 
         if (this.snapIndicator) {
             this.snapIndicator.geometry.dispose();
-            (this.snapIndicator.material as THREE.Material).dispose();
+            (this.snapIndicator.material as Material).dispose();
             this.sceneHelpers.remove(this.snapIndicator);
             this.snapIndicator = null;
         }

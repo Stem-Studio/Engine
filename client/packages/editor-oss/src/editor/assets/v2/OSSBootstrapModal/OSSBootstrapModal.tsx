@@ -1,16 +1,9 @@
 import {useCallback, useEffect, useState} from "react";
 
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {
-    FileSystemProjectStore,
-    IndexedDBProjectStore,
-    isFileSystemAccessSupported,
-    isOSSBootstrapped,
-    markOSSBootstrapped,
-    saveHandle,
-    setOSSPersistenceMode,
-    setProjectStore,
-} from "../../../../persistence";
+import {isOSSBootstrapped, markOSSBootstrapped} from "../../../../persistence/bootstrapState";
+import {FileSystemProjectStore} from "../../../../persistence/FileSystemProjectStore";
+import {isFileSystemAccessSupported} from "../../../../persistence/fileSystemAccess";
+import {setOSSPersistenceMode} from "../../../../persistence/mode";
 
 import {
     Container,
@@ -31,18 +24,14 @@ import {
 type ChoiceKind = "indexeddb" | "filesystem";
 
 /**
- * First-time bootstrap modal for OSS builds. Asks the user how they want
- * project storage to behave (IndexedDB vs Local folder) and persists the
- * choice. Renders only when `IS_OSS` is true and `localStorage` does not
- * already record the user's earlier decision.
- *
- * In integrated builds this component renders nothing; it's safe to mount
- * unconditionally at the app root.
+ * First-time bootstrap modal. Asks the user how they want project storage to
+ * behave (IndexedDB vs Local folder) and persists the choice. Renders only
+ * when `localStorage` does not already record the user's earlier decision.
  */
 export const OSSBootstrapModal = () => {
-    const [visible, setVisible] = useState<boolean>(() => IS_OSS && !isOSSBootstrapped());
+    const [visible, setVisible] = useState<boolean>(() => !isOSSBootstrapped());
     const [fsSupported] = useState<boolean>(() => isFileSystemAccessSupported());
-    const [choice, setChoice] = useState<ChoiceKind>(fsSupported ? "filesystem" : "indexeddb");
+    const [choice, setChoice] = useState<ChoiceKind>("indexeddb");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | undefined>(undefined);
 
@@ -65,6 +54,10 @@ export const OSSBootstrapModal = () => {
                     showDirectoryPicker: (opts?: {mode?: "read" | "readwrite"}) => Promise<unknown>;
                 }).showDirectoryPicker;
                 const handle = await picker({mode: "readwrite"});
+                const [{saveHandle}, {setProjectStore}] = await Promise.all([
+                    import("../../../../persistence/fsHandleStore"),
+                    import("../../../../persistence/projectStoreFactory"),
+                ]);
                 setOSSPersistenceMode("filesystem");
                 setProjectStore(new FileSystemProjectStore(handle as never));
                 // Persist the handle so the choice survives a reload. The
@@ -73,6 +66,10 @@ export const OSSBootstrapModal = () => {
                 // calls verifyPermission() to handle the prompt-or-fail.
                 await saveHandle(handle as never);
             } else {
+                const [{IndexedDBProjectStore}, {setProjectStore}] = await Promise.all([
+                    import("../../../../persistence/IndexedDBProjectStore"),
+                    import("../../../../persistence/projectStoreFactory"),
+                ]);
                 setOSSPersistenceMode("indexeddb");
                 setProjectStore(new IndexedDBProjectStore());
             }
@@ -97,9 +94,8 @@ export const OSSBootstrapModal = () => {
             <Container>
                 <Title id="oss-bootstrap-title">Welcome to StemStudio</Title>
                 <Subtitle>
-                    You&apos;re running the open-source build. Pick how StemStudio should store your projects on this
-                    device.
-                    You can change this later in Settings.
+                    Pick how StemStudio should store your projects on this device. You can change this later in
+                    Settings.
                 </Subtitle>
 
                 <Options>
@@ -111,8 +107,8 @@ export const OSSBootstrapModal = () => {
                         <OptionTag>Recommended</OptionTag>
                         <OptionTitle>Browser storage (IndexedDB)</OptionTitle>
                         <OptionDescription>
-                            Auto-saved in this browser. No permissions needed, works everywhere. Limited by browser quota
-                            (typically several hundred MB) and tied to this browser profile.
+                            Changes are saved automatically in this browser after a short pause. No permissions needed.
+                            Storage is tied to this browser profile and remains subject to browser quota or data clearing.
                         </OptionDescription>
                     </OptionCard>
 
@@ -128,8 +124,8 @@ export const OSSBootstrapModal = () => {
                         <OptionTag $tone="warning">{fsSupported ? "Chromium only" : "Not supported here"}</OptionTag>
                         <OptionTitle>Local folder</OptionTitle>
                         <OptionDescription>
-                            Pick a folder. Projects are written as `.stemscript.json` files inside it — git-friendly,
-                            survives browser data clears, no quota. Requires Chrome / Edge / Brave / Arc.
+                            Pick a folder. Changes are saved automatically as `.stemscript.json` files with packaged
+                            assets — git-friendly and independent of browser storage. Requires Chrome / Edge / Brave / Arc.
                         </OptionDescription>
                     </OptionCard>
                 </Options>

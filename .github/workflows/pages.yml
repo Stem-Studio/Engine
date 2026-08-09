@@ -37,6 +37,19 @@ jobs:
       - name: Build static site
         run: BUILD_MODE=oss bun run build
 
+      # GitHub Pages does not apply `_redirects` and responds to clean
+      # directory URLs with its global 404 fallback.  Materialize the two
+      # public Playground entrypoints so refresh/deep-link navigation returns
+      # HTTP 200 before the SPA boots.
+      - name: Materialize Playground entrypoints
+        run: |
+          set -euo pipefail
+          test -f build/public/index.html
+          test -f build/public/shell.html
+          mkdir -p build/public/playground build/public/dashboard
+          cp build/public/index.html build/public/playground/index.html
+          cp build/public/shell.html build/public/dashboard/index.html
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 

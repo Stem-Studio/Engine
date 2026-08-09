@@ -2,7 +2,7 @@ import axios from "axios";
 import {useEffect, useState} from "react";
 
 import {WhitelistTable} from "./WhitelistTable/WhitelistTables";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 import {StyledButton} from "../../../common/StyledButton";

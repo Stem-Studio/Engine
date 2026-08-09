@@ -30,6 +30,10 @@ const createEnemy = (attributes: Record<string, unknown> = {}) => {
     const game = {
         scene,
         player,
+        multiplayerState: {
+            isHost: vi.fn(() => true),
+            setBehaviorData: vi.fn(),
+        },
         physics: {
             setRotation: vi.fn(),
             setLinearVelocity: vi.fn(),
@@ -92,5 +96,49 @@ describe("EnemyBehavior", () => {
 
         behavior.update(0.6);
         expect(getState(behavior)).toBe("standing");
+    });
+
+    it("uses squared distance for player movement change checks", () => {
+        const {behavior, player} = createEnemy({idleRetreatDelay: 30});
+        const playerPosition = (behavior as any).playerPosition as THREE.Vector3;
+        const distanceTo = vi.spyOn(playerPosition, "distanceTo");
+        const distanceToSquared = vi.spyOn(playerPosition, "distanceToSquared");
+
+        player.position.set(1, 0, 0);
+        behavior.update(1);
+
+        expect(distanceToSquared).toHaveBeenCalled();
+        expect(distanceTo).not.toHaveBeenCalled();
+    });
+
+    it("uses squared target distances for per-frame enemy range thresholds", () => {
+        const {behavior, enemy, player} = createEnemy({
+            engageDistance: 5,
+            strikeDistance: 1,
+            idleRetreatDelay: 30,
+            roamDistance: 10,
+        });
+        const distanceTo = vi.spyOn(enemy.position, "distanceTo");
+        const distanceToSquared = vi.spyOn(enemy.position, "distanceToSquared");
+
+        player.position.set(4, 0, 0);
+        behavior.update(1);
+
+        expect(getState(behavior)).toBe("approaching");
+        expect(distanceToSquared).toHaveBeenCalledWith(expect.any(THREE.Vector3));
+        expect(distanceTo).not.toHaveBeenCalled();
+    });
+
+    it("syncs transform state without JSON.stringify", () => {
+        const stringifySpy = vi.spyOn(JSON, "stringify");
+        const {behavior, enemy, game} = createEnemy();
+        enemy.position.set(1, 2, 3);
+        enemy.rotation.set(0.1, 0.2, 0.3);
+
+        behavior.syncMultiplayerState();
+
+        expect(stringifySpy).not.toHaveBeenCalled();
+        expect(game.multiplayerState.setBehaviorData).toHaveBeenCalledWith(enemy, "enemy", "position", '{"x":1,"y":2,"z":3}');
+        expect(game.multiplayerState.setBehaviorData).toHaveBeenCalledWith(enemy, "enemy", "rotation", '{"x":0.1,"y":0.2,"z":0.3}');
     });
 });

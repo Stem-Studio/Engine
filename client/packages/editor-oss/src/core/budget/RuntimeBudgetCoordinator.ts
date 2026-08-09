@@ -2,7 +2,6 @@ import {DetectDevice} from "@stem/editor-oss/utils/DetectDevice";
 import type {AvatarBudgetPolicyOptions} from "./AvatarBudgetPolicy";
 import type {PlotBudgetPolicyOptions} from "./PlotBudgetPolicy";
 import type {
-    TextureResidencyManager,
     TextureResidencyOptions,
     TextureResidencyStats,
 } from "./TextureResidencyPolicy";
@@ -30,8 +29,13 @@ export interface RuntimeBudgetUpdateOptions {
     now?: number;
 }
 
+export interface RuntimeBudgetTextureStatsProvider {
+    getStats(): TextureResidencyStats;
+    getStatsForFrame?(): TextureResidencyStats;
+}
+
 export interface RuntimeBudgetManagers {
-    textureResidencyManager?: Pick<TextureResidencyManager, "getStats">;
+    textureResidencyManager?: RuntimeBudgetTextureStatsProvider;
 }
 
 export interface RuntimeBudgetSnapshot {
@@ -65,7 +69,7 @@ const DEFAULT_SNAPSHOT: RuntimeBudgetSnapshot = {
 
 /**
  * Coordinates runtime memory pressure without duplicating the budget policies.
- * Quality settings define the target; scheduler updates this once per frame;
+ * Quality settings define the target; the active runtime loop updates this once per frame;
  * avatar/plot/texture policies consume the current pressure as overrides.
  */
 export class RuntimeBudgetCoordinator {
@@ -126,7 +130,23 @@ export class RuntimeBudgetCoordinator {
         managers: RuntimeBudgetManagers,
         updateOptions: RuntimeBudgetUpdateOptions = {},
     ): RuntimeBudgetSnapshot {
-        const textureStats = managers.textureResidencyManager?.getStats();
+        this.updateSnapshot(managers, updateOptions);
+        return this.getSnapshot();
+    }
+
+    updateForFrame(
+        managers: RuntimeBudgetManagers,
+        updateOptions: RuntimeBudgetUpdateOptions = {},
+    ): Readonly<RuntimeBudgetSnapshot> {
+        return this.updateSnapshot(managers, updateOptions);
+    }
+
+    private updateSnapshot(
+        managers: RuntimeBudgetManagers,
+        updateOptions: RuntimeBudgetUpdateOptions,
+    ): RuntimeBudgetSnapshot {
+        const textureStats = managers.textureResidencyManager?.getStatsForFrame?.() ??
+            managers.textureResidencyManager?.getStats();
         const managedTextureBytes = textureStats?.residentTextureBytes ?? textureStats?.textureBytes ?? 0;
         const totalManagedTextureBytes = textureStats?.textureBytes ?? managedTextureBytes;
         const targetTextureBytes = this.options.managedTextureTargetBytes;
@@ -137,20 +157,19 @@ export class RuntimeBudgetCoordinator {
             : "normal";
         const framesInPressure = nextPressure === previousPressure ? this.snapshot.framesInPressure + 1 : 0;
 
-        this.snapshot = {
-            enabled: this.options.enabled,
-            pressure: nextPressure,
-            managedTextureBytes,
-            totalManagedTextureBytes,
-            targetTextureBytes,
-            usageRatio,
-            reason: this.getReason(nextPressure, usageRatio, updateOptions.underRenderPressure === true),
-            updatedAt: updateOptions.now ?? Date.now(),
-            framesInPressure,
-            isMobile: this.options.isMobile,
-            textureStats,
-        };
-        return this.getSnapshot();
+        const snapshot = this.snapshot;
+        snapshot.enabled = this.options.enabled;
+        snapshot.pressure = nextPressure;
+        snapshot.managedTextureBytes = managedTextureBytes;
+        snapshot.totalManagedTextureBytes = totalManagedTextureBytes;
+        snapshot.targetTextureBytes = targetTextureBytes;
+        snapshot.usageRatio = usageRatio;
+        snapshot.reason = this.getReason(nextPressure, usageRatio, updateOptions.underRenderPressure === true);
+        snapshot.updatedAt = updateOptions.now ?? Date.now();
+        snapshot.framesInPressure = framesInPressure;
+        snapshot.isMobile = this.options.isMobile;
+        snapshot.textureStats = textureStats;
+        return snapshot;
     }
 
     getSnapshot(): RuntimeBudgetSnapshot {

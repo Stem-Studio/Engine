@@ -16,7 +16,7 @@ import {
 import {ShareScene} from "./ShareScene";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import i18n from "@stem/editor-oss/i18n/config";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {IEditorUser} from "../../../../../v2/pages/types";
 import {useEscapeDismiss} from "../../common/hooks/useEscapeDismiss";
 import {ProgressiveImage} from "../../common/ProgressiveImage/ProgressiveImage";

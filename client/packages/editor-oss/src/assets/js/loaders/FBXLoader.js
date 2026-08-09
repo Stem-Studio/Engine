@@ -1,7 +1,8 @@
 import {LoadingManager} from "three";
-import {FBXLoader as FBXLoaderImpl} from "three/examples/jsm/loaders/FBXLoader.js";
+import {FBXLoader as FBXLoaderImpl} from "three/addons/loaders/FBXLoader.js";
 
 import BaseLoader from "./BaseLoader";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 
 /**
  * FBXLoader
@@ -26,26 +27,25 @@ class FBXLoader extends BaseLoader {
 
     load(url) {
         return new Promise(resolve => {
-            this.require("FBXLoader").then(() => {
-                console.log(`[FBXLoader] Loading FBX from: ${url}`);
-                this.loader.load(
-                    url,
-                    obj3d => {
-                        console.log(`[FBXLoader] FBX loaded successfully, failed textures: ${this.failedTextureUrls.size}`);
-                        obj3d._obj = obj3d;
-                        obj3d._root = obj3d;
+            console.log(`[FBXLoader] Loading FBX from: ${url}`);
+            this.loader.load(
+                url,
+                obj3d => {
+                    console.log(`[FBXLoader] FBX loaded successfully, failed textures: ${this.failedTextureUrls.size}`);
+                    obj3d._obj = obj3d;
+                    obj3d._root = obj3d;
 
-                        // Mark that this model had texture loading issues
-                        if (this.failedTextureUrls.size > 0) {
-                            obj3d.userData.hadTextureLoadingErrors = true;
-                            obj3d.userData.failedTextureCount = this.failedTextureUrls.size;
-                        }
+                    // Mark that this model had texture loading issues
+                    if (this.failedTextureUrls.size > 0) {
+                        obj3d.userData.hadTextureLoadingErrors = true;
+                        obj3d.userData.failedTextureCount = this.failedTextureUrls.size;
+                    }
 
-                        // Check vertexColors consistency
-                        this.checkVertexColorsConsistency(obj3d);
+                    // Check vertexColors consistency
+                    this.checkVertexColorsConsistency(obj3d);
 
-                        // MISHA: disable animation scripts (animations are done by the player controller and other behaviors)
-                        /* if (obj3d.animations && obj3d.animations.length > 0) {
+                    // MISHA: disable animation scripts (animations are done by the player controller and other behaviors)
+                    /* if (obj3d.animations && obj3d.animations.length > 0) {
                         Object.assign(obj3d.userData, {
                             animNames: obj3d.animations.map(n => n.name),
                             scripts: [{
@@ -58,24 +58,23 @@ class FBXLoader extends BaseLoader {
                         });
                     } */
 
-                        resolve(obj3d);
-                    },
-                    undefined,
-                    (error) => {
-                        console.error(`[FBXLoader] ❌ CRITICAL ERROR loading FBX:`, error);
-                        resolve(null);
-                    },
-                );
-            });
+                    resolve(obj3d);
+                },
+                undefined,
+                (error) => {
+                    console.error(`[FBXLoader] ❌ CRITICAL ERROR loading FBX:`, error);
+                    resolve(null);
+                },
+            );
         });
     }
 
     checkVertexColorsConsistency(obj3d) {
-        obj3d.traverse(child => {
+        traverseObjectDepthFirst(obj3d, child => {
             if (child.isMesh) {
                 const geometry = child.geometry;
                 let materials = child.material;
-                const hasColorAttr = geometry && geometry.attributes && geometry.attributes.color;
+                const hasColorAttr = !!(geometry && geometry.attributes && geometry.attributes.color);
                 if (!Array.isArray(materials)) materials = [materials];
                 materials = materials.map(mat => {
                     if (mat && "vertexColors" in mat) {

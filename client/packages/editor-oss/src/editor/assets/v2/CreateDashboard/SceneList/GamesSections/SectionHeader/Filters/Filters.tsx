@@ -4,8 +4,8 @@ import {useOnClickOutside} from "usehooks-ts";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {ActiveFilterOption, FilterOption} from "./CommunityFilters.style";
 import filterIcon from "./filter-icon.svg";
-import {FilterButton, FiltersList} from "./Filters.style";
-import {useHomepageContext} from "@stem/editor-oss/context";
+import {FilterButton, FilterControl, FiltersList} from "./Filters.style";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import type {ProjectFilterType} from "../../../../CreateDashboard";
 
 const PROJECT_FILTER_OPTIONS: {label: string; value: ProjectFilterType}[] = [
@@ -40,16 +40,22 @@ export const Filters = () => {
     }, [filterOptions, projectsFilter, setProjectsFilter]);
 
     return (
-        <FilterButton
-            className="reset-css"
-            onClick={() => setFiltersOpen(true)}
-        >
-            <img
-                src={filterIcon}
-                alt="filters"
-            />
+        <FilterControl ref={ref}>
+            <FilterButton
+                type="button"
+                aria-label="Sort projects"
+                aria-expanded={filtersOpen}
+                $active={filtersOpen}
+                onClick={() => setFiltersOpen(open => !open)}
+            >
+                <img
+                    src={filterIcon}
+                    alt=""
+                    aria-hidden="true"
+                />
+            </FilterButton>
             {filtersOpen && (
-                <FiltersList ref={ref}>
+                <FiltersList role="menu">
                     {filterOptions.map(({label, value}) => {
                         const isActive = projectsFilter === value;
                         const Component = isActive ? ActiveFilterOption : FilterOption;
@@ -57,6 +63,7 @@ export const Filters = () => {
                         return (
                             <Component
                                 key={value}
+                                role="menuitem"
                                 onClick={e => {
                                     e.stopPropagation();
                                     setProjectsFilter(value);
@@ -69,6 +76,6 @@ export const Filters = () => {
                     })}
                 </FiltersList>
             )}
-        </FilterButton>
+        </FilterControl>
     );
 };

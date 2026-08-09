@@ -22,7 +22,10 @@ import {showToast} from "../../showToast";
 import Converter from "../../utils/Converter";
 import MeshUtils from "../../utils/MeshUtils";
 import {ModelUtils} from "../../utils/ModelUtils";
+import {cloneObject} from "../../utils/ObjectUtils";
+import {findObjectByUuidOrNameDepthFirst} from "../../utils/SceneTraverser";
 import {traverseSceneDepthFirst} from "../../utils/SceneUtil";
+import {retainObjectGpuResources} from "../../core/resources/GpuResourceOwnership";
 import {generateUniqueName, getObjectNamesInScene} from "../../v2/pages/services";
 import {CommandResult} from "../types/ACPTypes";
 import {getObjectBaseMetaData} from "../utils/serialization";
@@ -348,15 +351,7 @@ export class PrefabHandlers {
      * @param identifier
      */
     private findObject(identifier: string): Object3D | null {
-        // Try by UUID first
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-
-        // Try by name if UUID search fails
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
-
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
     }
 
     /**
@@ -421,6 +416,7 @@ export class PrefabHandlers {
     private async updatePrefabInstances(scene: Object3D, prefabId: string): Promise<void> {
         const context = getAssetResolutionContext(scene) || emptyAssetResolutionContext;
         const prefab = await loadPrefab(prefabId, context);
+        retainObjectGpuResources(prefab);
 
         const instances: Object3D[] = [];
         traverseSceneDepthFirst(scene, obj => {
@@ -455,7 +451,8 @@ export class PrefabHandlers {
         }
 
         // Clone the prefab instance to avoid reusing the same object
-        const newInstance = prefabInstance.clone(true);
+        const newInstance = cloneObject(prefabInstance);
+        retainObjectGpuResources(newInstance);
 
         // Keep certain properties from the original object
         newInstance.uuid = target.uuid;
@@ -474,7 +471,12 @@ export class PrefabHandlers {
         // Replace old object with new prefab instance
         delete target.userData?.prefabId;
 
-        await editor.execute(new RemoveObjectCommand(target));
-        await editor.execute(new AddObjectCommand(newInstance, parent));
+        try {
+            await editor.execute(new RemoveObjectCommand(target));
+            await editor.execute(new AddObjectCommand(newInstance, parent));
+        } catch (error) {
+            MeshUtils.dispose(newInstance);
+            throw error;
+        }
     }
 }

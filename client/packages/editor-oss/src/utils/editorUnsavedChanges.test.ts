@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { editorHasUnsavedChanges } from "./editorUnsavedChanges";
+import {editorHasUnsavedChanges, getEditorSaveStatus, reconcileEditorSaveStatus} from "./editorUnsavedChanges";
 
 describe("editorHasUnsavedChanges", () => {
     it("returns true when the scene has edits after the last save", () => {
@@ -37,5 +37,29 @@ describe("editorHasUnsavedChanges", () => {
                 lastEditTime: "2026-03-15T12:05:00.000Z",
             }),
         ).toBe(true);
+    });
+});
+
+describe("getEditorSaveStatus", () => {
+    it("reports an explicit status from persisted edit/save watermarks", () => {
+        expect(getEditorSaveStatus()).toBe("Unsaved");
+        expect(getEditorSaveStatus({lastSaveTime: 20})).toBe("Saved");
+        expect(getEditorSaveStatus({lastEditTime: 30, lastSaveTime: 20})).toBe("Unsaved");
+    });
+
+    it("reconciles a skipped save from the live scene instead of assuming Saved", async () => {
+        const status = await reconcileEditorSaveStatus(
+            async () => undefined,
+            () => ({lastEditTime: 30, lastSaveTime: 20}),
+        );
+        expect(status).toBe("Unsaved");
+    });
+
+    it("reports a rejected save as Failed", async () => {
+        const status = await reconcileEditorSaveStatus(
+            async () => { throw new Error("write failed"); },
+            () => ({lastEditTime: 30, lastSaveTime: 20}),
+        );
+        expect(status).toBe("Failed");
     });
 });

@@ -150,7 +150,6 @@ export const PHYSICS_DOCS =
     "    addConcaveHull(object: Object3D, data: ConcaveHullData): void;\n" +
     "    addConvexHull(object: Object3D, data: ConvexHullData): void;\n" +
     "    addCapsuleShape(object: Object3D, data: CapsuleData): void;\n" +
-    "    addModel(object: Object3D, data: ModelData): void;\n" +
     "    addTerrain(object: Object3D, data: TerrainData): void;\n" +
     "    remove(uuid: string): void;\n" +
     "    //force, velocity, etc\n" +

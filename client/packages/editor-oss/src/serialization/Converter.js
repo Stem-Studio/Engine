@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import {ParticleEmitter} from "three.quarks";
 
 import OptionsSerializer from "./app/OptionsSerializer";
 import ScriptSerializer from "./app/ScriptSerializer";
@@ -58,9 +57,11 @@ import MirrorSerializer from "./objects/MirrorSerializer";
 import WaterSerializer from "./objects/WaterSerializer";
 import CustomShape from "../object/geometry/CustomShape";
 import CustomTube from "../object/geometry/CustomTube";
-import Text3D from "../object/geometry/Text3D";
 import {DetectDevice} from "@web-shared/utils/DetectDevice";
 import {SceneLoadProfiler} from "@web-shared/utils/SceneLoadProfiler";
+import {NoDeserializeSerializers} from "../core/noDeserializeSerializers";
+import {getPhysicsSettingsFromSceneJson} from "../core/scenePhysicsSettings";
+import {isParticleEmitterObject} from "../utils/vfxObjectUtils";
 
 // Device-adaptive deserialization batch size, in items per batch.
 // Smaller batches on mobile yield to the main thread more often (better responsiveness,
@@ -74,21 +75,68 @@ import {SceneLoadProfiler} from "@web-shared/utils/SceneLoadProfiler";
 // is the simple correct primitive; we may later switch to "N in flight".
 const CONVERTER_BATCH_COUNT = DetectDevice.isMobile() ? 16 : 32;
 
+function isThenable(value) {
+    return value && typeof value.then === "function";
+}
+
+function isText3DObject(obj) {
+    return Boolean(obj?.isMesh && obj.geometry?.type === "TextGeometry" && obj.userData?.textConfig);
+}
+
 // objects/text
 
 // mark
 
 // line
 
-export const NoDeserializeSerializers = [
-    "OptionsSerializer",
-    "CamerasSerializer",
-    "PerspectiveCameraSerializer",
-    "OrthographicCameraSerializer",
-    "WebGLRendererSerializer",
-    "ScriptSerializer",
-    "AudioListenerSerializer",
-];
+export {NoDeserializeSerializers};
+
+// Serializer metadata historically used `constructor.name`. Production
+// minifiers shorten those names (for example SceneSerializer → "Sn"), which
+// makes a saved Playground scene impossible to hydrate after a hard reload.
+// Recover the canonical serializer from the serialized object shape when an
+// old/minified generator is encountered.
+const CANONICAL_GENERATORS = new Set([
+    "SceneSerializer", "ModelSerializer", "PrefabSerializer", "TerrainSerializer", "ServerObject",
+    "GroupSerializer", "MeshSerializer", "SpriteSerializer", "AmbientLightSerializer",
+    "DirectionalLightSerializer", "HemisphereLightSerializer", "PointLightSerializer",
+    "RectAreaLightSerializer", "SpotLightSerializer", "AudioSerializer", "FireSerializer",
+    "SmokeSerializer", "BoneSerializer", "ParticleEmitterSerializer", "PerlinTerrainSerializer",
+    "WaterSerializer", "MirrorSerializer", "LineCurveSerializer", "CatmullRomCurveSerializer",
+    "QuadraticBezierCurveSerializer", "CubicBezierCurveSerializer", "EllipseCurveSerializer",
+    "Object3DSerializer", "UnscaledTextSerializer", "PointMarkerSerializer", "CustomShapeSerializer",
+    "CustomTubeSerializer", "Text3DSerializer", "OptionsSerializer", "CamerasSerializer",
+]);
+
+const canonicalGeneratorFor = (json) => {
+    const generator = json?.metadata?.generator;
+    if (typeof generator === "string" && CANONICAL_GENERATORS.has(generator)) return generator;
+    if (typeof json?.modelId === "string") return "ModelSerializer";
+    // The Scene serializer intentionally omits default Object3D properties,
+    // including `type`; its persisted child-index is the stable discriminator.
+    if (Array.isArray(json?.userData?.children)) return "SceneSerializer";
+
+    switch (json?.type) {
+        case "Scene": return "SceneSerializer";
+        case "Group": return "GroupSerializer";
+        case "Mesh": return "MeshSerializer";
+        case "Sprite": return "SpriteSerializer";
+        case "AmbientLight": return "AmbientLightSerializer";
+        case "DirectionalLight": return "DirectionalLightSerializer";
+        case "HemisphereLight": return "HemisphereLightSerializer";
+        case "PointLight": return "PointLightSerializer";
+        case "RectAreaLight": return "RectAreaLightSerializer";
+        case "SpotLight": return "SpotLightSerializer";
+        case "Audio": return "AudioSerializer";
+        case "Bone": return "BoneSerializer";
+        case "Object3D": return "Object3DSerializer";
+        default:
+            // Plain Object3D serializers also omit their default `type`, but
+            // retain a UUID. This catches minified BaseSerializer names while
+            // leaving option/script metadata (which has no UUID) untouched.
+            return typeof json?.uuid === "string" ? "Object3DSerializer" : generator;
+    }
+};
 
 const TYPES_TO_OMIT = ["LineSegments"];
 
@@ -123,13 +171,7 @@ class Converter extends BaseSerializer {
      * @returns {{engine: string | undefined, gravity: number | undefined}}
      */
     static getPhysicsSettings(jsons) {
-        if (!Array.isArray(jsons)) return {engine: undefined, gravity: undefined};
-        const sceneJson = jsons.find(n => n?.metadata?.generator === "SceneSerializer");
-        const userData = sceneJson?.userData;
-        return {
-            engine: userData?.physics?.engine,
-            gravity: userData?.physics?.gravity ?? userData?.game?.gravity,
-        };
+        return getPhysicsSettingsFromSceneJson(jsons);
     }
 
     /**
@@ -151,10 +193,6 @@ class Converter extends BaseSerializer {
         // Camera
         const cameraJson = camera ? new CamerasSerializer().toJSON(camera) : null;
         list.push(cameraJson);
-
-        // Renderer
-        /*const rendererJson = renderer ? new WebGLRendererSerializer().toJSON(renderer) : null;
-        list.push(rendererJson);*/
 
         // Scripts
         const scriptsJson = scripts ? new ScriptSerializer().toJSON(scripts) : null;
@@ -195,13 +233,10 @@ class Converter extends BaseSerializer {
      * @param {Object} options - Configuration information
      * @param {Boolean} isServerObject - Whether this is an internal model component
      */
-    traverse(obj, children, list, options, isServerObject) {
+    serializeObject(obj, options, isServerObject) {
         let json = null;
 
-        if (obj.userData?.isRuntimeOnly) {
-            // Skip objects generated at runtime.
-            return;
-        } else if (isPrefab(obj) && !isPrefabUnlocked(obj)) {
+        if (isPrefab(obj) && !isPrefabUnlocked(obj)) {
             json = new PrefabSerializer().toJSON(obj);
         } else if (obj.userData?.modelId) {
             json = new ModelSerializer().toJSON(obj);
@@ -217,7 +252,7 @@ class Converter extends BaseSerializer {
         } else if (obj.userData?.type === "Smoke") {
             // Smoke effect
             json = new SmokeSerializer().toJSON(obj);
-        } else if (obj instanceof ParticleEmitter) {
+        } else if (isParticleEmitterObject(obj)) {
             // Particle emitter
             json = new ParticleEmitterSerializer().toJSON(obj);
         } else if (obj.userData?.type === "PerlinTerrain") {
@@ -237,19 +272,14 @@ class Converter extends BaseSerializer {
             json = new CubicBezierCurveSerializer().toJSON(obj);
         } else if (obj.userData?.type === "EllipseCurve") {
             json = new EllipseCurveSerializer().toJSON(obj);
-        } else if (obj instanceof Text3D) {
+        } else if (isText3DObject(obj)) {
             // CRITICAL: Text3D must be checked BEFORE userData.type checks and BEFORE THREE.Mesh!
             // This ensures Text3D objects are always serialized with Text3DSerializer
-            console.log('[Converter] Serializing Text3D object:', obj.name, obj.uuid);
-            console.log('[Converter] Text3D userData.textConfig:', obj.userData?.textConfig);
             json = new Text3DSerializer().toJSON(obj, {
                 saveMaterial: options?.saveMaterial === false && isServerObject ? false : true,
             });
-            console.log('[Converter] Serialized Text3D json.textConfig:', json?.textConfig);
         } else if (obj.userData?.type === "pointMarker") {
             json = new PointMarkerSerializer().toJSON(obj);
-        } else if (obj.userData?.type === "Globe") {
-            json = new GlobeSerializer().toJSON(obj);
         } else if (obj instanceof THREE.Scene) {
             json = new SceneSerializer().toJSON(obj);
         } else if (obj instanceof THREE.Group) {
@@ -291,70 +321,77 @@ class Converter extends BaseSerializer {
             json = new Object3DSerializer().toJSON(obj);
         }
 
-        if (json) {
-            list.push(json);
-        } else {
-            console.warn(`Converter: No ${obj.constructor.name} Serializer.`);
-        }
+        return json;
+    }
 
-        // 1. For prefab instances, do not serialize children
-        if (isPrefab(obj) && !isPrefabUnlocked(obj)) {
-            return list;
-        }
+    traverse(obj, children, list, options, isServerObject) {
+        const stack = [{object: obj, children, isServerObject}];
 
-        // 2. For model asset instances, do not serialize children
-        if (isModelAssetInstance(obj)) {
-            return list;
-        }
+        while (stack.length > 0) {
+            const frame = stack.pop();
+            if (!frame?.object) continue;
 
-        // 3. For server models (ServerObject), if saveChild is not set, don't save internal model information
-        if (obj.userData?.Server === true && !options?.saveChild) {
-            const childrenToSave = obj.children.filter(n => !n.userData?.isRuntimeOnly);
-            childrenToSave.forEach(n => {
-                let children1 = [];
-                children.push({
-                    uuid: n.uuid,
-                    children: children1,
-                });
-                this.traverse(n, children1, list, options, isServerObject);
-            });
-            return list;
-        }
+            const current = frame.object;
+            if (current.userData?.isRuntimeOnly) {
+                // Skip objects generated at runtime.
+                continue;
+            }
 
-        // 4. If obj.userData.type is not empty, it's a built-in type and its children should not be serialized
-        if (obj.children && obj.userData?.type === undefined) {
-            obj.children.forEach(n => {
-                if (n.userData?.isRuntimeOnly) return;
-                let children1 = [];
+            const currentIsServerObject = frame.isServerObject || current.userData?.Server === true;
+            const json = this.serializeObject(current, options, currentIsServerObject);
 
-                children.push({
-                    uuid: n.uuid,
-                    children: children1,
-                });
+            if (json) {
+                list.push(json);
+            } else {
+                console.warn(`Converter: No ${current.constructor.name} Serializer.`);
+            }
 
-                this.traverse(n, children1, list, options, isServerObject);
-            });
+            // 1. For prefab instances, do not serialize children
+            if (isPrefab(current) && !isPrefabUnlocked(current)) {
+                continue;
+            }
+
+            // 2. For model asset instances, do not serialize children
+            if (isModelAssetInstance(current)) {
+                continue;
+            }
+
+            // 3. For server models (ServerObject), if saveChild is not set, don't save internal model information
+            if (current.userData?.Server === true && !options?.saveChild) {
+                this.queueSerializableChildren(current, frame.children, stack, currentIsServerObject);
+                continue;
+            }
+
+            // 4. If obj.userData.type is not empty, it's a built-in type and its children should not be serialized
+            if (current.children && current.userData?.type === undefined) {
+                this.queueSerializableChildren(current, frame.children, stack, currentIsServerObject);
+            }
         }
 
         return list;
     }
 
-    composeSceneChildren(scene) {
-        let children = [];
+    queueSerializableChildren(parent, children, stack, isServerObject) {
+        const frames = [];
+        for (let i = 0; i < parent.children.length; i++) {
+            const child = parent.children[i];
+            if (child.userData?.isRuntimeOnly) continue;
 
-        const traverse = (obj, childrenList) => {
-            if (obj.userData.Server === true || obj.userData.isRuntimeOnly) return;
-            let children1 = [];
-            childrenList.push({
-                uuid: obj.uuid,
-                children: children1,
+            const childChildren = [];
+            children.push({
+                uuid: child.uuid,
+                children: childChildren,
             });
+            frames.push({
+                object: child,
+                children: childChildren,
+                isServerObject,
+            });
+        }
 
-            traverse(obj, children1);
-        };
-
-        traverse(scene, children);
-        return children;
+        for (let i = frames.length - 1; i >= 0; i--) {
+            stack.push(frames[i]);
+        }
     }
 
     /**
@@ -370,6 +407,17 @@ class Converter extends BaseSerializer {
      * @returns {Promise} JSON data
      */
     fromJson(jsons, options) {
+        // Normalize legacy/minified serializer names before any generator
+        // lookup. This keeps production bundles reload-compatible with
+        // scenes serialized by a minified build.
+        jsons = Array.isArray(jsons)
+            ? jsons.map(json => {
+                  const generator = canonicalGeneratorFor(json);
+                  return generator && generator !== json?.metadata?.generator
+                      ? {...json, metadata: {...json.metadata, generator}}
+                      : json;
+              })
+            : jsons;
         const obj = {
             options: null,
             camera: null,
@@ -486,7 +534,7 @@ class Converter extends BaseSerializer {
      * @returns {Object} JSON data
      */
     parse(jsons, options) {
-        let sceneJson = jsons.find(n => n.metadata && n.metadata.generator === "SceneSerializer");
+        let sceneJson = jsons.find(n => canonicalGeneratorFor(n) === "SceneSerializer");
         if (!sceneJson) {
             console.warn(`Converter: No scene info in the scene.`);
             const scene = new THREE.Scene();
@@ -563,6 +611,14 @@ class Converter extends BaseSerializer {
     }
 
     async deserializeObjectFromArray(jsons, options, parts = [], serverParts = []) {
+        jsons = Array.isArray(jsons)
+            ? jsons.map(json => {
+                  const generator = canonicalGeneratorFor(json);
+                  return generator && generator !== json?.metadata?.generator
+                      ? {...json, metadata: {...json.metadata, generator}}
+                      : json;
+              })
+            : jsons;
         const data = jsons.map(n => this.deserializeObject(n, options, parts, serverParts));
         const promises = data.map(n => n.promise);
         await Promise.all(promises);
@@ -572,7 +628,10 @@ class Converter extends BaseSerializer {
     }
 
     deserializeObject(n, options, parts = [], serverParts = []) {
-        const generator = n.metadata.generator;
+        const generator = canonicalGeneratorFor(n);
+        if (generator && generator !== n?.metadata?.generator) {
+            n = {...n, metadata: {...n.metadata, generator}};
+        }
         let promise;
         if (options.options?.server) {
             options.server = options.options.server;
@@ -662,8 +721,19 @@ class Converter extends BaseSerializer {
             parts.push(new SceneSerializer().fromJSON(n, undefined, options));
             promise = Promise.resolve();
         } else if (generator === "MeshSerializer") {
-            parts.push(new MeshSerializer().fromJSON(n, undefined, options));
-            promise = Promise.resolve();
+            const mesh = new MeshSerializer().fromJSON(n, undefined, options);
+            if (isThenable(mesh)) {
+                promise = SceneLoadProfiler.time("converterSerializer-Mesh", mesh
+                    .then(obj => {
+                        if (obj) parts.push(obj);
+                    })
+                    .catch(err => {
+                        console.error("Failed to deserialize Mesh:", err);
+                    }));
+            } else {
+                parts.push(mesh);
+                promise = Promise.resolve();
+            }
         } else if (generator === "SpriteSerializer") {
             parts.push(new SpriteSerializer().fromJSON(n, undefined, options));
             promise = Promise.resolve();
@@ -698,8 +768,14 @@ class Converter extends BaseSerializer {
             parts.push(new BoneSerializer().fromJSON(n));
             promise = Promise.resolve();
         } else if (generator === "ParticleEmitterSerializer") {
-            parts.push(new ParticleEmitterSerializer().fromJSON(n, undefined, options));
-            promise = Promise.resolve();
+            promise = SceneLoadProfiler.time("converterSerializer-ParticleEmitter", new ParticleEmitterSerializer()
+                .fromJSON(n, undefined, options)
+                .then(obj => {
+                    if (obj) parts.push(obj);
+                })
+                .catch(err => {
+                    console.error("Failed to deserialize ParticleEmitter:", err);
+                }));
         } else if (generator === "PerlinTerrainSerializer") {
             parts.push(new PerlinTerrainSerializer().fromJSON(n));
             promise = Promise.resolve();
@@ -766,7 +842,9 @@ class Converter extends BaseSerializer {
 
         return {
             promise: promise,
-            object: parts[parts.length - 1],
+            get object() {
+                return parts[parts.length - 1];
+            },
             serverObjects: serverParts,
         };
     }
@@ -782,11 +860,37 @@ class Converter extends BaseSerializer {
     parseScene(scene, children, parts, serverParts, options) {
         if (children && children.length > 0) {
             // If children exist, use the children array to rebuild the scene hierarchy
-            this.parseSceneBasedOnChildrenArr(scene, children, parts, serverParts, options);
+            this.parseSceneBasedOnChildrenArr(
+                scene,
+                children,
+                parts,
+                serverParts,
+                options,
+                this.createSceneLookupMaps(parts, serverParts),
+            );
         } else {
             // If no children, use the parts and serverParts arrays to rebuild the scene
             this.parseSceneBasedOnParts(scene, parts, serverParts);
         }
+    }
+
+    createSceneLookupMaps(parts, serverParts) {
+        const serverPartsMap = new Map();
+        const partsMap = new Map();
+
+        serverParts.forEach(obj => {
+            if (obj?.uuid) {
+                serverPartsMap.set(obj.uuid, obj);
+            }
+        });
+
+        parts.forEach(obj => {
+            if (obj?.uuid) {
+                partsMap.set(obj.uuid, obj);
+            }
+        });
+
+        return {serverPartsMap, partsMap};
     }
 
     /**
@@ -864,52 +968,63 @@ class Converter extends BaseSerializer {
      * @param {Object} options - Configuration information
      * @description Since only the materials of server models are serialized, server model components are prioritized for scene construction, and serialized materials are used to replace server materials.
      */
-    parseSceneBasedOnChildrenArr(parent, children, parts, serverParts, options) {
-        // Build UUID lookup maps for O(1) access instead of O(n) filter per child
-        const serverPartsMap = new Map(serverParts.map(n => [n.uuid, n]));
-        const partsMap = new Map(parts.map(n => [n.uuid, n]));
+    parseSceneBasedOnChildrenArr(parent, children, parts, serverParts, options, lookupMaps) {
+        // Build UUID lookup maps once per parse. Large scenes commonly recurse
+        // through thousands of children, so rebuilding the same maps at every
+        // level turns hierarchy assembly into avoidable O(depth * objects) work.
+        const maps = lookupMaps || this.createSceneLookupMaps(parts, serverParts);
+        const {serverPartsMap, partsMap} = maps;
+        const stack = [{parent, children}];
 
-        children.forEach(child => {
-            if (!child) {
-                console.warn('Converter: Skipping null/undefined child in children array');
-                return;
-            }
-            let obj = serverPartsMap.get(child.uuid);
-            let isServerObject = false;
+        while (stack.length > 0) {
+            const frame = stack.pop();
+            if (!frame) continue;
+            const childFrames = [];
 
-            if (obj) {
-                // Server component
-                isServerObject = true;
-                // Save internal model components
-                let obj1 = partsMap.get(child.uuid);
+            frame.children.forEach(child => {
+                if (!child) {
+                    console.warn('Converter: Skipping null/undefined child in children array');
+                    return;
+                }
+                let obj = serverPartsMap.get(child.uuid);
+                let isServerObject = false;
 
-                if (obj1) {
-                    obj.name = obj1.name;
-                    obj.position.copy(obj1.position);
-                    obj.rotation.copy(obj1.rotation);
-                    obj.scale.copy(obj1.scale);
-                    obj.visible = obj1.visible;
+                if (obj) {
+                    // Server component
+                    isServerObject = true;
+                    // Save internal model components
+                    let obj1 = partsMap.get(child.uuid);
+
+                    if (obj1) {
+                        obj.name = obj1.name;
+                        obj.position.copy(obj1.position);
+                        obj.rotation.copy(obj1.rotation);
+                        obj.scale.copy(obj1.scale);
+                        obj.visible = obj1.visible;
+                    } else {
+                        console.warn(`Converter: The components of ServerObject ${child.uuid} is not serialized.`);
+                    }
                 } else {
-                    console.warn(`Converter: The components of ServerObject ${child.uuid} is not serialized.`);
+                    obj = partsMap.get(child.uuid);
                 }
-            } else {
-                obj = partsMap.get(child.uuid);
-            }
 
-            if (!obj) {
-                console.warn(`Converter: no element with uuid ${child.uuid}.`);
-                return;
-            }
-
-            parent.add(obj);
-
-            // 1. For server models (ServerObject), only save internal model options when saveChild is not false
-            if (isServerObject && options.options?.saveChild !== false || !isServerObject) {
-                if (child.children?.length) {
-                    this.parseScene(obj, child.children, parts, serverParts, options);
+                if (!obj) {
+                    console.warn(`Converter: no element with uuid ${child.uuid}.`);
+                    return;
                 }
+
+                frame.parent.add(obj);
+
+                // 1. For server models (ServerObject), only save internal model options when saveChild is not false
+                if ((isServerObject && options.options?.saveChild !== false || !isServerObject) && child.children?.length) {
+                    childFrames.push({parent: obj, children: child.children});
+                }
+            });
+
+            for (let i = childFrames.length - 1; i >= 0; i--) {
+                stack.push(childFrames[i]);
             }
-        });
+        }
     }
 
     /**

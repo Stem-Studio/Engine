@@ -5,6 +5,7 @@ import * as THREE from "three";
 import {AiAgentChat} from "./AiAgentChat/AiAgentChat";
 import {FloatingNavGuestView} from "./FloatingNav/FloatingNavGuestView";
 import {GameHUDView} from "./GameHUDView/GameHUDView";
+import {PerformanceOverlay} from "./PerformanceOverlay/PerformanceOverlay";
 import {getZIndexWithinHUD, HUD_Z_INDEX} from "./services";
 import {InGameData} from "./types";
 import {FTUEProvider} from "@stem/editor-oss/context/FTUEContext";
@@ -349,6 +350,12 @@ export const HUDView = ({emptyHUD}: Props) => {
                     }
                 </Wrapper>
             }
+
+            {/* The performance monitor is an engine diagnostic, not authored
+                game HUD. Keep it available in every Play session, including
+                scenes that intentionally hide their HUD. It is collapsed by
+                default and performs no polling until opened. */}
+            <PerformanceOverlay />
 
             {(loginRequested || loginReminderRequested) &&
                 <InGameLogin

@@ -1,6 +1,5 @@
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
-import {IS_OSS} from "../../../buildMode";
 
 export type CopilotTaskStatus = "todo" | "in_progress" | "done" | "blocked" | "cancelled";
 
@@ -54,21 +53,8 @@ export async function listCopilotTasks(input: {
     status?: CopilotTaskStatus;
     limit?: number;
 }): Promise<CopilotTask[]> {
-    // OSS ships only the AI proxy — there is no Copilot task service to
-    // persist to. Return an empty list instead of 404-ing on every load.
-    if (IS_OSS) return [];
-
-    const params = new URLSearchParams();
-    params.append("SceneID", input.sceneID);
-    if (input.sessionID) params.append("SessionID", input.sessionID);
-    if (input.status) params.append("Status", input.status);
-    if (input.limit) params.append("limit", input.limit.toString());
-
-    const response = await Ajax.get({
-        url: backendUrlFromPath(`/api/CopilotTasks/List?${params.toString()}`),
-    });
-    const data = assertSuccess(response, "Failed to list project tasks.");
-    return data?.items || [];
+    void input;
+    return [];
 }
 
 export async function createCopilotTask(input: CopilotTaskInput): Promise<CopilotTask> {

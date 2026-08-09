@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 
+import {traverseObjectDepthFirst} from "../../utils/SceneTraverser";
 import {
     getAvatarBudgetMetadata,
     type AvatarBudgetState,
@@ -227,7 +228,7 @@ export function collectBudgetInspection(
         return snapshot;
     }
 
-    scene.traverse(object => {
+    traverseObjectDepthFirst(scene, object => {
         const avatar = getAvatarBudgetMetadata(object);
         const plot = getPlotBudgetMetadata(object);
         const texture = getTextureResidencyMetadata(object);
@@ -551,28 +552,39 @@ function collectMaxTextureDimension(root: THREE.Object3D): {maxDimension: number
     const seen = new Set<string>();
     const result: {maxDimension: number; textureName?: string} = {maxDimension: 0};
 
-    root.traverse(child => {
+    traverseObjectDepthFirst(root, child => {
         const mesh = child as THREE.Mesh;
         const material = mesh.material;
         if (!material) return;
 
-        const materials = Array.isArray(material) ? material : [material];
-        for (const item of materials) {
-            for (const slot of ADVISOR_TEXTURE_SLOTS) {
-                const texture = (item as AdvisorTextureMaterial)[slot];
-                if (!isTextureLike(texture) || seen.has(texture.uuid)) continue;
-                seen.add(texture.uuid);
-
-                const dimension = getTextureMaxDimension(texture);
-                if (dimension > result.maxDimension) {
-                    result.maxDimension = dimension;
-                    result.textureName = texture.name || slot;
-                }
+        if (Array.isArray(material)) {
+            for (const item of material) {
+                collectMaterialTextureDimension(item, seen, result);
             }
+        } else {
+            collectMaterialTextureDimension(material, seen, result);
         }
     });
 
     return result;
+}
+
+function collectMaterialTextureDimension(
+    material: THREE.Material,
+    seen: Set<string>,
+    result: {maxDimension: number; textureName?: string},
+): void {
+    for (const slot of ADVISOR_TEXTURE_SLOTS) {
+        const texture = (material as AdvisorTextureMaterial)[slot];
+        if (!isTextureLike(texture) || seen.has(texture.uuid)) continue;
+        seen.add(texture.uuid);
+
+        const dimension = getTextureMaxDimension(texture);
+        if (dimension > result.maxDimension) {
+            result.maxDimension = dimension;
+            result.textureName = texture.name || slot;
+        }
+    }
 }
 
 function isTextureLike(value: unknown): value is THREE.Texture {

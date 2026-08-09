@@ -26,6 +26,43 @@ export interface StemViewport {
     getSafeArea(): ViewportSafeArea;
 }
 
+export interface StemRuntimeProcessInBatchesOptions {
+    batchSize?: number;
+    frameBudgetMs?: number;
+    signal?: AbortSignal;
+}
+
+export interface StemRuntime {
+    /**
+     * Cooperatively yield startup or heavy runtime work back to the browser.
+     *
+     * Long-running generated behaviors should call this from async build loops:
+     *
+     *     await this.stem.runtime.yieldToFrame(true);
+     *
+     * Pass `true` to force a paint opportunity immediately after an expensive
+     * operation.
+     */
+    yieldToFrame(force?: boolean): Promise<void>;
+
+    /**
+     * Process iterable startup/runtime work in cooperative chunks so the
+     * browser can paint between batches.
+     *
+     *     await this.erth.runtime.processInBatches(items, async (item) => {
+     *         buildItem(item);
+     *     });
+     *
+     * The runtime can only yield between callbacks; one long synchronous
+     * callback or loop still blocks JavaScript until it returns.
+     */
+    processInBatches<T>(
+        items: Iterable<T>,
+        process: (item: T, index: number) => void | Promise<void>,
+        options?: StemRuntimeProcessInBatchesOptions,
+    ): Promise<void>;
+}
+
 /**
  * Lambda ECS system access for behaviors.
  * Provides methods to query, register, and deregister objects with lambda instances.
@@ -144,6 +181,8 @@ export interface StemEngineInterface {
     object: StemObject;
     /** Measured visible runtime viewport for overlay-safe DOM and screen-space UI. */
     viewport: StemViewport;
+    /** Runtime scheduling helpers for cooperative heavy work. */
+    runtime: StemRuntime;
     /** Scene graph manipulation (adding objects). */
     scene: StemScene;
     /**
@@ -193,4 +232,3 @@ export interface StemEngineInterface {
      */
     events: StemEvents;
 }
-

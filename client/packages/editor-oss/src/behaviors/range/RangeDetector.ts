@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {CSS3DObject} from "three/examples/jsm/renderers/CSS3DRenderer.js";
+import {CSS3DObject} from "three/addons/renderers/CSS3DRenderer.js";
 
 import CameraUtils from "@stem/editor-oss/utils/CameraUtils";
 import GameManager from "../game/GameManager";
@@ -16,6 +16,9 @@ class RangeDetector {
     private textElement?: HTMLSpanElement;
     private keyElement?: HTMLSpanElement;
     private gameManager: GameManager;
+    private readonly playerWorldPosition = new THREE.Vector3();
+    private readonly targetWorldPosition = new THREE.Vector3();
+    private readonly labelWorldPosition = new THREE.Vector3();
 
     constructor(gameManager: GameManager) {
         this.gameManager = gameManager;
@@ -37,11 +40,17 @@ class RangeDetector {
     }
 
     setText(text: string) {
+        if (this.text === text) {
+            return;
+        }
         this.text = text;
         this.updateDisplayedText();
     }
     
     setKeyText(keyText: string | null) {
+        if (this.keyText === keyText) {
+            return;
+        }
         this.keyText = keyText;
         this.updateDisplayedKeyText();
     }
@@ -57,7 +66,7 @@ class RangeDetector {
             }
 
             this.textMesh!.visible = true;
-            this.updateTextPosition();
+            this.updateTextPosition(true);
             
         } else {
             if (this.textMesh) {
@@ -149,14 +158,17 @@ class RangeDetector {
     }
 
 
-    updateTextPosition() {
+    updateTextPosition(useCachedTargetPosition = false) {
         if (!this.target || !this.textMesh || !this.gameManager.camera) return;
 
-        const targetPosition = new THREE.Vector3();
-        this.target.getWorldPosition(targetPosition);
+        if (useCachedTargetPosition) {
+            this.labelWorldPosition.copy(this.targetWorldPosition);
+        } else {
+            this.target.getWorldPosition(this.labelWorldPosition);
+        }
 
         // const offsetY = 1.5;
-        this.textMesh.position.copy(targetPosition);
+        this.textMesh.position.copy(this.labelWorldPosition);
         // this.textMesh.position.y += offsetY;
 
         this.textMesh.lookAt(this.gameManager.camera.position);
@@ -164,15 +176,15 @@ class RangeDetector {
 
     isInRange(): boolean {
         if (!this.player || !this.target) return false;
+        if (this.distanceThreshold < 0) return false;
 
-        const playerWorldPosition = new THREE.Vector3();
-        const targetWorldPosition = new THREE.Vector3();
-        this.player.getWorldPosition(playerWorldPosition);
-        this.target.getWorldPosition(targetWorldPosition);
+        this.player.getWorldPosition(this.playerWorldPosition);
+        this.target.getWorldPosition(this.targetWorldPosition);
 
-        const distance = playerWorldPosition.distanceTo(targetWorldPosition);
+        const thresholdSq = this.distanceThreshold * this.distanceThreshold;
+        const distanceSq = this.playerWorldPosition.distanceToSquared(this.targetWorldPosition);
 
-        return distance <= this.distanceThreshold;
+        return distanceSq <= thresholdSq;
     }
 
     dispose() {

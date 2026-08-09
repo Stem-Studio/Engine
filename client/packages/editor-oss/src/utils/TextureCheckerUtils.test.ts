@@ -1,10 +1,21 @@
 
-import { BoxGeometry, Mesh, MeshStandardMaterial, Scene, Texture } from 'three';
+import { BoxGeometry, Mesh, MeshStandardMaterial, Object3D, Scene, Texture } from 'three';
+import {vi} from "vitest";
 
 import {
     checkSceneTextures,
     TextureSizeThresholds,
 } from "./TextureCheckerUtils";
+
+function addDeepChain(root: Object3D, depth = 12_000): Object3D {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
+}
 
 describe("TextureCheckerUtils", () => {
     let scene: Scene;
@@ -220,6 +231,30 @@ describe("TextureCheckerUtils", () => {
             // For 2048x2048 RGBA with mipmaps: 2048*2048*4*1.33 / (1024*1024) ≈ 21.33 MB
             expect(textureInfo.estimatedMemoryMB).toBeGreaterThan(20);
             expect(textureInfo.estimatedMemoryMB).toBeLessThan(25);
+        });
+
+        it("should scan deeply nested scenes without Three recursive traversal", () => {
+            const deepScene = new Scene();
+            const leaf = addDeepChain(deepScene);
+            const deepMaterial = new MeshStandardMaterial();
+            const deepMesh = new Mesh(new BoxGeometry(1, 1, 1), deepMaterial);
+            deepMesh.name = "DeepTexturedMesh";
+            const texture = new Texture();
+            const canvas = document.createElement("canvas");
+            canvas.width = 2048;
+            canvas.height = 2048;
+            texture.image = canvas;
+            texture.name = "DeepTexture2K";
+            deepMaterial.map = texture;
+            leaf.add(deepMesh);
+            const traverse = vi.spyOn(deepScene, "traverse");
+
+            const result = checkSceneTextures(deepScene);
+
+            expect(traverse).not.toHaveBeenCalled();
+            expect(result.hasLargeTextures).toBe(true);
+            expect(result.warningTextures).toHaveLength(1);
+            expect(result.warningTextures[0]!.objectName).toBe("DeepTexturedMesh");
         });
     });
 

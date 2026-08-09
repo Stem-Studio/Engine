@@ -1,6 +1,6 @@
 import {createRoot, Root} from "react-dom/client";
 import * as THREE from "three";
-import {CSS3DSprite} from "three/examples/jsm/renderers/CSS3DRenderer.js";
+import {CSS3DSprite} from "three/addons/renderers/CSS3DRenderer.js";
 import trimImageData from "trim-image-data";
 
 import ImageGeneratorProvider from "src/utils/ImageGeneratorProvider";

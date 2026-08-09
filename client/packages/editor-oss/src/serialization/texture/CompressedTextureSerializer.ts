@@ -1,5 +1,5 @@
 import { CompressedTexture } from 'three';
-import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
 import TextureSerializer from "./TextureSerializer";
 import global from '@stem/editor-oss/global';

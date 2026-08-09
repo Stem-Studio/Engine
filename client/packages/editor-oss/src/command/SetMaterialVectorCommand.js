@@ -22,7 +22,7 @@ class SetMaterialVectorCommand extends Command {
         this.object = object;
         this.materialSlot = materialSlot;
 
-        const material = object !== null ? editor.getObjectMaterial(object, materialSlot) : null;
+        const material = object !== null ? this.editor.getObjectMaterial(object, materialSlot) : null;
 
         this.oldValue = material !== null ? material[attributeName].toArray() : null;
         this.newValue = newValue;

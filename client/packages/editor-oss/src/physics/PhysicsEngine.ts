@@ -1,4 +1,4 @@
-import { QuaternionLike, Vector3Like } from 'three/webgpu';
+import type {QuaternionLike, Vector3Like} from "three";
 
 import {
     CollisionBehavior,
@@ -9,6 +9,7 @@ import {
     VehicleData,
     VehicleInput,
     VehicleOptions,
+    PhysicsDebugRenderData,
 } from './common/types';
 
 export interface CollisionEvent {
@@ -56,6 +57,15 @@ export interface RigidBodyOptions {
 
     /** Initial world rotation — avoids post-creation move for static bodies */
     quaternion?: {x: number; y: number; z: number; w: number};
+
+    /** Enable continuous collision detection for fast-moving dynamic bodies. */
+    ccd?: boolean;
+    /** Allow idle dynamic bodies to sleep; enabled by default for performance. */
+    allowSleep?: boolean;
+    /** CCD motion threshold in world units; Rapier maps this to soft-CCD prediction distance. */
+    ccdMotionThreshold?: number;
+    /** Bullet swept-sphere radius in world units; Rapier includes it in soft-CCD prediction distance. */
+    ccdSweptSphereRadius?: number;
 }
 
 export interface PhysicsEngine {
@@ -80,6 +90,9 @@ export interface PhysicsEngine {
 
     /** Returns the acceleration due to gravity. */
     getGravity(): number;
+
+    /** Update the bounded constraint-solver quality without recreating the world. */
+    setSolverIterations?(solverIterations: number): void;
     
     /**
      * Steps the physics simulation.
@@ -107,6 +120,9 @@ export interface PhysicsEngine {
      * will be ignored.
      */
     resume(): void;
+
+    /** Returns a copy of the current collision wireframe when debug drawing is enabled. */
+    getDebugRenderData?(): PhysicsDebugRenderData | null;
 
     ////////////////////////////////////////////////////////////////////////////
     // Rigid body methods
@@ -316,15 +332,10 @@ export interface PhysicsEngine {
      * airborne velocity injections. Only the y component is used today.
      */
     applyImpulseToCharacterController(uuid: string, impulse: Vector3Like): void;
-}
 
-/**
- * Optional capability interface for engines that implement vehicle
- * physics. Engines opt in by declaring
- * `implements PhysicsEngine, VehiclePhysics`. Callers guard with
- * {@link supportsVehicles}.
- */
-export interface VehiclePhysics {
+    ////////////////////////////////////////////////////////////////////////////
+    // Vehicle methods
+    ////////////////////////////////////////////////////////////////////////////
     addVehicle(vehicleUuid: string, spec: VehicleData, options: VehicleOptions): void;
     removeVehicle(vehicleUuid: string): void;
     hasVehicle(vehicleUuid: string): boolean;
@@ -332,48 +343,17 @@ export interface VehiclePhysics {
     setVehicleInput(vehicleUuid: string, input: VehicleInput): void;
     getVehicleChassisPosition(vehicleUuid: string): Vector3Like | null;
     getVehicleChassisRotation(vehicleUuid: string): QuaternionLike | null;
-    getVehicleWheelTransform(vehicleUuid: string, wheelIndex: number): { position: Vector3Like; rotation: QuaternionLike } | null;
+    getVehicleWheelTransform(vehicleUuid: string, wheelIndex: number): {position: Vector3Like; rotation: QuaternionLike} | null;
     getVehicleWheelCount(vehicleUuid: string): number;
-}
 
-/**
- * Type guard: does this engine implement `VehiclePhysics`?
- * Narrows the engine to `PhysicsEngine & VehiclePhysics` so the
- * vehicle methods become callable.
- * @param engine
- */
-export const supportsVehicles = (
-    engine: PhysicsEngine,
-): engine is PhysicsEngine & VehiclePhysics =>
-    typeof (engine as Partial<VehiclePhysics>).addVehicle === 'function';
-
-/**
- * Optional capability interface for engines that implement joints /
- * constraints between rigid bodies. Engines opt in by declaring
- * `implements PhysicsEngine, JointPhysics`. Callers guard with
- * {@link supportsJoints}.
- */
-export interface JointPhysics {
+    ////////////////////////////////////////////////////////////////////////////
+    // Joint methods
+    ////////////////////////////////////////////////////////////////////////////
     addFixedJoint(options: FixedJointOptions): void;
     addHingeJoint(options: HingeJointOptions): void;
     addPointToPointJoint(options: PointToPointJointOptions): void;
-    /**
-     * Remove the joint previously created between these two bodies. The
-     * UUID pair is order-independent.
-     */
     removeJoint(uuidA: string, uuidB: string): void;
 }
-
-/**
- * Type guard: does this engine implement `JointPhysics`?
- * Narrows the engine to `PhysicsEngine & JointPhysics` so the joint
- * methods become callable.
- * @param engine
- */
-export const supportsJoints = (
-    engine: PhysicsEngine,
-): engine is PhysicsEngine & JointPhysics =>
-    typeof (engine as Partial<JointPhysics>).addFixedJoint === 'function';
 
 export const DEFAULT_CHARACTER_CONTROLLER_COLLISION_GROUP = 2;
 export const DEFAULT_CHARACTER_CONTROLLER_COLLISION_MASK = 0xffff;
@@ -396,5 +376,7 @@ export const DEFAULT_RIGID_BODY_LINEAR_DAMPING = 0.0;
 export const DEFAULT_RIGID_BODY_ANGULAR_DAMPING = 0.0;
 export const DEFAULT_RIGID_BODY_COLLISION_GROUP = 1;
 export const DEFAULT_RIGID_BODY_COLLISION_MASK = 0xffff;
+export const DEFAULT_RIGID_BODY_CCD_MOTION_THRESHOLD = 0.5;
+export const DEFAULT_RIGID_BODY_CCD_SWEPT_SPHERE_RADIUS = 0.2;
 
 export const DEFAULT_STEP_DURATION = 1 / 60;

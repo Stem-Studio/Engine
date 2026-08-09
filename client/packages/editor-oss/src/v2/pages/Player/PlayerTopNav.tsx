@@ -1,27 +1,18 @@
-import {useState} from "react";
+import {useEffect, useRef} from "react";
 
 import {createTrackedShareUrl} from "@stem/network/api/rewards";
-import {fetchRemixesOfScene} from "@stem/network/api/scene";
-import {forkScene} from "@stem/network/api/scene/v2";
 import type {GetSceneResponse} from "@stem/network/api/scene/v2";
 import {ROUTES} from "@web-shared/routes";
-import {IS_OSS} from "../../../mode/buildMode";
 import {showToast} from "../../../showToast";
+import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
+import global from "@stem/editor-oss/global";
 import {openEditorRoute} from "../editorHandoff";
 import {generateProjectLink, getGameUrl} from "../links";
 import {
-    ActionButton,
     IconButton,
     LeftSide,
     Middle,
-    Modal,
-    ModalActions,
-    ModalBackdrop,
-    ModalHeader,
-    ModalTitle,
     NavButton,
-    RemixButton,
-    RemixList,
     SceneNameWrapper,
     StyledNav,
 } from "./PlayerTopNav.style";
@@ -32,85 +23,30 @@ interface PlayerTopNavProps {
     viewerId: string | null | undefined;
 }
 
-type RemixPickerState = {
-    remixes: RemixScene[];
-    sceneName: string;
-};
-
-type RemixScene = {
-    ID: string;
-    Name?: string;
-    UserID?: string;
-};
-
 export const PlayerTopNav = ({scene, viewerId}: PlayerTopNavProps) => {
-    const [picker, setPicker] = useState<RemixPickerState | null>(null);
-    const [forking, setForking] = useState(false);
-
+    const navRef = useRef<HTMLElement | null>(null);
     const sceneName = scene?.name ?? "";
     const sceneId = scene?.id ?? "";
-    // OSS treats every local project as user-owned (no auth, no ownership
-    // model). That makes the Edit affordance always available and disables
-    // the cloud-only Remix flow.
-    const isOwner = IS_OSS || (!!viewerId && !!scene && scene.userId === viewerId);
-    const canEdit = !!scene && isOwner;
-    const canRemix = !IS_OSS && !!scene && !isOwner && scene.isCloneable === true;
-    const remixDisabled = !sceneId || forking;
+    // Local projects are editable by the current user. `viewerId` remains part
+    // of the component API for compatibility with hosted forks.
+    void viewerId;
+    const canEdit = !!scene;
+
+    useEffect(() => {
+        const runtime = global.app as EngineRuntime | undefined;
+        runtime?.registerViewportSafeAreaElement("player-top-nav", navRef.current);
+        return () => {
+            runtime?.registerViewportSafeAreaElement("player-top-nav", null);
+        };
+    }, []);
 
     const handleBack = () => {
         window.location.href = ROUTES.DASHBOARD;
     };
 
-    const startFork = async () => {
-        if (!sceneId || forking) return;
-        setForking(true);
-        try {
-            const result = await forkScene(sceneId);
-            showToast({type: "success", title: "Starting a remix"});
-            if (result?.newSceneId) {
-                openEditorRoute(generateProjectLink(result.newSceneId));
-            }
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : "Remix failed.";
-            showToast({type: "error", title: message});
-        } finally {
-            setForking(false);
-        }
-    };
-
-    const handleRemixClick = async () => {
-        if (!canRemix || remixDisabled) return;
-
-        try {
-            const result = await fetchRemixesOfScene(sceneId);
-            const remixes = (result?.Scenes ?? []) as RemixScene[];
-            const myRemixes = viewerId
-                ? remixes.filter(remix => remix.UserID === viewerId)
-                : [];
-            if (myRemixes.length > 0) {
-                setPicker({remixes: myRemixes, sceneName});
-                return;
-            }
-        } catch {
-            // Fall through to fork. Existing remixes are a convenience, not a gate.
-        }
-
-        void startFork();
-    };
-
     const handleEditClick = () => {
         if (!sceneId) return;
         openEditorRoute(generateProjectLink(sceneId));
-    };
-
-    const handleSelectRemix = (remixSceneId: string) => {
-        setPicker(null);
-        openEditorRoute(generateProjectLink(remixSceneId));
-    };
-
-    const handleCreateNew = () => {
-        setPicker(null);
-        void startFork();
     };
 
     const handleShare = async () => {
@@ -131,11 +67,9 @@ export const PlayerTopNav = ({scene, viewerId}: PlayerTopNavProps) => {
         }
     };
 
-    const remixTitle = forking ? "Starting remix..." : "Remix this game";
-
     return (
         <>
-            <StyledNav>
+            <StyledNav ref={navRef} data-stem-host-chrome="true">
                 <LeftSide>
                     <IconButton
                         type="button"
@@ -163,53 +97,8 @@ export const PlayerTopNav = ({scene, viewerId}: PlayerTopNavProps) => {
                             Edit
                         </NavButton>
                     )}
-                    {!IS_OSS && canRemix && (
-                        // OSS hides Remix: every project is local and
-                        // directly editable, so the cloud-only "fork to
-                        // own copy" affordance doesn't apply.
-                        <NavButton
-                            disabled={remixDisabled}
-                            aria-disabled={remixDisabled}
-                            onClick={() => void handleRemixClick()}
-                            title={remixTitle}
-                            style={{
-                                opacity: forking ? 0.65 : 1,
-                                cursor: forking ? "wait" : "pointer",
-                            }}
-                        >
-                            Remix
-                        </NavButton>
-                    )}
                 </Middle>
             </StyledNav>
-            {picker && (
-                <ModalBackdrop>
-                    <Modal role="dialog" aria-modal="true" aria-labelledby="player-remix-title">
-                        <ModalHeader>
-                            <ModalTitle id="player-remix-title">Your remixes of {picker.sceneName}</ModalTitle>
-                        </ModalHeader>
-                        <RemixList>
-                            {picker.remixes.map(remix => (
-                                <RemixButton
-                                    key={remix.ID}
-                                    type="button"
-                                    onClick={() => handleSelectRemix(remix.ID)}
-                                >
-                                    {remix.Name || "Untitled remix"}
-                                </RemixButton>
-                            ))}
-                        </RemixList>
-                        <ModalActions>
-                            <ActionButton type="button" onClick={() => setPicker(null)}>
-                                Cancel
-                            </ActionButton>
-                            <ActionButton type="button" $primary onClick={handleCreateNew}>
-                                New remix
-                            </ActionButton>
-                        </ModalActions>
-                    </Modal>
-                </ModalBackdrop>
-            )}
         </>
     );
 };
@@ -226,4 +115,3 @@ const BackIcon = () => (
         />
     </svg>
 );
-

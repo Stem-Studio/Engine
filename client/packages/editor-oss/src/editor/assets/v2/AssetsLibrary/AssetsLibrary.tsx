@@ -34,26 +34,34 @@ export const AssetsLibrary = ({close}: Props) => {
             >
                 <Nav>
                     <AnimatedTabs />
-                    <FlexWrapper $gap="0 8px">
+                    <FlexWrapper className="library-nav-actions"
+                        $gap="0 8px"
+                    >
                         <SearchInput
                             width="172px"
                             alwaysOpen
                             value={search}
                             onChange={value => setSearch(value.toLowerCase())}
                         />
-                        <FlexWrapper>
-                            <button className="reset-css">
+                        <FlexWrapper className="library-window-actions">
+                            <button className="reset-css"
+                                type="button"
+                                aria-label={isFullScreen ? "Minimize library" : "Maximize library"}
+                                onClick={() => setIsFullScreen(prev => !prev)}
+                            >
                                 <img
                                     src={isFullScreen ? minimizeIcon : fullscreenIcon}
                                     alt={isFullScreen ? "minimize" : "go full screen"}
-                                    onClick={() => setIsFullScreen(prev => !prev)}
                                 />
                             </button>
-                            <button className="reset-css">
+                            <button className="reset-css"
+                                type="button"
+                                aria-label="Close library"
+                                onClick={close}
+                            >
                                 <img
                                     src={x}
                                     alt="close"
-                                    onClick={close}
                                 />
                             </button>
                         </FlexWrapper>

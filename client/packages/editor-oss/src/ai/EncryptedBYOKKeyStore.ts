@@ -1,6 +1,9 @@
 import type {BYOKKeyStore} from "./BYOKKeyStore";
 import type {AIProvider} from "./types";
 
+const AES_GCM_KEY_LENGTH_BITS = 256;
+const AES_GCM_IV_LENGTH = 12;
+
 /**
  * Optional passphrase-encrypted wrapper around any underlying
  * {@link BYOKKeyStore}. When a passphrase is set, provider keys are
@@ -36,9 +39,7 @@ export class EncryptedBYOKKeyStore implements BYOKKeyStore {
     private static readonly ENCRYPTED_PREFIX = "enc:";
     private static readonly VERIFIER_PLAINTEXT = "stemstudio-byok-verifier-v1";
     private static readonly KDF_ITERATIONS = 210_000;
-    private static readonly KEY_LENGTH_BITS = 256;
     private static readonly SALT_LENGTH = 16;
-    private static readonly IV_LENGTH = 12;
 
     /** Derived AES key, present only when `unlock()` has succeeded. */
     private derivedKey: CryptoKey | undefined;
@@ -221,14 +222,14 @@ async function deriveKey(
     return crypto.subtle.deriveKey(
         {name: "PBKDF2", salt: salt as BufferSource, iterations, hash: "SHA-256"},
         baseKey,
-        {name: "AES-GCM", length: 256},
+        {name: "AES-GCM", length: AES_GCM_KEY_LENGTH_BITS},
         false,
         ["encrypt", "decrypt"],
     );
 }
 
 async function encryptString(key: CryptoKey, plaintext: string): Promise<Uint8Array> {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_LENGTH));
     const cipher = new Uint8Array(
         await crypto.subtle.encrypt({name: "AES-GCM", iv}, key, new TextEncoder().encode(plaintext)),
     );
@@ -240,8 +241,8 @@ async function encryptString(key: CryptoKey, plaintext: string): Promise<Uint8Ar
 }
 
 async function decryptBytes(key: CryptoKey, payload: Uint8Array): Promise<string> {
-    const iv = payload.slice(0, 12);
-    const cipher = payload.slice(12);
+    const iv = payload.slice(0, AES_GCM_IV_LENGTH);
+    const cipher = payload.slice(AES_GCM_IV_LENGTH);
     const plain = await crypto.subtle.decrypt(
         {name: "AES-GCM", iv: iv as BufferSource},
         key,

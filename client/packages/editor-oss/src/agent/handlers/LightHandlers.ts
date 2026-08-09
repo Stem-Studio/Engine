@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 import EngineRuntime from "../../EngineRuntime";
 import * as Commands from "../../command/Commands";
+import {findObjectByUuidOrNameDepthFirst, findObjectDepthFirst} from "../../utils/SceneTraverser";
 import {CommandResult} from "../types/ACPTypes";
 
 type LightLike = THREE.Object3D & {
@@ -129,22 +130,16 @@ export class LightHandlers {
     }
 
     private findObject(identifier: string): THREE.Object3D | null {
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
+        let object = findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
         if (!object) {
             const lower = identifier.toLowerCase();
             const expectedType = `${lower}light`;
-            this.engine.scene.traverse(candidate => {
-                if (object) return;
-                if (!(candidate as LightLike).isLight) return;
+            object = findObjectDepthFirst(this.engine.scene, candidate => {
+                if (!(candidate as LightLike).isLight) return false;
                 const candidateType = (candidate.type || "").toLowerCase();
-                if (candidateType === expectedType || candidateType.startsWith(lower)) {
-                    object = candidate;
-                }
+                return candidateType === expectedType || candidateType.startsWith(lower);
             });
         }
-        return object || null;
+        return object;
     }
 }

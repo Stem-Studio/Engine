@@ -6,8 +6,9 @@ import {
     LineBasicMaterial,
     LineSegments,
     Object3D,
+    type QuaternionLike,
+    type Vector3Like,
 } from "three";
-import { QuaternionLike, Vector3Like } from "three/webgpu";
 
 import type Ammo from "ammo";
 import {
@@ -17,6 +18,7 @@ import {
 } from "../../assets/js/ammo-debug-drawer/AmmoDebugDrawer";
 import MathUtils from '../common/math';
 import { ShapeCache } from '../common/ShapeCache';
+import {normalizeHeightfieldShape} from '../common/heightfield';
 import {
     BodyShapeType,
     BoxShape,
@@ -29,6 +31,8 @@ import {
     HingeJointOptions,
     PointToPointJointOptions,
     SphereShape,
+    HeightfieldShape,
+    PhysicsDebugRenderData,
     VehicleData,
     VehicleInput,
     VehicleOptions,
@@ -42,17 +46,22 @@ import {
     DEFAULT_RIGID_BODY_ANGULAR_DAMPING,
     DEFAULT_RIGID_BODY_COLLISION_GROUP,
     DEFAULT_RIGID_BODY_COLLISION_MASK,
+    DEFAULT_RIGID_BODY_CCD_MOTION_THRESHOLD,
+    DEFAULT_RIGID_BODY_CCD_SWEPT_SPHERE_RADIUS,
     DEFAULT_RIGID_BODY_FRICTION,
     DEFAULT_RIGID_BODY_LINEAR_DAMPING,
     DEFAULT_RIGID_BODY_MASS,
     DEFAULT_RIGID_BODY_RESTITUTION,
     DEFAULT_STEP_DURATION,
-    JointPhysics,
     PhysicsEngine,
     RigidBodyOptions,
     RigidBodyType,
-    VehiclePhysics,
 } from '../PhysicsEngine';
+import {
+    DEFAULT_SOLVER_ITERATIONS,
+    isConcaveHullBodyTypeSupported,
+    normalizeSolverIterations,
+} from '../common/physicsConfig';
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -64,8 +73,13 @@ interface SharedConvexHullShape {
 
 interface SharedConcaveHullShape {
     type: BodyShapeType.CONCAVE_HULL;
-    ammoShape: Ammo.btBvhTriangleMeshShape;
-    resources: [Ammo.btTriangleMesh];
+    /** Invalid/empty mesh input retains its concave type for body policy checks. */
+    ammoShape: Ammo.btBvhTriangleMeshShape | undefined;
+    resources: [Ammo.btTriangleMesh] | undefined;
+}
+
+interface SharedHeightfieldShape extends HeightfieldShape {
+    type: BodyShapeType.HEIGHTFIELD;
 }
 
 interface EmptyShape {
@@ -79,7 +93,7 @@ type PrimitiveShape = (BoxShape | SphereShape | CapsuleShape) & {
     resources: undefined;
 };
 
-type SharedShape = PrimitiveShape | SharedConvexHullShape | SharedConcaveHullShape | EmptyShape;
+type SharedShape = PrimitiveShape | SharedConvexHullShape | SharedConcaveHullShape | SharedHeightfieldShape | EmptyShape;
 
 interface Controller {
     controller: Ammo.btKinematicCharacterController;
@@ -133,15 +147,13 @@ type VehicleEntry = {
     chassisBody: Ammo.btRigidBody;
     compoundShape: Ammo.btCompoundShape;
     boxShape: Ammo.btBoxShape;
-    tuning: Ammo.btVehicleTuning;
-    rayCaster: Ammo.btDefaultVehicleRaycaster;
     wheelCount: number;
     frontWheelIndices: number[];
     driveWheelIndices: number[];
     options: VehicleOptions;
 };
 
-export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPhysics {
+export class AmmoPhysicsEngine implements PhysicsEngine {
     stepDuration = DEFAULT_STEP_DURATION;
 
     private readonly rigidBodies = new Map<string, Ammo.btRigidBody>();
@@ -150,23 +162,37 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
     private readonly vehicles = new Map<string, VehicleEntry>();
     private readonly constraints = new Set<Ammo.btTypedConstraint>();
     private readonly jointMap = new Map<string, Ammo.btTypedConstraint>();
+    /** Vehicle helpers are world-scoped and intentionally shared by vehicles. */
+    private readonly vehicleTuning: Ammo.btVehicleTuning;
+    private readonly vehicleRayCaster: Ammo.btDefaultVehicleRaycaster;
     private nextUserPointer = 1;
 
     private readonly shapeCache = new ShapeCache<SharedShape>((sharedShape) => {
-        if (sharedShape.ammoShape) {
+        if ('ammoShape' in sharedShape && sharedShape.ammoShape) {
             this.ammo.destroy(sharedShape.ammoShape);
         }
 
-        for (const resource of sharedShape.resources || []) {
-            this.ammo.destroy(resource);
+        if ('resources' in sharedShape) {
+            for (const resource of sharedShape.resources || []) {
+                this.ammo.destroy(resource);
+            }
         }
     });
 
     /** Collision object (body or controller) UUID to Shape UUID */
     private readonly collisionObjectToShapeMap = new Map<string, string>();
+    /** Heap buffers owned by per-body Bullet heightfield shape instances. */
+    private readonly heightfieldDataPointers = new WeakMap<object, number>();
+    /**
+     * Bullet centers heightfield vertices around (min+max)/2, whereas the
+     * shared/Rapier contract treats samples as authored world-space heights.
+     * Keep the internal body translation hidden from callers.
+     */
+    private readonly heightfieldBodyOriginOffsets = new Map<string, number>();
 
     /** A map of all current contact pairs (key is `uuid1-uuid2`) */
     private contactPairs = new Map<string, ContactPair>();
+    private nextContactPairs = new Map<string, ContactPair>();
 
     private started = false;
 
@@ -182,21 +208,30 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
     private auxVectorC: Ammo.btVector3;
     private auxQuaternionA: Ammo.btQuaternion;
     private auxTransformA: Ammo.btTransform;
+    /** Reused for synchronous controller contact probes (avoids callback-table churn). */
+    private readonly contactResultCallback: Ammo.ConcreteContactResultCallback;
+    private contactProbeHasPoint = false;
+    private contactProbePoint: { x: number; y: number; z: number } | undefined;
+    private contactProbeNormal: { x: number; y: number; z: number } | undefined;
 
     //debugger
     private debugGeometry: BufferGeometry | null = null;
     private debugMaterial: LineBasicMaterial | null = null;
     private debugDrawer: AmmoDebugDrawer | null = null;
     private debugMesh: LineSegments | null = null;
+    private debugEnabled = false;
 
     //controller
     private readonly playerUuids = new Set<string>();
     private readonly controllers = new Map<string, Controller>();
+    private solverIterations: number;
 
     constructor(
         private readonly ammo: typeof Ammo,
         private gravity: number,
+        solverIterations: number = DEFAULT_SOLVER_ITERATIONS,
     ) {
+        this.solverIterations = normalizeSolverIterations(solverIterations);
         this.auxVectorA = new ammo.btVector3(0, 0, 0);
         this.auxVectorB = new ammo.btVector3(0, 0, 0);
         this.auxVectorC = new ammo.btVector3(0, 0, 0);
@@ -215,7 +250,27 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             this.solver,
             this.collisionConfiguration,
         );
+        this.world.getSolverInfo().set_m_numIterations(this.solverIterations);
         this.world.getDispatchInfo().set_m_allowedCcdPenetration(0.0001);
+
+        // btRaycastVehicle copies tuning values into each wheel and keeps the
+        // raycaster as a non-owning world reference. Reusing these helpers
+        // avoids one native allocation per vehicle; the generated bindings do
+        // not expose a destroyable btVehicleTuning destructor.
+        this.vehicleTuning = new ammo.btVehicleTuning();
+        this.vehicleRayCaster = new ammo.btDefaultVehicleRaycaster(this.world);
+
+        this.contactResultCallback = new ammo.ConcreteContactResultCallback();
+        (this.contactResultCallback as any).addSingleResult = (cp: number) => {
+            this.contactProbeHasPoint = true;
+            const wrapPointer = (this.ammo as any).wrapPointer;
+            const manifoldPoint: Ammo.btManifoldPoint = wrapPointer(cp, this.ammo.btManifoldPoint);
+            const posOnB = manifoldPoint.getPositionWorldOnB();
+            const normalOnB = manifoldPoint.get_m_normalWorldOnB();
+            this.contactProbePoint = { x: posOnB.x(), y: posOnB.y(), z: posOnB.z() };
+            this.contactProbeNormal = { x: normalOnB.x(), y: normalOnB.y(), z: normalOnB.z() };
+            return 0; // stop contact point detection
+        };
 
         this.auxVectorA.setValue(0, this.gravity, 0);
         this.world.setGravity(this.auxVectorA);
@@ -223,7 +278,15 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         this.started = true;
     }
 
+    setSolverIterations(solverIterations: number): void {
+        this.solverIterations = normalizeSolverIterations(solverIterations);
+        this.world.getSolverInfo().set_m_numIterations(this.solverIterations);
+    }
+
     dispose() {
+        if (!this.started) {
+            return;
+        }
         this.started = false;
 
         this.debugGeometry?.dispose();
@@ -234,6 +297,7 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         this.debugDrawer = null;
         this.debugMesh?.removeFromParent();
         this.debugMesh = null;
+        this.debugEnabled = false;
 
         for (const uuid of this.vehicles.keys()) {
             this.removeVehicle(uuid);
@@ -256,7 +320,11 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             this.removeCharacterController(uuid);
         }
 
+        this.ammo.destroy(this.vehicleRayCaster);
+
         this.shapeCache.dispose();
+
+        this.ammo.destroy(this.contactResultCallback);
 
         if (this.collisionConfiguration) {
             this.ammo.destroy(this.collisionConfiguration);
@@ -283,6 +351,12 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         this.ammo.destroy(this.auxVectorC);
         this.ammo.destroy(this.auxQuaternionA);
         this.ammo.destroy(this.auxTransformA);
+
+        // The generated Ammo bindings retain the world wrapper until the
+        // dependent objects above have been released. Destroy it last so
+        // repeated Playground engine lifetimes reclaim the native world.
+        this.ammo.destroy(this.world);
+
     }
 
     getGravity(): number {
@@ -348,6 +422,19 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         this.started = true;
     }
 
+    getDebugRenderData(): PhysicsDebugRenderData | null {
+        if (!this.debugEnabled || !this.debugDrawer || !this.debugGeometry) return null;
+        const drawCount = Math.max(0, Math.floor(this.debugDrawer.index));
+        const position = this.debugGeometry.getAttribute("position");
+        const color = this.debugGeometry.getAttribute("color");
+        if (!position || !color || drawCount === 0) return null;
+        return {
+            vertices: (position.array as Float32Array).slice(0, drawCount * 3),
+            colors: (color.array as Float32Array).slice(0, drawCount * color.itemSize),
+            drawCount,
+        };
+    }
+
     addRigidBody(
         uuid: string,
         shapeUuid: string,
@@ -365,6 +452,14 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             return;
         }
 
+        if (!isConcaveHullBodyTypeSupported(sharedShape.type, type)) {
+            console.warn(
+                `AmmoPhysicsEngine.addRigidBody: rejected ${type} body "${uuid}" with concave hull/static-mesh shape "${shapeUuid}". ` +
+                "Ammo/Rapier support concave and heightfield shapes only for Static bodies; use a static collider, ConvexHull, or compound primitive colliders.",
+            );
+            return;
+        }
+
         const {
             friction = DEFAULT_RIGID_BODY_FRICTION,
             mass = DEFAULT_RIGID_BODY_MASS,
@@ -372,13 +467,30 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             linearDamping = DEFAULT_RIGID_BODY_LINEAR_DAMPING,
             angularDamping = DEFAULT_RIGID_BODY_ANGULAR_DAMPING,
         } = options;
+        // Static and kinematic bodies are non-dynamic by contract. Normalize
+        // their native mass to zero instead of letting a caller-supplied mass
+        // allocate inertia or leave Bullet with contradictory body state.
+        const effectiveMass = type === RigidBodyType.Dynamic ? mass : 0;
 
         const shape = this.createShapeInstance(sharedShape);
 
         // motionState is freed in destroyRigidBody()
         this.auxTransformA.setIdentity();
         if (options.position) {
-            this.auxVectorA.setValue(options.position.x, options.position.y, options.position.z);
+            const heightfieldOffset = sharedShape.type === BodyShapeType.HEIGHTFIELD
+                ? this.getHeightfieldBodyOriginOffset(sharedShape)
+                : 0;
+            this.heightfieldBodyOriginOffsets.set(uuid, heightfieldOffset);
+            this.auxVectorA.setValue(
+                options.position.x,
+                options.position.y + heightfieldOffset,
+                options.position.z,
+            );
+            this.auxTransformA.setOrigin(this.auxVectorA);
+        } else if (sharedShape.type === BodyShapeType.HEIGHTFIELD) {
+            const heightfieldOffset = this.getHeightfieldBodyOriginOffset(sharedShape);
+            this.heightfieldBodyOriginOffsets.set(uuid, heightfieldOffset);
+            this.auxVectorA.setValue(0, heightfieldOffset, 0);
             this.auxTransformA.setOrigin(this.auxVectorA);
         }
         if (options.quaternion) {
@@ -392,10 +504,10 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         }
         const motionState = new this.ammo.btDefaultMotionState(this.auxTransformA);
         this.auxVectorA.setValue(0, 0, 0);
-        shape.calculateLocalInertia(mass, this.auxVectorA);
+        shape.calculateLocalInertia(effectiveMass, this.auxVectorA);
 
         const rbInfo: Ammo.btRigidBodyConstructionInfo = new this.ammo.btRigidBodyConstructionInfo(
-            mass,
+            effectiveMass,
             motionState,
             shape,
             this.auxVectorA,
@@ -405,14 +517,31 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
 
         body.setCollisionFlags(RIGID_BODY_TYPE_MAP[type]);
 
-        if (mass > 0 || type === RigidBodyType.Kinematic) {
+        if (type === RigidBodyType.Kinematic || (mass > 0 && options.allowSleep === false)) {
             // Kinematic bodies must stay active or Bullet skips
             // saveKinematicState for them, breaking motion-state sync.
+            // Dynamic bodies opt into Bullet's normal deactivation path by
+            // default; callers can explicitly keep a dynamic body awake for
+            // continuously driven gameplay objects.
             body.setActivationState(ACTIVATION_STATE.DISABLE_DEACTIVATION);
         }
         body.setFriction(friction);
         body.setRestitution(restitution);
         body.setDamping(linearDamping, angularDamping);
+        if (options.ccd === true && type === RigidBodyType.Dynamic) {
+            const ccdMotionThreshold = Number.isFinite(options.ccdMotionThreshold)
+                ? Math.max(0, options.ccdMotionThreshold as number)
+                : DEFAULT_RIGID_BODY_CCD_MOTION_THRESHOLD;
+            const ccdSweptSphereRadius = Number.isFinite(options.ccdSweptSphereRadius)
+                ? Math.max(0, options.ccdSweptSphereRadius as number)
+                : DEFAULT_RIGID_BODY_CCD_SWEPT_SPHERE_RADIUS;
+            body.setCcdMotionThreshold(
+                ccdMotionThreshold,
+            );
+            body.setCcdSweptSphereRadius(
+                ccdSweptSphereRadius,
+            );
+        }
         this.dampingValues.set(uuid, { linear: linearDamping, angular: angularDamping });
 
         // storing uuid for future reference
@@ -437,8 +566,14 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             return;
         }
 
+        // Constraints reference native bodies. Remove our owned constraints
+        // before Bullet tears the body down so replacement and later disposal
+        // never retain a dangling btTypedConstraint handle.
+        this.removeJointsForBody(uuid);
+
         this.world.removeRigidBody(body);
         this.rigidBodies.delete(uuid);
+        this.heightfieldBodyOriginOffsets.delete(uuid);
         this.dampingValues.delete(uuid);
         this.destroyRigidBody(uuid, body);
     }
@@ -549,9 +684,10 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         }
 
         const position = body.getWorldTransform().getOrigin();
+        const heightfieldOffset = this.heightfieldBodyOriginOffsets.get(uuid) ?? 0;
         return {
             x: position.x(),
-            y: position.y(),
+            y: position.y() - heightfieldOffset,
             z: position.z(),
         };
     }
@@ -662,7 +798,8 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         }
 
         const worldTransform = body.getWorldTransform();
-        this.auxVectorA.setValue(position.x, position.y, position.z);
+        const heightfieldOffset = this.heightfieldBodyOriginOffsets.get(uuid) ?? 0;
+        this.auxVectorA.setValue(position.x, position.y + heightfieldOffset, position.z);
         worldTransform.setOrigin(this.auxVectorA);
         // Kinematic bodies are driven from the motion state: Bullet reads it
         // in saveKinematicState() at the start of each stepSimulation and
@@ -753,6 +890,14 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             return;
         }
 
+        if (!isConcaveHullBodyTypeSupported(newSharedShape.type, this.getRigidBodyType(uuid))) {
+            console.warn(
+                `AmmoPhysicsEngine.setRigidBodyShape: rejected concave hull/static-mesh shape "${newShapeUuid}" for ${this.getRigidBodyType(uuid)} body "${uuid}". ` +
+                "Ammo/Rapier support concave and heightfield shapes only for Static bodies; use a ConvexHull or compound primitive colliders.",
+            );
+            return;
+        }
+
         // Get the old shape for cleanup
         const oldShape = body.getCollisionShape();
         const oldShapeUuid = this.collisionObjectToShapeMap.get(uuid);
@@ -789,7 +934,7 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
 
         // Destroy the old shape instance
         if (oldShape) {
-            this.ammo.destroy(oldShape);
+            this.destroyShapeInstance(oldShape);
         }
 
         // Update shape tracking
@@ -834,6 +979,14 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         const sharedShape = this.shapeCache.get(shapeUuid);
         if (!sharedShape) {
             console.warn("AmmoPhysicsEngine.addCharacterController: failed to find shape", shapeUuid);
+            return;
+        }
+
+        if (!isConcaveHullBodyTypeSupported(sharedShape.type, RigidBodyType.Kinematic)) {
+            console.warn(
+                `AmmoPhysicsEngine.addCharacterController: rejected concave hull shape "${shapeUuid}" for controller "${uuid}". ` +
+                "Ammo/Rapier support concave hulls only for Static colliders; use a capsule, convex hull, or primitive collider.",
+            );
             return;
         }
 
@@ -1106,11 +1259,16 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         const frameInB = new this.ammo.btTransform();
         frameInB.setIdentity();
         frameInB.getOrigin().setValue(pivotB.x, pivotB.y, pivotB.z);
-        frameInB.setRotation(new this.ammo.btQuaternion(rotationB.x, rotationB.y, rotationB.z, rotationB.w));
-
-        const joint = new this.ammo.btFixedConstraint(bodyA, bodyB, frameInA, frameInB);
-
-        this.registerConstraint(joint, collisionEnabled, uuidA, uuidB);
+        const rotationAmmo = new this.ammo.btQuaternion(rotationB.x, rotationB.y, rotationB.z, rotationB.w);
+        try {
+            frameInB.setRotation(rotationAmmo);
+            const joint = new this.ammo.btFixedConstraint(bodyA, bodyB, frameInA, frameInB);
+            this.registerConstraint(joint, collisionEnabled, uuidA, uuidB);
+        } finally {
+            this.ammo.destroy(rotationAmmo);
+            this.ammo.destroy(frameInA);
+            this.ammo.destroy(frameInB);
+        }
     }
 
     addHingeJoint(options: HingeJointOptions): void {
@@ -1137,19 +1295,27 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         const pivotInA = new this.ammo.btVector3(0, 0, 0);
         const pivotInB = new this.ammo.btVector3(relPos.x, relPos.y, relPos.z);
 
-        const hinge = new this.ammo.btHingeConstraint(bodyA, bodyB, pivotInA, pivotInB, axisInA, axisInB, false);
+        try {
+            const hinge = new this.ammo.btHingeConstraint(bodyA, bodyB, pivotInA, pivotInB, axisInA, axisInB, false);
 
-        if (angularLimitEnabled) {
-            // Bullet's setLimit(low, high, softness, biasFactor, relaxationFactor).
-            // Preserving the pre-migration defaults (0.9 / 0.3 / 1.0).
-            hinge.setLimit(angularLimit.x * DEG_TO_RAD, angularLimit.y * DEG_TO_RAD, 0.9, 0.3, 1);
+            if (angularLimitEnabled) {
+                // Bullet's setLimit(low, high, softness, biasFactor, relaxationFactor).
+                // Preserving the pre-migration defaults (0.9 / 0.3 / 1.0).
+                hinge.setLimit(angularLimit.x * DEG_TO_RAD, angularLimit.y * DEG_TO_RAD, 0.9, 0.3, 1);
+            }
+
+            if (motorEnabled) {
+                hinge.enableAngularMotor(true, motorSpeed, motorTorque);
+            }
+
+            this.registerConstraint(hinge, collisionEnabled, uuidA, uuidB);
+        } finally {
+            this.ammo.destroy(axisInA);
+            this.ammo.destroy(relRotationAmmo);
+            this.ammo.destroy(axisInB);
+            this.ammo.destroy(pivotInA);
+            this.ammo.destroy(pivotInB);
         }
-
-        if (motorEnabled) {
-            hinge.enableAngularMotor(true, motorSpeed, motorTorque);
-        }
-
-        this.registerConstraint(hinge, collisionEnabled, uuidA, uuidB);
     }
 
     addPointToPointJoint(options: PointToPointJointOptions): void {
@@ -1168,22 +1334,17 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         const pA = new this.ammo.btVector3(pivotA.x, pivotA.y, pivotA.z);
         const pB = new this.ammo.btVector3(pivotB.x, pivotB.y, pivotB.z);
 
-        const joint = new this.ammo.btPoint2PointConstraint(bodyA, bodyB, pA, pB);
-
-        this.registerConstraint(joint, collisionEnabled, uuidA, uuidB);
+        try {
+            const joint = new this.ammo.btPoint2PointConstraint(bodyA, bodyB, pA, pB);
+            this.registerConstraint(joint, collisionEnabled, uuidA, uuidB);
+        } finally {
+            this.ammo.destroy(pA);
+            this.ammo.destroy(pB);
+        }
     }
 
     removeJoint(uuidA: string, uuidB: string): void {
-        const jointKey = this.getJointKey(uuidA, uuidB);
-        const constraint = this.jointMap.get(jointKey);
-        if (!constraint) {
-            return;
-        }
-
-        this.world?.removeConstraint(constraint);
-        this.constraints.delete(constraint);
-        this.jointMap.delete(jointKey);
-        this.ammo.destroy(constraint);
+        this.removeJointByKey(this.getJointKey(uuidA, uuidB));
     }
 
     private registerConstraint(
@@ -1192,11 +1353,37 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         uuidA: string,
         uuidB: string,
     ): void {
+        // The engine contract permits a constraint to be re-authored for the
+        // same pair. Replace the old native constraint instead of leaving two
+        // active solvers behind while the map only points at the newest one.
+        this.removeJointByKey(this.getJointKey(uuidA, uuidB));
         this.constraints.add(constraint);
         this.jointMap.set(this.getJointKey(uuidA, uuidB), constraint);
         // Bullet's addConstraint takes `disableCollisionsBetweenLinkedBodies`,
         // so invert the caller's `collisionEnabled` flag.
         this.world.addConstraint(constraint, !collisionEnabled);
+    }
+
+    private removeJointByKey(jointKey: string): void {
+        const constraint = this.jointMap.get(jointKey);
+        if (!constraint) return;
+
+        this.jointMap.delete(jointKey);
+        this.constraints.delete(constraint);
+        this.world?.removeConstraint(constraint);
+        this.ammo.destroy(constraint);
+    }
+
+    private removeJointsForBody(uuid: string): void {
+        for (const jointKey of this.jointMap.keys()) {
+            const separator = jointKey.indexOf(":");
+            if (separator === -1) continue;
+            const uuidA = jointKey.slice(0, separator);
+            const uuidB = jointKey.slice(separator + 1);
+            if (uuidA === uuid || uuidB === uuid) {
+                this.removeJointByKey(jointKey);
+            }
+        }
     }
 
     private getJointKey(uuidA: string, uuidB: string): string {
@@ -1285,9 +1472,7 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         chassisBody.setActivationState(4);
         this.world.addRigidBody(chassisBody);
 
-        const tuning = new this.ammo.btVehicleTuning();
-        const rayCaster = new this.ammo.btDefaultVehicleRaycaster(this.world);
-        const vehicle = new this.ammo.btRaycastVehicle(tuning, chassisBody, rayCaster);
+        const vehicle = new this.ammo.btRaycastVehicle(this.vehicleTuning, chassisBody, this.vehicleRayCaster);
         vehicle.setCoordinateSystem(0, 1, 2);
         this.world.addAction(vehicle);
 
@@ -1310,7 +1495,7 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
                 axleVec,
                 options.suspensionRestLength,
                 wheelSpec.radius,
-                tuning,
+                this.vehicleTuning,
                 wheelSpec.isFront,
             );
 
@@ -1344,8 +1529,6 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             chassisBody,
             compoundShape,
             boxShape,
-            tuning,
-            rayCaster,
             wheelCount: spec.wheels.length,
             frontWheelIndices,
             driveWheelIndices,
@@ -1369,19 +1552,8 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         // Inner primitives aren't cascaded by the compound, so they
         // have to be destroyed separately.
         this.ammo.destroy(entry.boxShape);
-
-        // TODO(vehicle-ammo-cleanup): tuning + rayCaster are not
-        // destroyed here. Empirically, destroying them after the
-        // vehicle throws "Cannot destroy object", which suggests
-        // `btRaycastVehicle` is destroying them as part of its own
-        // teardown — but Bullet's C++ `btRaycastVehicle` takes
-        // `btVehicleTuning` by reference, so ownership isn't
-        // actually transferred in native code. The JS bindings may
-        // copy the tuning internally. Until that's confirmed, we
-        // match the pre-existing `AmmoPhysics.ts` pattern of leaving
-        // them alive (small leak on repeated vehicle churn). Verify
-        // against the ammo.js bindings and destroy explicitly if
-        // possible.
+        // The shared tuning wrapper is a value-like Ammo binding without a
+        // destroyable native destructor; it is retained once per world.
 
         this.vehicles.delete(vehicleUuid);
     }
@@ -1462,6 +1634,7 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
     }
 
     initDebug(): Object3D {
+        this.debugEnabled = true;
         const debugVertices = new Float32Array(DefaultBufferSize);
         const debugColors = new Float32Array(DefaultBufferSize);
 
@@ -1506,6 +1679,8 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
                 return this.createConvexHullShapeInstance(sharedShape);
             case BodyShapeType.CONCAVE_HULL:
                 return this.createConcaveHullShapeInstance(sharedShape);
+            case BodyShapeType.HEIGHTFIELD:
+                return this.createHeightfieldShapeInstance(sharedShape);
             case 'empty':
                 return new this.ammo.btEmptyShape();
         }
@@ -1528,9 +1703,73 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         return new this.ammo.btUniformScalingShape(ammoShape, 1);
     }
 
-    private createConcaveHullShapeInstance({ ammoShape }: Omit<SharedConcaveHullShape, 'type'>): Ammo.btScaledBvhTriangleMeshShape {
+    private createConcaveHullShapeInstance({ ammoShape }: Omit<SharedConcaveHullShape, 'type'>): Ammo.btCollisionShape {
+        if (!ammoShape) {
+            return new this.ammo.btEmptyShape();
+        }
         this.auxVectorA.setValue(1, 1, 1);
         return new this.ammo.btScaledBvhTriangleMeshShape(ammoShape, this.auxVectorA);
+    }
+
+    private createHeightfieldShapeInstance(shape: SharedHeightfieldShape): Ammo.btCollisionShape {
+        const heightfield = normalizeHeightfieldShape(shape);
+        const ammoAny = this.ammo as any;
+        if (typeof ammoAny._malloc !== "function" || !ammoAny.HEAPF32) {
+            throw new Error("Ammo heightfields require _malloc and HEAPF32 support");
+        }
+
+        const dataPtr = ammoAny._malloc(heightfield.heightSamples.byteLength);
+        if (!dataPtr) {
+            throw new Error("Ammo heightfield allocation failed");
+        }
+        ammoAny.HEAPF32.set(heightfield.heightSamples, dataPtr >> 2);
+
+        try {
+            let minHeight = Infinity;
+            let maxHeight = -Infinity;
+            for (const sample of heightfield.heightSamples) {
+                minHeight = Math.min(minHeight, sample);
+                maxHeight = Math.max(maxHeight, sample);
+            }
+            const ammoShape = new ammoAny.btHeightfieldTerrainShape(
+                heightfield.columns,
+                heightfield.rows,
+                dataPtr,
+                1,
+                minHeight,
+                maxHeight,
+                1,
+                ammoAny.PHY_FLOAT,
+                false,
+            ) as Ammo.btCollisionShape;
+
+            // Bullet's unscaled grid spans (samples - 1) units. Scale it to
+            // the authored terrain extents used by Three's PlaneGeometry.
+            this.auxVectorA.setValue(
+                heightfield.scale.x / Math.max(1, heightfield.columns - 1),
+                heightfield.scale.y,
+                heightfield.scale.z / Math.max(1, heightfield.rows - 1),
+            );
+            (ammoShape as any).setLocalScaling(this.auxVectorA);
+            this.heightfieldDataPointers.set(ammoShape, dataPtr);
+            return ammoShape;
+        } catch (error) {
+            ammoAny._free(dataPtr);
+            throw error;
+        }
+    }
+
+    private getHeightfieldBodyOriginOffset(shape: SharedHeightfieldShape): number {
+        let minHeight = Infinity;
+        let maxHeight = -Infinity;
+        for (const sample of shape.heightSamples) {
+            minHeight = Math.min(minHeight, sample);
+            maxHeight = Math.max(maxHeight, sample);
+        }
+        if (!Number.isFinite(minHeight) || !Number.isFinite(maxHeight)) {
+            return 0;
+        }
+        return (minHeight + maxHeight) / 2;
     }
 
     private createConvexHullShape({ vertices }: Omit<ConvexHullShape, 'type'>): Ammo.btConvexHullShape {
@@ -1640,7 +1879,10 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
                     const results = this.createConcaveHullShape(collisionShape);
                     if (!results) {
                         return {
-                            type: 'empty',
+                            // Preserve the source shape type so addRigidBody
+                            // can still reject dynamic/kinematic concave
+                            // bodies before constructing an Ammo body.
+                            type: BodyShapeType.CONCAVE_HULL,
                             ammoShape: undefined,
                             resources: undefined,
                         };
@@ -1652,21 +1894,37 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
                         resources: results.resources,
                     };
                 }
+
+            case BodyShapeType.HEIGHTFIELD:
+                // Heightfield native objects are instantiated per rigid body;
+                // the shared cache retains only validated, serializable data.
+                normalizeHeightfieldShape(collisionShape);
+                return {
+                    type: BodyShapeType.HEIGHTFIELD,
+                    rows: collisionShape.rows,
+                    columns: collisionShape.columns,
+                    sampleCount: collisionShape.sampleCount,
+                    heightSamples: collisionShape.heightSamples.slice(),
+                    offset: {...collisionShape.offset},
+                    scale: {...collisionShape.scale},
+                };
         }
         throw new Error(`AmmoPhysicsEngine.createSharedShape: unhandled collision shape type ${(collisionShape as {type: string}).type}`);
     }
 
     private destroyCharacterController(uuid: string, controller: Ammo.btKinematicCharacterController) {
         const ghostObject = controller.getGhostObject();
-        this.destroyCollisionObject(uuid, ghostObject);
-
+        // Release the action before its ghost object. Bullet's controller
+        // destructor still reads the ghost during teardown; destroying the
+        // collision object first can strand controller-side native state.
         this.ammo.destroy(controller);
+        this.destroyCollisionObject(uuid, ghostObject);
     }
 
     private destroyCollisionObject(uuid: string, object: Ammo.btCollisionObject) {
         const shape = object.getCollisionShape();
         if (shape) {
-            this.ammo.destroy(shape);
+            this.destroyShapeInstance(shape);
         }
 
         const shapeUuid = this.collisionObjectToShapeMap.get(uuid);
@@ -1676,6 +1934,16 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         }
 
         this.ammo.destroy(object);
+    }
+
+    private destroyShapeInstance(shape: Ammo.btCollisionShape): void {
+        const ammoAny = this.ammo as any;
+        const dataPtr = this.heightfieldDataPointers.get(shape);
+        if (dataPtr && typeof ammoAny._free === "function") {
+            ammoAny._free(dataPtr);
+            this.heightfieldDataPointers.delete(shape);
+        }
+        this.ammo.destroy(shape);
     }
 
     private destroyRigidBody(uuid: string, body: Ammo.btRigidBody) {
@@ -1688,7 +1956,8 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
     }
     
     private dispatchCollisionEvents(onCollision: CollisionCallback) {
-        const currentContactPairs = new Map<string, ContactPair>();
+        const currentContactPairs = this.nextContactPairs;
+        currentContactPairs.clear();
         this.getRigidBodyContactPairs(currentContactPairs);
         this.getCharacterControllerContactPairs(currentContactPairs);
 
@@ -1710,8 +1979,9 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
             this.dispatchCollisionEvent(pair.uuid1, pair.uuid2, true, onCollision, pair.contactPoint, pair.contactNormal);
         }
 
-        this.contactPairs.clear();
+        const previousContactPairs = this.contactPairs;
         this.contactPairs = currentContactPairs;
+        this.nextContactPairs = previousContactPairs;
     }
 
     private getRigidBodyContactPairs(contactPairs: Map<string, ContactPair>) {
@@ -1759,22 +2029,11 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
 
                 // Test for contact points between the ghost object and the
                 // overlapping object. Capture the first contact point and normal.
-                const contactResults = new this.ammo.ConcreteContactResultCallback();
-                let hasContactPoint = false;
-                let capturedPoint: { x: number; y: number; z: number } | undefined;
-                let capturedNormal: { x: number; y: number; z: number } | undefined;
-                (contactResults as any).addSingleResult = (cp: number) => {
-                    hasContactPoint = true;
-                    const wrapPointer = (this.ammo as any).wrapPointer;
-                    const manifoldPoint: Ammo.btManifoldPoint = wrapPointer(cp, this.ammo.btManifoldPoint);
-                    const posOnB = manifoldPoint.getPositionWorldOnB();
-                    const normalOnB = manifoldPoint.get_m_normalWorldOnB();
-                    capturedPoint = { x: posOnB.x(), y: posOnB.y(), z: posOnB.z() };
-                    capturedNormal = { x: normalOnB.x(), y: normalOnB.y(), z: normalOnB.z() };
-                    return 0; // stop contact point detection
-                };
-                this.world.contactPairTest(ghostObject, overlappingObject, contactResults);
-                if (!hasContactPoint) {
+                this.contactProbeHasPoint = false;
+                this.contactProbePoint = undefined;
+                this.contactProbeNormal = undefined;
+                this.world.contactPairTest(ghostObject, overlappingObject, this.contactResultCallback);
+                if (!this.contactProbeHasPoint) {
                     continue;
                 }
 
@@ -1782,8 +2041,8 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
                 contactPairs.set(key, {
                     uuid1: uuid,
                     uuid2: targetUuid,
-                    contactPoint: capturedPoint,
-                    contactNormal: capturedNormal,
+                    contactPoint: this.contactProbePoint,
+                    contactNormal: this.contactProbeNormal,
                 });
             }
         }
@@ -1826,7 +2085,9 @@ export class AmmoPhysicsEngine implements PhysicsEngine, VehiclePhysics, JointPh
         if (!isObject(userPointerObj)) {
             return null;
         }
-        const userPointer = (userPointerObj as any).lU;
+        // Legacy ammo.js wrappers expose the pointer as `lU`; modern
+        // Emscripten WebIDL wrappers expose it as `ptr`.
+        const userPointer = (userPointerObj as any).lU ?? (userPointerObj as any).ptr;
         if (!isNumber(userPointer)) {
             return null;
         }

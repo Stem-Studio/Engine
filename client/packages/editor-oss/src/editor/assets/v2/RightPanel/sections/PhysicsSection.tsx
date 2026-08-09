@@ -12,7 +12,7 @@ import {
     Vector3,
     Vector3Like,
 } from "three";
-import {ConvexGeometry} from "three/examples/jsm/geometries/ConvexGeometry.js";
+import {ConvexGeometry} from "three/addons/geometries/ConvexGeometry.js";
 
 import {PhysicsCheckboxes} from "./v2/PhysicsCheckboxes";
 import {PhysicsNumericInput} from "./v2/PhysicsNumericInput";
@@ -61,8 +61,6 @@ export const PhysicsSection = ({isLocked}: Props) => {
 
     const previewShapeColor = 0x00ff00;
     const previewShapeOpacity = 0.5;
-
-    const cachedConvexHullPoints = new Map<string, number[]>();
 
     let userData: any = undefined;
     let rigidBodyPreviewObjects = [] as any;
@@ -189,7 +187,7 @@ export const PhysicsSection = ({isLocked}: Props) => {
             app.editor?.selected instanceof Array ? app.editor?.selected[0] : (app.editor?.selected as Object3D);
 
         if (name === "shape" && PhysicsUtil.isPhysicsEnabled(selectedObject as any)) {
-            PhysicsUtil.updateShapeOffsetAndScale(selectedObject as any); // TODO: use event
+            PhysicsUtil.updateShapeOffsetAndScale(selectedObject as any);
         }
     };
 
@@ -347,18 +345,12 @@ export const PhysicsSection = ({isLocked}: Props) => {
     };
 
     const getConvexHullPreview = (object: Object3D) => {
-        // TODO: what if the object scale or the children have changed? That
-        // should invalidate the cached points.
         const physicsConfig = PhysicsUtil.getPhysicsConfig(object)!;
-        let hullsPoints = cachedConvexHullPoints.get(object.uuid);
-        if (!hullsPoints) {
-            hullsPoints = PhysicsUtil.getShapeData(
-                object,
-                BodyShapeType.CONVEX_HULL,
-                physicsConfig.shapeExcludesHiddenObjects,
-            ).vertices;
-            cachedConvexHullPoints.set(object.uuid, hullsPoints);
-        }
+        const hullsPoints = PhysicsUtil.getShapeData(
+            object,
+            BodyShapeType.CONVEX_HULL,
+            physicsConfig.shapeExcludesHiddenObjects,
+        ).vertices;
 
         const convexVerts: Vector3[] = [];
         for (let i = 0; i < hullsPoints.length; i += 3) {
@@ -423,7 +415,6 @@ export const PhysicsSection = ({isLocked}: Props) => {
 
         return () => {
             clearScenePreviewObjects();
-            cachedConvexHullPoints.clear();
             app?.on("objectChanged.PhysicsSection", null);
             app?.on("objectSelected.PhysicsSection", null);
             app?.on("objectArraySelected.PhysicsSection", null);

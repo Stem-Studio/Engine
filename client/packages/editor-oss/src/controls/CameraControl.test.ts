@@ -1,32 +1,68 @@
 import * as THREE from "three";
 import {ParticleEmitter, ParticleSystem} from "three.quarks";
-import {beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {CameraControl} from "./CameraControl";
 import {createFreshParticleConfig} from "@stem/editor-oss/services";
+import {CAMERA_TYPES, OCCLUSION_TYPES} from "@stem/editor-oss/types/editor";
+
+type CameraControlHarness = Record<string, unknown> & {
+    isValidIntersect(object: THREE.Object3D | null): boolean;
+    isValidOcclusionObject(object: THREE.Object3D): boolean;
+    getControlRadius(): number;
+    initPointerLockEvents(): void;
+    removeEventListeners(): void;
+    requestPointerLock(): Promise<void>;
+    updateCameraPosition(deltaTime: number): void;
+    updateTransparencyOcclusion(): void;
+};
 
 function makeEmitter(): ParticleEmitter {
     const system = new ParticleSystem(createFreshParticleConfig());
     return new ParticleEmitter(system);
 }
 
-function createControl(character: THREE.Object3D | null) {
-    const ctrl = Object.create(CameraControl.prototype) as unknown as Record<string, unknown>;
+function createControl(character: THREE.Object3D | null): CameraControlHarness {
+    const ctrl = Object.create(CameraControl.prototype) as CameraControlHarness;
     ctrl.character = character;
     return ctrl;
 }
 
-function callIsValidIntersect(ctrl: any, object: THREE.Object3D | null) {
+function callIsValidIntersect(ctrl: CameraControlHarness, object: THREE.Object3D | null) {
     return ctrl.isValidIntersect(object);
 }
 
-function callIsValidOcclusionObject(ctrl: any, object: THREE.Object3D) {
+function callIsValidOcclusionObject(ctrl: CameraControlHarness, object: THREE.Object3D) {
     return ctrl.isValidOcclusionObject(object);
+}
+
+function callGetControlRadius(ctrl: CameraControlHarness) {
+    return ctrl.getControlRadius();
+}
+
+function callUpdateTransparencyOcclusion(ctrl: CameraControlHarness) {
+    ctrl.updateTransparencyOcclusion();
+}
+
+function callUpdateCameraPosition(ctrl: CameraControlHarness, deltaTime = 1 / 60) {
+    ctrl.updateCameraPosition(deltaTime);
 }
 
 function setPhysics(object: THREE.Object3D, enabled: boolean) {
     object.userData.physics = {enabled};
 }
+
+function makeIntersection(object: THREE.Object3D, distance: number): THREE.Intersection<THREE.Object3D> {
+    return {
+        distance,
+        point: new THREE.Vector3(),
+        object,
+    };
+}
+
+afterEach(() => {
+    vi.restoreAllMocks();
+});
 
 describe("CameraControl.isValidIntersect (VFX exclusion)", () => {
     let character: THREE.Object3D;
@@ -160,5 +196,183 @@ describe("CameraControl.isValidOcclusionObject (VFX exclusion)", () => {
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
 
         expect(callIsValidOcclusionObject(ctrl, mesh)).toBe(true);
+    });
+});
+
+describe("CameraControl.updateCameraPosition", () => {
+    it("orients the camera once after calculating the final frame position", () => {
+        const character = new THREE.Object3D();
+        character.position.set(1, 2, 3);
+
+        const camera = new THREE.PerspectiveCamera();
+        const lookAt = vi.spyOn(camera, "lookAt");
+        const ctrl = createControl(character);
+
+        ctrl.camera = camera;
+        ctrl.controlType = CAMERA_TYPES.THIRD_PERSON;
+        ctrl.spherical = new THREE.Spherical(4, Math.PI / 2, 0);
+        ctrl.targetSpherical = new THREE.Spherical(4, Math.PI / 2, 0);
+        ctrl.angleLerpFactor = 1;
+        ctrl.characterHeadHeight = 2;
+        ctrl.targetPosition = new THREE.Vector3();
+        ctrl.nearLimit = 4;
+        ctrl.farLimit = 8;
+        ctrl.preventMeshPenetration = false;
+        ctrl.zoomFactor = 1;
+        ctrl.targetZoomFactor = 1;
+        ctrl.zoomDampLambda = 10;
+
+        callUpdateCameraPosition(ctrl);
+
+        expect(lookAt).toHaveBeenCalledTimes(1);
+        expect(lookAt).toHaveBeenCalledWith(ctrl.targetPosition);
+        expect((ctrl.targetPosition as THREE.Vector3).toArray()).toEqual([1, 4, 3]);
+    });
+});
+
+describe("CameraControl raycast hot paths", () => {
+    it("reuses the camera collision intersection target array", () => {
+        const obstacle = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+        const reusableIntersections: THREE.Intersection<THREE.Object3D>[] = [
+            makeIntersection(obstacle, 99),
+        ];
+        const ctrl = createControl(new THREE.Object3D());
+        const raycaster = {
+            far: 0,
+            camera: null,
+            set: vi.fn(),
+            intersectObjects: vi.fn(
+                (_objects: THREE.Object3D[], _recursive: boolean, target: THREE.Intersection<THREE.Object3D>[]) => {
+                    expect(target).toBe(reusableIntersections);
+                    expect(target).toHaveLength(0);
+                    target.push(makeIntersection(obstacle, 2));
+                    return target;
+                },
+            ),
+        };
+        ctrl.preventMeshPenetration = true;
+        ctrl.occlusionType = OCCLUSION_TYPES.DISTANCE;
+        ctrl.nearLimit = 1;
+        ctrl.farLimit = 5;
+        ctrl.zoomFactor = 0.5;
+        ctrl.targetDistance = 5;
+        ctrl.distanceLerpSpeed = 1;
+        ctrl.characterHeadHeight = 10;
+        ctrl.spherical = new THREE.Spherical(1, Math.PI / 2, 0);
+        ctrl.targetPosition = new THREE.Vector3();
+        ctrl.cameraSphere = new THREE.Sphere();
+        ctrl.raycastCandidates = [];
+        ctrl.raycastDirection = new THREE.Vector3();
+        ctrl.cameraCollisionIntersections = reusableIntersections;
+        ctrl.scene = {children: [obstacle]};
+        ctrl.camera = {
+            getWorldDirection: vi.fn((direction: THREE.Vector3) => direction.set(0, 0, -1)),
+        };
+        ctrl.isObjectInCameraRadius = vi.fn(() => true);
+        ctrl.isValidIntersect = vi.fn(() => true);
+        ctrl.raycaster = raycaster;
+
+        callGetControlRadius(ctrl);
+
+        expect(raycaster.intersectObjects).toHaveBeenCalledWith([obstacle], true, reusableIntersections);
+        expect(reusableIntersections).toHaveLength(1);
+    });
+
+    it("reuses transparency occlusion intersections and occluder set", () => {
+        const occluder = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+        const stale = new THREE.Object3D();
+        const reusableIntersections: THREE.Intersection<THREE.Object3D>[] = [
+            makeIntersection(stale, 99),
+        ];
+        const reusableOccluders = new Set<THREE.Object3D>([stale]);
+        const occludedObjects = new Set<THREE.Object3D>();
+        const makeObjectTransparent = vi.fn();
+        const restoreObjectMaterial = vi.fn();
+        const raycaster = {
+            far: 0,
+            camera: null,
+            set: vi.fn(),
+            intersectObjects: vi.fn(
+                (_objects: THREE.Object3D[], _recursive: boolean, target: THREE.Intersection<THREE.Object3D>[]) => {
+                    expect(target).toBe(reusableIntersections);
+                    expect(target).toHaveLength(0);
+                    target.push(makeIntersection(occluder, 1));
+                    return target;
+                },
+            ),
+        };
+        const ctrl = createControl(new THREE.Object3D());
+        ctrl.scene = {children: [occluder]};
+        ctrl.camera = {position: new THREE.Vector3(0, 0, 5)};
+        ctrl.targetPosition = new THREE.Vector3();
+        ctrl.occlusionRayOrigin = new THREE.Vector3();
+        ctrl.occlusionRayTarget = new THREE.Vector3();
+        ctrl.occlusionRayDirection = new THREE.Vector3();
+        ctrl.transparencyIntersections = reusableIntersections;
+        ctrl.currentOccludingObjects = reusableOccluders;
+        ctrl.occludedObjects = occludedObjects;
+        ctrl.isValidOcclusionObject = vi.fn((object: THREE.Object3D) => object === occluder);
+        ctrl.makeObjectTransparent = makeObjectTransparent;
+        ctrl.restoreObjectMaterial = restoreObjectMaterial;
+        ctrl.raycaster = raycaster;
+
+        callUpdateTransparencyOcclusion(ctrl);
+
+        expect(raycaster.intersectObjects).toHaveBeenCalledWith([occluder], true, reusableIntersections);
+        expect(reusableOccluders.has(stale)).toBe(false);
+        expect(reusableOccluders.has(occluder)).toBe(true);
+        expect(makeObjectTransparent).toHaveBeenCalledWith(occluder);
+        expect(occludedObjects.has(occluder)).toBe(true);
+    });
+});
+
+describe("CameraControl pointer lock cleanup", () => {
+    it("removes the same pointer lock listener that it registers", () => {
+        const ctrl = createControl(null);
+        const pointerLockChangeHandler = vi.fn();
+        const pointerManager = {unregisterHandler: vi.fn()};
+        ctrl.usePointerLock = true;
+        ctrl.pointerLockChangeHandler = pointerLockChangeHandler;
+        ctrl.pointerManager = pointerManager;
+        ctrl.mouseWheelHandler = vi.fn();
+        ctrl.keyDownHandler = vi.fn();
+
+        const addEventListener = vi.spyOn(document, "addEventListener");
+        const removeEventListener = vi.spyOn(document, "removeEventListener");
+
+        ctrl.initPointerLockEvents();
+        ctrl.removeEventListeners();
+
+        expect(addEventListener).toHaveBeenCalledWith("pointerlockchange", pointerLockChangeHandler);
+        expect(removeEventListener).toHaveBeenCalledWith("pointerlockchange", pointerLockChangeHandler);
+    });
+
+    it("does not log unsupported pointer lock when requestPointerLock is available", async () => {
+        const ctrl = createControl(null);
+        const requestPointerLock = vi.fn(() => Promise.resolve());
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        const bodyWithPointerLock = document.body as HTMLBodyElement & {
+            requestPointerLock?: () => Promise<void>;
+        };
+        const previousDescriptor = Object.getOwnPropertyDescriptor(bodyWithPointerLock, "requestPointerLock");
+
+        ctrl.usePointerLock = true;
+        Object.defineProperty(bodyWithPointerLock, "requestPointerLock", {
+            configurable: true,
+            value: requestPointerLock,
+        });
+
+        try {
+            await ctrl.requestPointerLock();
+        } finally {
+            if (previousDescriptor) {
+                Object.defineProperty(bodyWithPointerLock, "requestPointerLock", previousDescriptor);
+            } else {
+                Reflect.deleteProperty(bodyWithPointerLock, "requestPointerLock");
+            }
+        }
+
+        expect(requestPointerLock).toHaveBeenCalledTimes(1);
+        expect(consoleError).not.toHaveBeenCalledWith("Pointer Lock is not supported");
     });
 });

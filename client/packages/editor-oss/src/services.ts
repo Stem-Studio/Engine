@@ -1,19 +1,38 @@
-import * as THREE from "three";
-import {AdditiveBlending, DoubleSide, MeshBasicMaterial} from "three";
+import {AdditiveBlending, DoubleSide, MeshBasicMaterial, type Object3D, type Object3DEventMap} from "three";
 import {
-    ParticleEmitter,
-    ParticleSystem,
     ConstantColor,
     ConstantValue,
     IntervalValue,
     type ParticleSystemParameters,
+    type ParticleEmitter,
     PointEmitter,
     RenderMode,
     Vector4,
 } from "three.quarks";
+import {
+    allEmittersPlayer,
+    collectEmitters as collectEmittersImpl,
+    findTopVFXParent,
+    isParticleEmitterObject,
+    isVFXAutoStartEnabled,
+    isVFXParent,
+    setVFXAutoStart,
+} from "./utils/vfxRuntime";
 
-import {PLACEHOLDER_PREFIX, resolvePlaceholderIdentifier} from "./editor/assets/v2/CreateDashboard/GameOverview/placeholderThumbnails";
-import {backendUrlFromPath} from "./utils/UrlUtils";
+export {getThumbnail} from "./utils/thumbnailUrl";
+export {
+    allEmittersPlayer,
+    findTopVFXParent,
+    isParticleEmitterObject,
+    isVFXAutoStartEnabled,
+    isVFXParent,
+    setVFXAutoStart,
+};
+export type {ParticleEmitterLike, ParticlePlayerActionType, ParticleSystemLike} from "./utils/vfxRuntime";
+
+export const collectEmitters = collectEmittersImpl as unknown as (
+    object: Object3D<Object3DEventMap>,
+) => Array<{emitter: ParticleEmitter; name: string}>;
 
 export const DEFAULT_PARTICLE_CONFIG: ParticleSystemParameters = {
     duration: 1,
@@ -73,158 +92,3 @@ export function createFreshParticleConfig(): ParticleSystemParameters {
         behaviors: [...DEFAULT_PARTICLE_CONFIG.behaviors!],
     };
 }
-
-export const getThumbnail = (thumbnailUrl: string) => {
-    if (thumbnailUrl === "null" || thumbnailUrl === "undefined" || !thumbnailUrl) return undefined;
-
-    if (thumbnailUrl.startsWith(PLACEHOLDER_PREFIX)) {
-        return resolvePlaceholderIdentifier(thumbnailUrl) ?? undefined;
-    }
-
-    return thumbnailUrl
-        ? thumbnailUrl.includes("data:image") || thumbnailUrl.includes("src/editor")
-            ? thumbnailUrl
-            : backendUrlFromPath(thumbnailUrl)
-        : undefined;
-};
-
-// VFX Related
-
-export const isVFXParent = (object: THREE.Object3D<THREE.Object3DEventMap>) => {
-    if (!object || Array.isArray(object) || !object.children || object.children.length === 0) return false;
-
-    for (const child of object.children) {
-        if (child instanceof ParticleEmitter) return true;
-        if (isVFXParent(child)) return true;
-    }
-
-    return false;
-};
-
-const hasEmitterDeep = (object: THREE.Object3D): boolean => {
-    for (const child of object.children) {
-        if (child instanceof ParticleEmitter) return true;
-        if (child instanceof ParticleSystem && (child as ParticleSystem).emitter) return true;
-        if (hasEmitterDeep(child)) return true;
-    }
-    return false;
-};
-
-export const findTopVFXParent = (object: THREE.Object3D, scene: THREE.Scene | undefined): THREE.Object3D | null => {
-    let current = object;
-    let lastVFXParent: THREE.Object3D | null = null;
-
-    while (current && current !== scene) {
-        if (hasEmitterDeep(current)) {
-            lastVFXParent = current; // remember last obj with emitter
-        }
-        current = current.parent!;
-    }
-
-    return lastVFXParent; // return top VFX parent
-};
-
-export const collectEmitters = (object: THREE.Object3D): Array<{emitter: ParticleEmitter; name: string}> => {
-    const result: Array<{emitter: ParticleEmitter; name: string}> = [];
-
-    const traverse = (obj: THREE.Object3D) => {
-        if (obj instanceof ParticleEmitter) {
-            result.push({emitter: obj, name: obj.name || "Unnamed Emitter"});
-        }
-
-        if (obj instanceof ParticleSystem && (obj as ParticleSystem).emitter) {
-            const typeObj = obj as ParticleSystem;
-            result.push({emitter: typeObj.emitter, name: typeObj.emitter.name || "Unnamed ParticleSystem Emitter"});
-        }
-
-        obj.children.forEach(child => traverse(child));
-    };
-
-    traverse(object);
-    return result;
-};
-
-const parseBooleanFlag = (value: unknown): boolean | undefined => {
-    if (typeof value === "boolean") return value;
-    if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase();
-        if (normalized === "true") return true;
-        if (normalized === "false") return false;
-    }
-    return undefined;
-};
-
-const getAutoStartFromUserData = (userData: Record<string, unknown> | undefined): boolean | undefined => {
-    if (!userData) return undefined;
-
-    const autoStart = parseBooleanFlag(userData.autoStart);
-    if (autoStart !== undefined) return autoStart;
-
-    const autoplay = parseBooleanFlag(userData.autoplay);
-    if (autoplay !== undefined) return autoplay;
-
-    return parseBooleanFlag(userData.autoPlay);
-};
-
-export const isVFXAutoStartEnabled = (target?: THREE.Object3D | null): boolean => {
-    if (!target) return false;
-
-    const emitters = collectEmitters(target);
-    if (emitters.length > 0 && !(target instanceof ParticleEmitter)) {
-        return emitters.every(({emitter}) => isVFXAutoStartEnabled(emitter));
-    }
-
-    return getAutoStartFromUserData(target.userData as Record<string, unknown> | undefined) ?? true;
-};
-
-export const setVFXAutoStart = (target: THREE.Object3D | null | undefined, enabled: boolean): void => {
-    if (!target) return;
-
-    const apply = (object: THREE.Object3D) => {
-        object.userData.autoStart = enabled;
-        // Keep legacy key in sync so existing content continues to work.
-        object.userData.autoplay = enabled;
-        object.userData.autoPlay = enabled;
-    };
-
-    const emitters = collectEmitters(target);
-    if (emitters.length > 0 && !(target instanceof ParticleEmitter)) {
-        emitters.forEach(({emitter}) => apply(emitter));
-        return;
-    }
-
-    apply(target);
-};
-
-export type ParticlePlayerActionType = "play" | "stop" | "pause";
-export const allEmittersPlayer = (
-    element: THREE.Object3D<THREE.Object3DEventMap>,
-    action: ParticlePlayerActionType,
-) => {
-    if (!element) return;
-    element.traverse(child => {
-        if (child instanceof ParticleEmitter) {
-            const system = child.system;
-            if (system) {
-                switch (action) {
-                    case "play":
-                        if (system.paused) {
-                            system.play();
-                        } else {
-                            system.restart();
-                        }
-                        break;
-                    case "pause":
-                        system.pause();
-                        break;
-                    case "stop":
-                        system.stop();
-                        break;
-
-                    default:
-                        break;
-                }
-            }
-        }
-    });
-};

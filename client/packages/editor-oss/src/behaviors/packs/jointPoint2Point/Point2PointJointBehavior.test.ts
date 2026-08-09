@@ -5,6 +5,7 @@ import Point2PointJointBehavior from "./Point2PointJointBehavior";
 
 const createGame = (scene: THREE.Scene) => ({
     scene,
+    getObjectByUUID: (uuid: string) => scene.getObjectByProperty("uuid", uuid) ?? null,
     physics: {
         addPoint2PointJoint: vi.fn(),
         removeJoint: vi.fn(),

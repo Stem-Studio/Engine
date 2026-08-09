@@ -1,7 +1,9 @@
+import * as THREE from "three";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { QualityPresets } from "./QualityPresets";
 import { QualitySystemIntegration } from "./QualitySystemIntegration";
+import {runtimeFrameTelemetry} from "../performance/RuntimeFrameTelemetry";
 
 /**
  *
@@ -27,6 +29,9 @@ function createHarness() {
     const scene = {
         userData: {
             postProcessing: {
+                bloom: {
+                    enabled: true,
+                },
                 outline: {
                     enabled: true,
                 },
@@ -60,6 +65,18 @@ function createHarness() {
     return { integration, qualityManager, renderer, scene };
 }
 
+function addDeepObjectChain(root: THREE.Object3D, depth = 12_000): THREE.Object3D {
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new THREE.Object3D();
+        current.add(child);
+        current = child;
+    }
+
+    return current;
+}
+
 beforeEach(() => {
     originalWindow = globalThis.window;
     (globalThis as any).window = {
@@ -69,6 +86,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    runtimeFrameTelemetry.reset();
     if (originalWindow === undefined) {
         delete (globalThis as any).window;
     } else {
@@ -77,6 +95,33 @@ afterEach(() => {
 });
 
 describe("QualitySystemIntegration render pressure policy", () => {
+    it("feeds live render telemetry into the existing pressure policy", () => {
+        const integration = new (QualitySystemIntegration as any)() as QualitySystemIntegration;
+        const update = vi.fn();
+        (integration as any).renderPressurePolicy = {update};
+
+        (integration as any).connectRenderPressureTelemetry();
+        runtimeFrameTelemetry.recordRenderedFrame(16.67, 7, 16.67);
+
+        expect(update).toHaveBeenCalledWith(7, 16.67);
+        (integration as any).unsubscribeRenderPressure();
+    });
+
+    it("does not react to transient render pressure during runtime startup", () => {
+        const integration = new (QualitySystemIntegration as any)() as QualitySystemIntegration;
+        const update = vi.fn();
+        (integration as any).renderPressurePolicy = {update};
+        (integration as any).engine = {
+            isRuntimeStartupActive: () => true,
+        };
+
+        (integration as any).connectRenderPressureTelemetry();
+        runtimeFrameTelemetry.recordRenderedFrame(1600, 120, 1600);
+
+        expect(update).not.toHaveBeenCalled();
+        (integration as any).unsubscribeRenderPressure();
+    });
+
     it("waits for sustained pressure samples before changing quality", () => {
         const { integration, qualityManager } = createHarness();
         const policy = integration.createRenderPressurePolicy();
@@ -151,6 +196,7 @@ describe("QualitySystemIntegration render pressure policy", () => {
         expect(qualityManager.setRuntimeRenderingOverride).toHaveBeenCalledWith(null);
         // Outline restored after full recovery
         expect(scene.userData.postProcessing.outline.enabled).toBe(true);
+        expect(scene.userData.postProcessing.bloom.enabled).toBe(true);
         expect(renderer.updatePostProcessingFromScene).toHaveBeenCalled();
     });
 
@@ -192,7 +238,8 @@ describe("QualitySystemIntegration render pressure policy", () => {
         });
         // Outline stays enabled at tier 1
         expect(scene.userData.postProcessing.outline.enabled).toBe(true);
-        expect(renderer.updatePostProcessingFromScene).not.toHaveBeenCalled();
+        expect(scene.userData.postProcessing.bloom.enabled).toBe(false);
+        expect(renderer.updatePostProcessingFromScene).toHaveBeenCalled();
     });
 
     it("disables bloom and outline at tier 2", () => {
@@ -211,5 +258,67 @@ describe("QualitySystemIntegration render pressure policy", () => {
         );
         expect(scene.userData.postProcessing.outline.enabled).toBe(false);
         expect(renderer.updatePostProcessingFromScene).toHaveBeenCalled();
+    });
+});
+
+describe("QualitySystemIntegration launch scheduler compatibility", () => {
+    it("accepts legacy scene scheduler metadata without enabling the retired frame orchestrator", async () => {
+        const integration = new (QualitySystemIntegration as any)() as QualitySystemIntegration;
+        const currentSettings = createSettings();
+        currentSettings.scheduler.enabled = true;
+
+        const qualityManager = {
+            applyPreset: vi.fn(),
+            detectDeviceCapabilities: vi.fn(async () => currentSettings),
+            getCurrentSettings: vi.fn(() => currentSettings),
+            setSettings: vi.fn(async (patch: any) => {
+                if (patch.scheduler) {
+                    currentSettings.scheduler = {
+                        ...currentSettings.scheduler,
+                        ...patch.scheduler,
+                    };
+                }
+                return currentSettings;
+            }),
+        };
+
+        (integration as any).qualityManager = qualityManager;
+        (integration as any).getDeviceCategory = () => "Desktop";
+
+        const result = await integration.preparePlayerLaunchQuality({
+            scheduler: {
+                enabled: true,
+                behaviorUpdateMode: "fixed",
+            },
+        });
+
+        expect(result.scheduler.enabled).toBe(false);
+        expect(qualityManager.setSettings).toHaveBeenCalledWith(
+            { scheduler: { enabled: false } },
+            { persist: false },
+        );
+    });
+});
+
+describe("QualitySystemIntegration scene validation", () => {
+    it("validates deep scene light counts without recursive Object3D traversal", () => {
+        const integration = new (QualitySystemIntegration as any)() as QualitySystemIntegration;
+        (integration as any).renderingModule = {
+            getMaxLights: vi.fn(() => 1),
+        };
+        const scene = new THREE.Scene();
+        const leaf = addDeepObjectChain(scene);
+        leaf.add(new THREE.DirectionalLight());
+        scene.add(new THREE.PointLight());
+        scene.add(new THREE.AmbientLight());
+        const traverseSpy = vi.spyOn(scene, "traverse");
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        expect(() => integration.validateSceneLights(scene)).not.toThrow();
+
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Scene has 2 lights"));
+        expect(traverseSpy).not.toHaveBeenCalled();
+        warnSpy.mockRestore();
+        traverseSpy.mockRestore();
     });
 });

@@ -20,8 +20,46 @@ const shadowTooltipContent =
     "Use these only when shadows show acne, peter-panning, or shimmer. Bias changes are usually tiny, often around -0.0005 to 0.0005. Normal bias is commonly around 0.01-0.2. Start with very small adjustments.";
 
 type AxisType = "x" | "y" | "z";
+type ShadowCastingLight = THREE.Light & {shadow?: THREE.LightShadow | null; castShadow: boolean};
+
+const SHADOW_MAP_REBUILD_DELAY_MS = 100;
 
 const AxisArray: AxisType[] = ["x", "y", "z"];
+
+const disposeShadowMap = (shadow: THREE.LightShadow) => {
+    if (shadow.map) {
+        shadow.map.dispose();
+        shadow.map = null;
+    }
+};
+
+const updateShadowCameraProjection = (camera: THREE.Camera) => {
+    (camera as THREE.Camera & {updateProjectionMatrix?: () => void}).updateProjectionMatrix?.();
+};
+
+const rebuildShadowMapAfterRendererCleanup = (
+    light: ShadowCastingLight,
+    applyShadowChanges: (shadow: THREE.LightShadow) => void,
+    notifyChanged: () => void,
+) => {
+    light.castShadow = false;
+    notifyChanged();
+
+    // Three r184 can keep a stale shadow render target when map size changes.
+    // Let the renderer observe castShadow=false for a task, then rebuild.
+    setTimeout(() => {
+        const shadow = light.shadow;
+        if (!shadow) return;
+
+        applyShadowChanges(shadow);
+        disposeShadowMap(shadow);
+        updateShadowCameraProjection(shadow.camera);
+        shadow.needsUpdate = true;
+        light.castShadow = true;
+        notifyChanged();
+    }, SHADOW_MAP_REBUILD_DELAY_MS);
+};
+
 interface Props {
     lightState: ILightState;
     isLocked?: boolean;
@@ -473,31 +511,13 @@ export const LightingSection = ({lightState, isLocked, selectedObj}: Props) => {
                                 const value = Number(item.value);
                                 const selected = app.editor.objectByUuid(selectedObj.uuid);
                                 if (selected && selected.shadow) {
-                                    // Disable shadow first
-                                    selected.castShadow = false;
-                                    app.call(`objectChanged`, selected, selected);
-
-                                    // Re-enable with new settings after a short delay to ensure renderer cleanup
-                                    // NOTE: there is a bug in Three.js where changing the shadow map size does not update
-                                    // the shadow map correctly, causing shadows to render incorrectly until the camera is
-                                    // manually updated or shadow is toggled. This is a workaround for that issue in Three.js.
-                                    // FIXME: remove setTimeout and directly update shadow map size once the corresponding upstream Three.js issue/PR is resolved.
-                                    setTimeout(() => {
-                                        if (selected.shadow) {
-                                            selected.shadow.mapSize.set(value, value);
-
-                                            if (selected.shadow.map) {
-                                                selected.shadow.map.dispose();
-                                                selected.shadow.map = null;
-                                            }
-
-                                            selected.shadow.camera.updateProjectionMatrix?.();
-                                            selected.shadow.needsUpdate = true;
-                                            selected.castShadow = true;
-
-                                            app.call(`objectChanged`, selected, selected);
-                                        }
-                                    }, 100);
+                                    rebuildShadowMapAfterRendererCleanup(
+                                        selected,
+                                        shadow => {
+                                            shadow.mapSize.set(value, value);
+                                        },
+                                        () => app.call(`objectChanged`, selected, selected),
+                                    );
                                 }
                             }}
                             disableTyping
@@ -639,38 +659,25 @@ export const LightingSection = ({lightState, isLocked, selectedObj}: Props) => {
                         onClick={() => {
                             const selected = app.editor.objectByUuid(selectedObj.uuid);
                             if (selected && selected.shadow) {
-                                // Disable shadow first
-                                selected.castShadow = false;
-                                app.call(`objectChanged`, selected, selected);
+                                rebuildShadowMapAfterRendererCleanup(
+                                    selected,
+                                    shadow => {
+                                        shadow.radius = 3;
+                                        shadow.bias = 0;
+                                        shadow.normalBias = 0.1;
+                                        shadow.mapSize.set(2048, 2048);
 
-                                setTimeout(() => {
-                                    if (selected.shadow) {
-                                        selected.shadow.radius = 3;
-                                        selected.shadow.bias = 0;
-                                        selected.shadow.normalBias = 0.1;
-                                        selected.shadow.mapSize.set(2048, 2048);
-
-                                        if (selected.shadow.map) {
-                                            selected.shadow.map.dispose();
-                                            selected.shadow.map = null;
-                                        }
-
-                                        selected.shadow.camera.updateProjectionMatrix?.();
-                                        selected.shadow.needsUpdate = true;
-                                        if (selected.shadow.camera) {
+                                        if (shadow.camera instanceof THREE.OrthographicCamera) {
                                             const value = 200;
                                             const half = value / 2;
-                                            selected.shadow.camera.left = -half;
-                                            selected.shadow.camera.right = half;
-                                            selected.shadow.camera.top = half;
-                                            selected.shadow.camera.bottom = -half;
-                                            selected.shadow.camera.updateProjectionMatrix?.();
+                                            shadow.camera.left = -half;
+                                            shadow.camera.right = half;
+                                            shadow.camera.top = half;
+                                            shadow.camera.bottom = -half;
                                         }
-
-                                        selected.castShadow = true;
-                                        app.call(`objectChanged`, selected, selected);
-                                    }
-                                }, 100);
+                                    },
+                                    () => app.call(`objectChanged`, selected, selected),
+                                );
                             }
                         }}
                         disabled={isLocked || !castShadow}

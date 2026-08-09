@@ -28,6 +28,7 @@ class AIConversationManager {
     private readonly boundHandleKeyUp: (event: KeyboardEvent) => void;
     private gameManager: GameManager | null = null;
     private ranges: RangeInfo[] = [];
+    private readonly aiAgentsById = new Map<string, AiAgent>();
     private lastDisplayedAgent: AiAgent | null = null;
 
     constructor(game: GameManager) {
@@ -55,6 +56,7 @@ class AIConversationManager {
     registerAiAgent(aiAgent: AiAgent) {
         if (!this.aiAgents.some(agent => agent.id === aiAgent.id)) {
             this.aiAgents.push(aiAgent);
+            this.aiAgentsById.set(aiAgent.id, aiAgent);
             global.app?.call("agentRegistered", aiAgent);
             if (aiAgent.behavior.attributes.active_in_voice_chat) {
                 void this.voiceRecorder?.init();
@@ -66,6 +68,11 @@ class AIConversationManager {
         const index = this.aiAgents.findIndex(agent => agent.id === aiAgent.id);
         if (index !== -1) {
             this.aiAgents.splice(index, 1);
+            this.aiAgentsById.delete(aiAgent.id);
+            const rangeIndex = this.ranges.findIndex(range => range.agentId === aiAgent.id);
+            if (rangeIndex !== -1) {
+                this.ranges.splice(rangeIndex, 1);
+            }
             global.app?.call("agentUnregistered", aiAgent);
         }
     }
@@ -82,21 +89,39 @@ class AIConversationManager {
     getClosestAiAgent(checkRange: boolean = false): AiAgent | null {
         if (!this.ranges.length || !this.gameManager?.player) return null;
 
-        // If checkRange is true, only consider agents that are in range
-        const eligibleRanges = checkRange ? this.ranges.filter(r => r.isInRange) : this.ranges;
+        let closest: RangeInfo | null = null;
+        let closestAgent: AiAgent | null = null;
 
-        if (!eligibleRanges.length) return null;
+        for (let i = 0; i < this.ranges.length; i++) {
+            const range = this.ranges[i]!;
+            if (checkRange && !range.isInRange) {
+                continue;
+            }
 
-        const closest = eligibleRanges.reduce((acc, loc) =>
-            acc.distanceFromPlayer < loc.distanceFromPlayer ? acc : loc,
-        );
+            const agent = this.aiAgentsById.get(range.agentId);
+            if (!agent) {
+                continue;
+            }
 
-        return this.aiAgents.find(agent => agent.id === closest.agentId) || null;
+            if (!closest || range.distanceFromPlayer < closest.distanceFromPlayer) {
+                closest = range;
+                closestAgent = agent;
+            }
+        }
+
+        return closestAgent;
     }
 
     updateRangeData(range: RangeInfo) {
-        const holder = this.ranges.filter(r => r.agentId !== range.agentId);
-        this.ranges = [...holder, range];
+        const index = this.ranges.findIndex(item => item.agentId === range.agentId);
+        if (index === -1) {
+            this.ranges.push(range);
+            return;
+        }
+
+        const existing = this.ranges[index]!;
+        existing.distanceFromPlayer = range.distanceFromPlayer;
+        existing.isInRange = range.isInRange;
     }
 
     updateUI() {
@@ -195,40 +220,6 @@ class AIConversationManager {
             global.app.on("gameEnded.AIConversationController", null);
         }
     }
-
-    /*private handleGamePaused = (): void => {
-        this.gamePaused = true;
-        //this.aiAgent?.pause();
-        this.buttonView?.dispose();
-        this.aiAgents.forEach(aiAgent => {
-            aiAgent.setGainNodeValue(0);
-        });
-    };
-
-    private handleGameEnded = (): void => {
-        this.gamePaused = true;
-        this.unbindEventListeners();
-        this.buttonView?.dispose();
-        this.aiAgents.forEach(aiAgent => {
-            aiAgent.reset();
-        });
-    };
-
-    private handleGameStarted = (): void => {
-        this.gamePaused = false;
-        this.bindEventListeners();
-        //this.aiAgent?.resume();
-    };
-
-    public dispose() {
-        this.unbindEventListeners();
-
-        if (global.app) {
-            global.app!.on("gameStarted.AIConversationController", null);
-            global.app!.on("pauseGame.AIConversationController", null);
-            global.app!.on("gameEnded.AIConversationController", null);
-        }
-    }*/
 }
 
 export default AIConversationManager;

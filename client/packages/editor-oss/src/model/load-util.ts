@@ -1,30 +1,31 @@
-import JSZip from 'jszip';
 import { Object3D } from 'three';
 
 import { lookupOssAsset, SUPPORTED_MODEL_FORMATS_REGEX } from '@stem/network/api/asset';
 
-import { AssetLoader } from '../asset-management/AssetLoader';
+import type JSZip from 'jszip';
+import type { AssetLoader } from '../asset-management/AssetLoader';
 import { AssetResolutionContext, resolveAssetId, resolveAssetRevisionId } from '../asset-management/AssetResolutionContext';
-import { findAtlasFiles, loadAtlas } from '../atlas/AtlasDetector';
-import ModelLoader from '../assets/js/loaders/ModelLoader';
+import type ModelLoader from '../assets/js/loaders/ModelLoader';
 import { UploadSettings } from '../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/ModelUpload/types';
 import global from '../global';
-import {
-    detectTexturesAndModels,
-    getBaseName,
-    getTextureOverridesForModel,
-} from '../texture/TextureMapping';
 import type { TextureOverrides } from '../texture/TextureMapping';
 import { DetectDevice } from '../utils/DetectDevice';
-import { getModelStats, optimizeGlbFile } from '../utils/ModelUtils';
-import { hasGaussianSplatPlyMetadata, isGaussianSplatPlyBlob } from './gaussianSplats';
-import { isSupportedModelFormat, LOD_LEVEL_DESKTOP, LOD_LEVEL_MOBILE, setModelId, setModelRevisionId } from './util';
+import { LOD_LEVEL_DESKTOP, LOD_LEVEL_MOBILE } from './lodLevels';
+import { isSupportedModelFormat, setModelId, setModelRevisionId } from './util';
+
+export { LOD_LEVEL_DESKTOP, LOD_LEVEL_MOBILE } from './lodLevels';
+
+const GAUSSIAN_SPLAT_PLY_METADATA_KEY = 'gaussianSplatPly';
+
+export const getBestLodForPlatform = (): number => {
+    return DetectDevice.isMobile() ? LOD_LEVEL_MOBILE : LOD_LEVEL_DESKTOP;
+};
 
 const replaceExtension = (name: string, ext: string) => name.replace(/\.[^/.]+$/, "") + ext;
 
 /**
  * Resolve a model's revision id from the scene's asset-resolution context,
- * falling back to the OSS asset registry. In OSS the dependency map does not
+ * falling back to the local asset registry. In local storage the dependency map does not
  * always round-trip through a save/reload, but the registry — re-seeded from
  * the ProjectStore on scene load — always knows the head revision for a
  * synthesized asset. Returns undefined when neither source has it.
@@ -47,17 +48,21 @@ export const createLods = async (
         return [];
     }
 
+    const {optimizeGlbFileWithStats} = await import("../utils/ModelUtils");
     const modelBuffer = sourceBuffer;
     signal.throwIfAborted();
-    const lodPromises = settings.lodSettings.map(async (lodSettings, idx) => {
-        if (!lodSettings) return null;
+    const lods = [];
+
+    for (let idx = 0; idx < settings.lodSettings.length; idx++) {
+        const lodSettings = settings.lodSettings[idx];
+        if (!lodSettings) continue;
         const level = idx + 1;
 
         const targetReduction = lodSettings.vertexRetention / 100;
 
         signal.throwIfAborted();
 
-        const optimizedBuffer = await optimizeGlbFile(modelBuffer, {
+        const {glbData: optimizedBuffer, stats} = await optimizeGlbFileWithStats(modelBuffer, {
             simplifyRatio: targetReduction,
             simplifyError: 0.001,
             compressTextures: settings.compressTextures,
@@ -69,9 +74,7 @@ export const createLods = async (
 
         signal.throwIfAborted();
 
-        const stats = await getModelStats(optimizedBuffer);
-
-        return {
+        lods.push({
             level,
             file: new File([optimizedBuffer], `${replaceExtension(fileName, "")}_${level}.glb`, {
                 type: "model/gltf-binary",
@@ -83,15 +86,10 @@ export const createLods = async (
                 textureScale: lodSettings.textureScale / 100,
                 method: "meshopt",
             },
-        };
-    });
+        });
+    }
 
-    const results = await Promise.all(lodPromises);
-    return results.filter((r): r is NonNullable<typeof r> => r !== null);
-};
-
-export const getBestLodForPlatform = (): number => {
-    return DetectDevice.isMobile() ? LOD_LEVEL_MOBILE : LOD_LEVEL_DESKTOP;
+    return lods;
 };
 
 type LoadModelOptions = {
@@ -131,6 +129,8 @@ type LoadModelWithLoaderOptions = {
 };
 
 type RuntimeModelLoaderOptions = NonNullable<Parameters<ModelLoader["load"]>[1]>;
+type AtlasDetectorModule = typeof import('../atlas/AtlasDetector');
+type AtlasData = Awaited<ReturnType<AtlasDetectorModule["loadAtlas"]>>;
 
 type ZipModelPackage = {
     rootFile: File;
@@ -142,6 +142,20 @@ const ZIP_BASE64_PREFIX = "UEsDB";
 
 const isUsdZipContainer = (format: string | undefined): boolean =>
     format === "usdz" || format === "kmz";
+
+const createModelLoader = async (): Promise<ModelLoader> => {
+    const { default: ModelLoaderClass } = await import('../assets/js/loaders/ModelLoader');
+    return new ModelLoaderClass();
+};
+
+const hasGaussianSplatPlyMetadata = (metadata: Record<string, unknown> | null | undefined): boolean => {
+    return metadata?.[GAUSSIAN_SPLAT_PLY_METADATA_KEY] === true;
+};
+
+const isGaussianSplatPlyBlob = async (blob: Blob): Promise<boolean> => {
+    const { isGaussianSplatPlyBlob } = await import('./gaussianSplats');
+    return isGaussianSplatPlyBlob(blob);
+};
 
 const dataUrlMime = (url: string): string | undefined => {
     if (!url.startsWith("data:")) return undefined;
@@ -212,6 +226,7 @@ const expandZipModelPackage = async (
     archive: Blob,
     metadata: Record<string, unknown> | undefined,
 ): Promise<ZipModelPackage> => {
+    const { default: JSZip } = await import('jszip');
     const zip = await new JSZip().loadAsync(archive);
     const rootFilePath = findZipRootFilePath(zip, metadata);
     if (!rootFilePath) {
@@ -246,7 +261,8 @@ const getPackageTextureOptions = async (
     rootFile: File,
     fileBlobMap: Map<string, Blob>,
     rootPath: string,
-): Promise<{atlasData?: Awaited<ReturnType<typeof loadAtlas>>; textureOverrides?: TextureOverrides}> => {
+): Promise<{atlasData?: AtlasData; textureOverrides?: TextureOverrides}> => {
+    const { findAtlasFiles, loadAtlas } = await import('../atlas/AtlasDetector');
     const atlasFiles = findAtlasFiles(fileBlobMap);
     const atlasData = atlasFiles[0]
         ? await loadAtlas(atlasFiles[0], fileBlobMap, rootPath)
@@ -256,6 +272,11 @@ const getPackageTextureOptions = async (
         return { atlasData };
     }
 
+    const {
+        detectTexturesAndModels,
+        getBaseName,
+        getTextureOverridesForModel,
+    } = await import('../texture/TextureMapping');
     const textureDetection = detectTexturesAndModels(fileBlobMap);
     if (!textureDetection.hasLooseTextures) {
         return {};
@@ -295,7 +316,7 @@ const loadZipModelPackage = async (
 
     const { atlasData, textureOverrides } = await getPackageTextureOptions(rootFile, fileBlobMap, rootPath);
     const rootUrl = URL.createObjectURL(rootFile);
-    const loader = new ModelLoader();
+    const loader = await createModelLoader();
 
     try {
         return await loader.load(
@@ -364,7 +385,7 @@ export const loadModelWithLoader = async (
     };
     const object = isZipModelPackage(result)
         ? await loadZipModelPackage(result, loadOptions)
-        : await new ModelLoader().load(result.url, loadOptions);
+        : await (await createModelLoader()).load(result.url, loadOptions);
     if (!object) {
         throw new Error(`Failed to load model ${resolvedModelId}`);
     }

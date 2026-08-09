@@ -1,139 +1,99 @@
 ---
-title: Dashboard and Project Flow
-slug: dashboard-and-project-flow
-description: How to create, open, organize, share, archive, and import projects in the StemStudio dashboard.
-status: draft
+title: Local Project Flow
+slug: local-project-flow
+description: Create, open, save, and import browser-local StemStudio Playground projects.
+status: current
 audience: creators
-prerequisites: [getting-started/01-what-is-stemstudio, getting-started/02-editor-tour]
+prerequisites: [getting-started/01-what-is-stemstudio]
 ---
 
-# Dashboard and Project Flow
+# Local Project Flow
 
-This page explains how projects move through StemStudio, from the dashboard to the editor and back again.
+The Playground dashboard is the home for projects stored in your browser or in
+a local folder. It is not connected to a deployed account or remote scene API.
 
-![Dashboard showing My Experiences, Shared with Me, and project menu actions](images/dashboard.PNG)
+![Local project dashboard](images/dashboard.PNG)
 
-Create, open, organize, share, and import projects from the StemStudio dashboard.
+## Choose Storage
 
-## The Dashboard At A Glance
+On a normal local editor launch, the first-run prompt offers:
 
-The dashboard is your project home base. The main sections are:
+- **IndexedDB** — browser-local storage with no folder permission.
+- **Local folder** — Chromium's File System Access API writes
+  `.stemscript.json` project files and packaged assets into a folder you
+  choose.
 
-- **Dashboard** for your main landing view
-- **My Experiences** for projects you own
-- **Shared with Me** for projects other people added you to
-- **Archived** for projects removed from your active list
-- **Community** for public community projects
-- **Settings** for account-level settings
-- **Admin Panel** for admin-only tools
+The public Playground may choose its local storage mode automatically and hide
+the bootstrap prompt. In either case, projects remain local to the browser
+origin. A project created at `localhost` does not appear automatically on a
+hosted Playground, or vice versa.
 
-If you are looking for a project you already created, start with **My Experiences**. If another creator invited you, check **Shared with Me**.
+## Create A Project
 
-## Creating A New Project
+The create dashboard offers two primary paths:
 
-Use the **New Experience** button in the dashboard header to start a project.
+- **Start from scratch** opens the full editor with a new local project.
+- **Create from a prompt** opens the Copilot-focused flow. In Playground mode
+  it needs a browser-stored provider key.
 
-### Template Selection
+Templates may appear when the running build has local template data. Do not
+depend on a remote template catalog: the remote API-backed mode is not
+deployed.
 
-When templates are enabled, StemStudio opens a **Select Project Template** dialog before the editor loads.
+## Open And Save
 
-Common built-in starting points include:
+Open a project card to continue editing it. The editor auto-saves to the active
+project store. During play mode, physics and behavior changes are temporary;
+stopping play restores the edit-time scene.
 
-- **Blank Project** for a clean default scene
-- **Open World Sandbox** for a starter scene with terrain and sandbox-oriented setup
+### Refresh-safe editor links
 
-Your workspace can also expose additional project templates. Double-clicking a template creates it immediately.
+Playground editor links include both the scene name and the active action:
 
-If templates are not configured for your environment, StemStudio skips the dialog and creates a blank project directly.
+- `/create/project/<project-id>/<scene-name>/edit` opens the editor.
+- `/create/project/<project-id>/<scene-name>/play` restores play mode.
 
-![Select Project Template dialog with Blank Project and Open World Sandbox](images/new%20project%20example.PNG)
+The project ID loads the browser-local project; the scene-name segment is a
+readable URL label. Refreshing the page preserves the selected mode. Playground
+links include `?mode=playground` so a new tab keeps the same local-only boundary.
 
-### Import Instead Of Starting Empty
+For important work:
 
-The **New Experience** dropdown also supports:
+1. Watch for save errors before closing the tab.
+2. Keep browser site data intact when using IndexedDB.
+3. Prefer folder storage when you need visible files or external backups.
+4. Reconnect the same folder if the browser asks for permission again.
 
-- **Import Game** to bring in a scene package
-- **Import Asset Pack** to import and publish an asset pack if you have admin access
+Changing the selected storage mode does not automatically move projects
+between IndexedDB and a folder.
 
-**Import Game** accepts `.json` scene files. **Import Asset Pack** accepts `.zip` asset pack archives.
+## Import
 
-After a successful import, the dashboard refreshes so the new content appears in your project list.
+In Chromium browsers with the File System Access API, use **Import project
+file** for a self-contained `.stemscript.json` project.
+When a project has packaged assets, use **Import project folder** and select
+the folder containing the project file and matching `oss-<project-id>/` asset
+directory. The Playground creates a new local project and remaps imported
+identities; it does not overwrite the source files.
 
-## Opening And Launching Projects
+Treat unresolved-file, conversion, or save errors as failed imports. Do not
+assume that a project JSON alone embeds every model, texture, audio file, or
+other binary asset.
 
-From the dashboard, you can:
+## Features Deliberately Absent In Playground
 
-- Open a project in the editor
-- Use **Open in New Tab** from the project menu
-- Use **Play Game** for projects that are both published and public
+The Playground hides account, publish, public/private, collaboration, admin,
+and remote-upload surfaces. Local JSON scene/source and STL geometry exports
+may be available in the editor menu, but they are not a hosted publish flow or
+a complete standalone game package.
 
-Use the editor when you want to change content. Use **Play Game** when you want the player-facing runtime.
-
-## Project Menu Actions
-
-Each project card includes a menu with management actions. The exact options depend on whether you own the project, whether it is published, and whether you are viewing community content.
-
-### Actions On Your Projects
-
-- **Duplicate** creates another copy of the project inside your own workspace flow.
-- **Clone Project** is used in remix-style flows where a project is explicitly cloneable.
-- **Make public** / **Make private** control whether other users can discover and launch the published project. They do not replace the publishing step itself.
-- **Archive** removes a project from your active list without deleting it permanently.
-
-If you are unsure whether to use Duplicate or Clone, choose the action that appears in the project menu for that item. StemStudio only shows the relevant option for that project state.
-
-#### Visibility
-
-For published experiences, you may see **Make public** or **Make private**. These control discoverability only. They do not replace the publishing step itself. If a project has never been published, publish it first.
-
-> **Note:** Public/private only affects visibility for already-published projects. If a project has never been published, publish it first.
-
-#### Archiving
-
-Use **Archive** to remove a project from your active list without deleting it permanently. Archived projects move to the **Archived** section, where you can use **Unarchive** to restore them.
-
-Archiving is useful for old prototypes, experiments, and internal test scenes you do not want cluttering **My Experiences**.
-
-### Actions On Shared And Community Projects
-
-- **Clone/Remix** creates your own copy of a shared or community project that you can modify independently.
-- **Open** launches the project in the editor (for shared projects where you have collaborator access).
-
-## Collaboration And Shared Projects
-
-StemStudio supports creator collaboration at the project level.
-
-### Where Shared Projects Appear
-
-Projects another user adds you to appear in **Shared with Me** on the dashboard.
-
-> **Tip:** If you cannot find a shared project, check **Shared with Me** — collaborator projects do not appear in **My Experiences**.
-
-### Managing Collaborators
-
-To manage collaborators, open the project and go to [Project Settings > Collaborator Management](../editor/04-project-settings.md#collaborator-management).
-
-### What Collaboration Changes In The Editor
-
-In collaborative editing sessions, some objects may be temporarily locked by another user while they are selected. If you cannot select an object someone else is actively editing, that is expected behavior.
-
-Read [Project Settings](../editor/04-project-settings.md) for collaboration-related project settings such as room limits and multiplayer options.
-
-## Common Tasks
-
-| I want to... | Do this |
-|--------------|---------|
-| Start from scratch | Click **New Experience** and choose **Blank Project** |
-| Start from a starter world | Choose **Open World Sandbox** or another template |
-| Open a project in another browser tab | Use **Open in New Tab** from the project menu |
-| Make a published project visible to others | Use **Make public** |
-| Hide a published project again | Use **Make private** |
-| Clean up my active project list | Use **Archive** |
-| Restore an archived project | Go to **Archived** and use **Unarchive** |
-| Work with another creator | Add them in **Collaborators** and check **Shared with Me** |
+There is therefore no **Shared with Me**, hosted **Community** gallery,
+collaborator management, public project URL, or cloud archive in the current
+workflow.
 
 ## Next Steps
 
-- Read [Project Settings](../editor/04-project-settings.md) to configure the current project.
-- Read [World Building and Environment](../gameplay/07-world-building.md) if you are starting from a sandbox or outdoor scene.
-- Read [Publishing Games](../publishing/01-publishing-games.md) when you are ready to release.
+- Read [Editor Tour](02-editor-tour.md) for the authoring layout.
+- Follow [Your First Game](getting-started-tutorial.md).
+- Read [Saving and Sharing](../shipping.md) before moving an important project.
+- Use [Troubleshooting](../troubleshooting.md) for storage and reload issues.

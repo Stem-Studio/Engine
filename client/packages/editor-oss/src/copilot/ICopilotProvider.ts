@@ -4,23 +4,20 @@ import type {ACPEvent, ACPEventType, ConnectionState} from "../agent/types/ACPTy
 import type {CommandExecutionResult} from "../agent/CommandsExecutor";
 
 /**
- * Listener signature for events emitted by the copilot provider. Mirrors
- * `EventHandler` inside the proprietary StudioACPClient implementation but
- * lives here so editor-oss never imports from `@stem/copilot-stemstudio`.
+ * Listener signature for events emitted by the copilot provider.
  */
 export type CopilotEventHandler = (event: ACPEvent) => void;
 
 /**
  * ICopilotProvider is the seam between the editor UI and any copilot
- * implementation. The proprietary `StudioACPClient` (which talks to Claude
- * Code over Agent Client Protocol) is one such implementation; OSS forks
- * can ship their own (e.g., a thin wrapper around a locally-hosted LLM)
- * by registering with `setCopilotProvider()`.
+ * implementation. Forks can ship their own provider, for example a thin
+ * wrapper around a locally hosted LLM, by registering with
+ * `setCopilotProvider()`.
  *
  * The surface is deliberately narrow — only what the three editor-oss call
  * sites (EditorComponent.tsx, AiCopilot.tsx, utils/interaction.ts) actually
- * touch. Wider StudioACPClient methods (prompt-pack policy, transport,
- * tool tracing, JSON-RPC framing) stay private to the implementation.
+ * touch. Wider implementation details such as prompt-pack policy, transport,
+ * tool tracing, and JSON-RPC framing stay private to the implementation.
  *
  * Key handling rule:
  *

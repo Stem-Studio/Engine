@@ -1,8 +1,6 @@
-// Written by scripts/export-oss.ts. The editor uses a dummy auth token
-// ("stemstudio-token") and the ai-server bypass middleware accepts it.
-// The Firebase SDK is replaced by this null-shaped stub so Vite
-// tree-shakes firebase/app, firebase/auth, firebase/firestore, and
-// firebase/analytics out of the bundle.
+// Firebase compatibility module. The editor uses the local
+// "stemstudio-token" auth identity accepted by the ai-server, so Firebase
+// services are intentionally null-shaped.
 import type {Auth} from "firebase/auth";
 import type {Firestore} from "firebase/firestore";
 import type {Analytics} from "firebase/analytics";

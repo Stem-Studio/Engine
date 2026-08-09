@@ -14,7 +14,7 @@ import {
     StatsItem,
 } from "./SingleTemplate.style";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {StyledButton} from "../../common/StyledButton";
 import {TagsList} from "../../common/Tags/TagsList/TagsList";
 import {ITemplate, TEMPLATES} from "../constants/templates";

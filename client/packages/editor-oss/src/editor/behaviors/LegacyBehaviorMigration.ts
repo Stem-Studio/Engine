@@ -6,6 +6,7 @@ import {createSceneAssetWithData} from "@stem/network/api/scene/v2";
 import {setAssetRevision} from '@stem/editor-oss/asset-management/AssetResolutionContext';
 import BehaviorData from "../../behaviors/BehaviorData";
 import {isLegacyBehaviorId} from "../../behaviors/util";
+import {traverseObjectDepthFirst} from "../../utils/SceneTraverser";
 
 /**
  * Migration state for legacy behaviors converted to Assets API.
@@ -103,7 +104,7 @@ async function collectLegacyBehaviors(scene: Scene, sceneId: string): Promise<Le
 function updateObjectBehaviorIds(scene: Scene, idMapping: Record<string, string>): number {
     let updatedCount = 0;
 
-    scene.traverse(object => {
+    traverseObjectDepthFirst(scene, object => {
         const behaviors = object.userData.behaviors as BehaviorData[] | undefined;
         if (!behaviors || !Array.isArray(behaviors)) {
             return;

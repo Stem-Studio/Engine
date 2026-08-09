@@ -1,9 +1,34 @@
 import {t} from "i18next";
 import * as THREE from "three";
-import {CSS3DObject} from "three/examples/jsm/renderers/CSS3DRenderer.js";
+import {CSS3DObject} from "three/addons/renderers/CSS3DRenderer.js";
 
 import Command from "./Command";
 import global from "../global";
+import {cloneJsonCompatible} from "../utils/cloneJsonCompatible";
+import {traverseObjectDepthFirst} from "../utils/SceneTraverser";
+
+const PLAN_CAD_SCENE_USER_DATA_KEY = "planCad";
+
+function clonePlanCadData(data) {
+    return data ? cloneJsonCompatible(data) : null;
+}
+
+function removePlanCadDataFromScene(scene) {
+    if (!scene?.userData?.[PLAN_CAD_SCENE_USER_DATA_KEY]) return null;
+    const oldData = clonePlanCadData(scene.userData[PLAN_CAD_SCENE_USER_DATA_KEY]);
+    const nextUserData = {...scene.userData};
+    delete nextUserData[PLAN_CAD_SCENE_USER_DATA_KEY];
+    scene.userData = nextUserData;
+    return oldData;
+}
+
+function restorePlanCadDataToScene(scene, data) {
+    if (!scene || !data) return;
+    scene.userData = {
+        ...(scene.userData || {}),
+        [PLAN_CAD_SCENE_USER_DATA_KEY]: clonePlanCadData(data),
+    };
+}
 /**
  * RemoveObjectCommand - Removes an object from the scene
  * @author dforrer / https://github.com/dforrer
@@ -26,6 +51,11 @@ class RemoveObjectCommand extends Command {
         if (this.parent) {
             this.index = this.parent.children.indexOf(this.object);
         }
+
+        this.planCadSceneData =
+            object?.userData?.isPlanCadRoot && this.editor?.scene?.userData?.[PLAN_CAD_SCENE_USER_DATA_KEY]
+                ? clonePlanCadData(this.editor.scene.userData[PLAN_CAD_SCENE_USER_DATA_KEY])
+                : null;
     }
 
     execute() {
@@ -34,11 +64,16 @@ class RemoveObjectCommand extends Command {
             this.editor.select(null);
         }
 
-        this.object.traverse(child => {
+        traverseObjectDepthFirst(this.object, child => {
             if (child instanceof CSS3DObject) {
                 this.object.remove(child);
             }
         });
+
+        if (this.object?.userData?.isPlanCadRoot) {
+            const removedPlanCadData = removePlanCadDataFromScene(this.editor.scene);
+            this.planCadSceneData = this.planCadSceneData || removedPlanCadData;
+        }
 
         this.editor.removeObject(this.object);
 
@@ -51,6 +86,7 @@ class RemoveObjectCommand extends Command {
     undo() {
         // var scope = this.editor;
 
+        restorePlanCadDataToScene(this.editor.scene, this.planCadSceneData);
         this.editor.addObject(this.object, this.parent);
 
         return {
@@ -64,6 +100,7 @@ class RemoveObjectCommand extends Command {
         output.object = this.object.toJSON();
         output.index = this.index;
         output.parentUuid = this.parent.uuid;
+        output.planCadSceneData = this.planCadSceneData;
 
         return output;
     }
@@ -77,6 +114,7 @@ class RemoveObjectCommand extends Command {
         }
 
         this.index = json.index;
+        this.planCadSceneData = json.planCadSceneData || null;
 
         this.object = this.editor.objectByUuid(json.object.object.uuid);
         if (this.object === undefined) {

@@ -1,10 +1,14 @@
 import { BufferAttribute, BufferGeometry, Vector3 } from "three";
-import { ConvexHull } from "three/examples/jsm/math/ConvexHull.js";
-import { SimplifyModifier } from "three/examples/jsm/modifiers/SimplifyModifier.js";
+import { ConvexHull } from "three/addons/math/ConvexHull.js";
+import { SimplifyModifier } from "three/addons/modifiers/SimplifyModifier.js";
 
 export interface SerializableGeometry {
     positions: Float32Array;
     indices: Uint32Array | null;
+}
+
+function vertexKey(x: number, y: number, z: number): string {
+    return `${x},${y},${z}`;
 }
 
 /**
@@ -78,19 +82,19 @@ export class HullCompute {
         userShapeScale: { x: number; y: number; z: number },
     ): number[] {
         const points: Vector3[] = [];
+        const seenPoints = new Set<string>();
 
         geometries.forEach(geometry => {
             const positionAttribute = geometry.getAttribute("position");
             for (let i = 0; i < positionAttribute.count; i++) {
-                const point = new Vector3(
-                    positionAttribute.getX(i) * userShapeScale.x,
-                    positionAttribute.getY(i) * userShapeScale.y,
-                    positionAttribute.getZ(i) * userShapeScale.z,
-                );
-                
-                // Avoid duplicate points
-                if (!points.find(p => p.equals(point))) {
-                    points.push(point);
+                const x = positionAttribute.getX(i) * userShapeScale.x;
+                const y = positionAttribute.getY(i) * userShapeScale.y;
+                const z = positionAttribute.getZ(i) * userShapeScale.z;
+                const key = vertexKey(x, y, z);
+
+                if (!seenPoints.has(key)) {
+                    seenPoints.add(key);
+                    points.push(new Vector3(x, y, z));
                 }
             }
         });
@@ -104,7 +108,7 @@ export class HullCompute {
             let edge = face.edge;
             do {
                 const point = edge.head().point;
-                const key = `${point.x},${point.y},${point.z}`;
+                const key = vertexKey(point.x, point.y, point.z);
                 if (!uniqueVertices.has(key)) {
                     uniqueVertices.add(key);
                     vertices.push(point.x, point.y, point.z);

@@ -70,7 +70,7 @@ export const prepareCreateFromPromptCopilotEntry = (input: {
 
 export const prepareBlankCopilotWorkspaceEntry = () => {
     // "Start from scratch" lands in advanced mode by contract (see
-    // CLAUDE.md "OSS UX invariants"). The prompt-driven flow handled by
+    // CLAUDE.md open-source UX invariants). The prompt-driven flow handled by
     // prepareCreateFromPromptCopilotEntry keeps the simpler workspace.
     writePendingProjectAdvancedModePreference(true);
     clearDashboardCopilotBootstrap();

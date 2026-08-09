@@ -6,6 +6,7 @@ import EventBus, {IN_GAME_EVENTS} from "../../../behaviors/event/EventBus";
 import {IMultiplayerState} from "../../../behaviors/state/IMultiplayerState";
 import MotionStateHelper from "../../../physics/MotionStateHelper";
 import BoundingBoxUtil from "@stem/editor-oss/utils/BoundingBoxUtil";
+import {parseTransformVectorState, serializeTransformVectorState} from "@stem/editor-oss/utils/transformStateSerialization";
 import {BehaviorBase} from "../../Behavior";
 import GameManager from "../../game/GameManager";
 
@@ -23,6 +24,8 @@ class PlatformBehavior extends BehaviorBase {
     private playerSpeedAdjustment = new Vector3();
     private targetSpeedAdjustment = new Vector3();
     private zeroSpeed = new Vector3();
+    private currentWorldPos = new Vector3();
+    private playerLocalPos = new Vector3();
     private needToResetSpeedAdjustment = false;
     private isStarted: boolean = false;
 
@@ -54,16 +57,19 @@ class PlatformBehavior extends BehaviorBase {
             this.tweenGroup.update();
         }
 
-        const currentWorldPos = new Vector3();
+        const currentWorldPos = this.currentWorldPos;
         this.target.getWorldPosition(currentWorldPos);
 
+        const player = this.game?.player;
+        const motionState = player ? MotionStateHelper.getMotionState(player) : undefined;
+
         //check if player is above the platform
-        if (this.isStarted && this.target && this.game?.player && MotionStateHelper.getMotionState(this.game.player)) {
-            const playerPos = this.game.player.position.clone();
+        if (this.isStarted && player && motionState) {
+            const playerPos = this.playerLocalPos.copy(player.position);
             this.target.worldToLocal(playerPos);
 
             if (
-                MotionStateHelper.getMotionState(this.game.player)?.onGround &&
+                motionState.onGround &&
                 this.shape &&
                 playerPos.x >= this.shape.min.x &&
                 playerPos.x <= this.shape.max.x &&
@@ -79,11 +85,11 @@ class PlatformBehavior extends BehaviorBase {
 
                 this.playerSpeedAdjustment.lerp(this.targetSpeedAdjustment, 0.9);
 
-                this.game.physics?.setPlayerSpeedAdjustment(this.game.player.uuid, this.playerSpeedAdjustment);
+                this.game?.physics?.setPlayerSpeedAdjustment(player.uuid, this.playerSpeedAdjustment);
                 this.needToResetSpeedAdjustment = true;
             } else {
                 if (this.needToResetSpeedAdjustment) {
-                    this.game.physics?.setPlayerSpeedAdjustment(this.game.player.uuid, this.zeroSpeed);
+                    this.game?.physics?.setPlayerSpeedAdjustment(player.uuid, this.zeroSpeed);
                     this.playerSpeedAdjustment.set(0, 0, 0);
                     this.needToResetSpeedAdjustment = false;
                 }
@@ -102,7 +108,7 @@ class PlatformBehavior extends BehaviorBase {
         switch (key) {
             case "position":
                 if (key === "position" && value) {
-                    const pos = JSON.parse(value) as {x: number; y: number; z: number};
+                    const pos = parseTransformVectorState(value);
                     if (this.target) {
                         this.target.position.set(pos.x, pos.y, pos.z);
                     }
@@ -110,7 +116,7 @@ class PlatformBehavior extends BehaviorBase {
                 break;
             case "rotation":
                 if (key === "rotation" && value) {
-                    const rot = JSON.parse(value) as {x: number; y: number; z: number};
+                    const rot = parseTransformVectorState(value);
                     if (this.target) {
                         this.target.rotation.set(rot.x, rot.y, rot.z);
                     }
@@ -118,7 +124,7 @@ class PlatformBehavior extends BehaviorBase {
                 break;
             case "scale":
                 if (key === "scale" && value) {
-                    const scale = JSON.parse(value) as {x: number; y: number; z: number};
+                    const scale = parseTransformVectorState(value);
                     if (this.target) {
                         this.target.scale.set(scale.x, scale.y, scale.z);
                     }
@@ -136,15 +142,20 @@ class PlatformBehavior extends BehaviorBase {
                 this.target,
                 this.id,
                 "position",
-                JSON.stringify(this.target?.position),
+                serializeTransformVectorState(this.target.position),
             );
             this.multiplayerState.setBehaviorData(
                 this.target,
                 this.id,
                 "rotation",
-                JSON.stringify(this.target?.rotation),
+                serializeTransformVectorState(this.target.rotation),
             );
-            this.multiplayerState.setBehaviorData(this.target, this.id, "scale", JSON.stringify(this.target?.scale));
+            this.multiplayerState.setBehaviorData(
+                this.target,
+                this.id,
+                "scale",
+                serializeTransformVectorState(this.target.scale),
+            );
         }
     }
 

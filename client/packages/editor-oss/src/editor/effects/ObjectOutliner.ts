@@ -1,6 +1,6 @@
 // Dummy ObjectOutliner for backward compatibility. Proxies to event system.
-import * as THREE from "three";
-
+import {Camera, Object3D, Scene} from "three";
+import type {WebGLRenderer} from "three";
 import global from "@stem/editor-oss/global";
 
 // TODO: This class exists solely for backward compatibility.
@@ -8,11 +8,11 @@ import global from "@stem/editor-oss/global";
 class ObjectOutliner {
     private hasWarned = false;
 
-    constructor(_scene: THREE.Scene, _camera: THREE.Camera, _renderer: THREE.WebGLRenderer) {
+    constructor(_scene: Scene, _camera: Camera, _renderer: WebGLRenderer) {
         // No-op: EffectRenderer handles outline logic now
     }
 
-    setOutlinedObjects(objects: THREE.Object3D[]) {
+    setOutlinedObjects(objects: Object3D[]) {
         if (!this.hasWarned) {
             console.warn(
                 "[DEPRECATED] ObjectOutliner.setOutlinedObjects is deprecated. Use the event system `app.call(\"outlineObjects\", this, objects);` instead.",

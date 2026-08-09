@@ -212,8 +212,10 @@ export const PrimitivesTab = ({search}: {search: string}) => {
                 onDragStart={(e, item) => handleDragStart(e, item.name)}
             />
             {hasMore && !search && 
-                <div
+                <button
+                    type="button"
                     onClick={() => setShowAll(!showAll)}
+                    aria-expanded={showAll}
                     style={{
                         cursor: "pointer",
                         padding: "8px",
@@ -223,10 +225,14 @@ export const PrimitivesTab = ({search}: {search: string}) => {
                         userSelect: "none",
                         borderTop: "1px solid #333",
                         marginTop: "4px",
+                        width: "100%",
+                        minHeight: "44px",
+                        border: 0,
+                        background: "transparent",
                     }}
                 >
                     {showAll ? "Show Less" : `... ${list.length - INITIAL_VISIBLE_COUNT} more`}
-                </div>
+                </button>
             }
         </>
     );

@@ -35,6 +35,11 @@ export type AssetSourceQueryOptions = {
     includeThumbnails?: boolean;
 };
 
+export type CreateAssetInSourceParams = CreateAssetWithDataParams & {
+    /** Update dependency context now but let a caller-managed batch emit objectChanged later. */
+    deferSceneSync?: boolean;
+};
+
 /**
  * Abstraction for asset discovery and dependency management. Allows the
  * editor, asset panels, and behavior/lambda registration to query and
@@ -58,7 +63,7 @@ export interface AssetSource {
     removeDependencies(assetIds: string[]): Promise<void>;
 
     /** Create a new asset and add it as a dependency. */
-    createAsset(params: CreateAssetWithDataParams): Promise<Asset>;
+    createAsset(params: CreateAssetInSourceParams): Promise<Asset>;
 
     /** Create a new revision for an existing asset. */
     createAssetRevision(params: CreateAssetRevisionWithDataParams): Promise<AssetRevision>;
@@ -102,13 +107,16 @@ export class SceneAssetSource implements AssetSource {
         }
     }
 
-    async createAsset(params: CreateAssetWithDataParams): Promise<Asset> {
-        const asset = await rawCreateSceneAssetWithData({...params, sceneId: this.id});
+    async createAsset(params: CreateAssetInSourceParams): Promise<Asset> {
+        const {deferSceneSync, ...assetParams} = params;
+        const asset = await rawCreateSceneAssetWithData({...assetParams, sceneId: this.id});
 
         const scene = global.app?.scene;
         if (scene) {
             setAssetRevisionOnObject(scene, asset.id, asset.headRevisionId);
-            global.app?.call("objectChanged", null, scene);
+            if (!deferSceneSync) {
+                global.app?.call("objectChanged", null, scene);
+            }
         }
 
         return asset;
@@ -187,8 +195,9 @@ export class StemAssetSource implements AssetSource {
         return Promise.resolve();
     }
 
-    async createAsset(params: CreateAssetWithDataParams): Promise<Asset> {
-        const asset = await rawCreateAssetWithData(params);
+    async createAsset(params: CreateAssetInSourceParams): Promise<Asset> {
+        const {deferSceneSync, ...assetParams} = params;
+        const asset = await rawCreateAssetWithData(assetParams);
 
         const scene = global.app?.scene;
         if (scene) {
@@ -207,7 +216,9 @@ export class StemAssetSource implements AssetSource {
                 console.warn("[StemAssetSource] Failed to refresh stem head revision after create:", err);
             }
 
-            global.app?.call("objectChanged", null, scene);
+            if (!deferSceneSync) {
+                global.app?.call("objectChanged", null, scene);
+            }
         }
 
         return asset;

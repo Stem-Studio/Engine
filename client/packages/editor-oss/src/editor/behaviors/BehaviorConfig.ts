@@ -15,6 +15,8 @@ export type BehaviorConfig = {
     documentation?: string;
     debugOnly?: boolean;
     priority?: number;
+    /** Coarse startup ordering. World builders finish before gameplay is created. */
+    startupPhase?: "world" | "gameplay" | "late";
     isPriorityLocked?: boolean;
     isHidden?: boolean;
     visibilityConditions?: VisibilityCondition[];

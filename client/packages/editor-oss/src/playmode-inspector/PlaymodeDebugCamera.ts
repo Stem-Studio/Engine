@@ -1,23 +1,36 @@
-import * as THREE from "three";
+import {PerspectiveCamera, Quaternion, Vector3} from "three";
+import type GameManager from "../behaviors/game/GameManager";
+import type {OrbitControls} from "../controls/OrbitControls";
 
-import GameManager from "../behaviors/game/GameManager";
-import {OrbitControls} from "../controls/OrbitControls";
+type OrbitControlsClass = new (camera: PerspectiveCamera, domElement: HTMLElement) => OrbitControls;
+
+let orbitControlsClassPromise: Promise<OrbitControlsClass> | null = null;
+
+function loadOrbitControlsClass(): Promise<OrbitControlsClass> {
+    if (!orbitControlsClassPromise) {
+        orbitControlsClassPromise = import("../controls/OrbitControls").then(
+            module => module.OrbitControls as OrbitControlsClass,
+        );
+    }
+    return orbitControlsClassPromise;
+}
 
 type CameraSnapshot = {
-    position: THREE.Vector3;
-    quaternion: THREE.Quaternion;
+    position: Vector3;
+    quaternion: Quaternion;
 };
 
 export class PlaymodeDebugCamera {
-    private camera: THREE.PerspectiveCamera;
+    private camera: PerspectiveCamera;
     private domElement: HTMLElement;
     private controls: OrbitControls | null = null;
     private cameraPoseBeforeAttach: CameraSnapshot | null = null;
     private game: GameManager | null = null;
     private cameraControlWasPaused = false;
     private _active = false;
+    private attachToken = 0;
 
-    constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
+    constructor(camera: PerspectiveCamera, domElement: HTMLElement) {
         this.camera = camera;
         this.domElement = domElement;
     }
@@ -42,17 +55,30 @@ export class PlaymodeDebugCamera {
             cameraControl.pause();
         }
 
-        const controls = new OrbitControls(this.camera, this.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.08;
-        controls.enableZoom = true;
-        controls.panSpeed = 1.6;
-        // Place orbit target ~5 units in front of the saved camera pose.
-        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.cameraPoseBeforeAttach.quaternion);
-        controls.target.copy(this.cameraPoseBeforeAttach.position).addScaledVector(forward, 5);
-        controls.update();
-        this.controls = controls;
         this._active = true;
+        const attachToken = ++this.attachToken;
+
+        void loadOrbitControlsClass().then(OrbitControlsClass => {
+            if (!this._active || attachToken !== this.attachToken || !this.cameraPoseBeforeAttach) {
+                return;
+            }
+
+            const controls = new OrbitControlsClass(this.camera, this.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.08;
+            controls.enableZoom = true;
+            controls.panSpeed = 1.6;
+            // Place orbit target ~5 units in front of the saved camera pose.
+            const forward = new Vector3(0, 0, -1).applyQuaternion(this.cameraPoseBeforeAttach.quaternion);
+            controls.target.copy(this.cameraPoseBeforeAttach.position).addScaledVector(forward, 5);
+            controls.update();
+
+            if (!this._active || attachToken !== this.attachToken) {
+                controls.dispose();
+                return;
+            }
+            this.controls = controls;
+        });
     }
 
     update(): void {
@@ -62,6 +88,7 @@ export class PlaymodeDebugCamera {
 
     detach(): void {
         if (!this._active) return;
+        this.attachToken++;
         this.controls?.dispose();
         this.controls = null;
 

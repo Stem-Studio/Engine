@@ -46,7 +46,7 @@ export const About = () => {
                         </li>
                         <li>
                             {t(
-                                "Save to the cloud, to a local folder, or to the browser's IndexedDB. Share by URL or export the project as a .stemscript.json file.",
+                                "Save to a local folder or to the browser's IndexedDB. Share by exporting the project as a .stemscript.json file or by hosting the static player build.",
                             )}
                         </li>
                     </ul>
@@ -54,7 +54,7 @@ export const About = () => {
                     <h2>{t("Open source")}</h2>
                     <p>
                         {t(
-                            "The editor, runtime, and core behaviour pack are open source under the MIT license. You can run StemStudio entirely on your own machine — no accounts, no cloud, no telemetry. The hosted experience adds a managed gallery, cloud sync, and AI provider keys; everything else is the same code you can read on GitHub.",
+                            "The editor, runtime, and core behaviour pack are open source under the MIT license. You can run StemStudio entirely on your own machine — no accounts, no cloud, no telemetry. AI features use bring-your-own provider keys through the local AI server.",
                         )}
                     </p>
 

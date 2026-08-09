@@ -1,4 +1,4 @@
-import { Vector3Like } from 'three/webgpu';
+import type {Vector3Like} from "three";
 
 import { PhysicsCollisionBehavior } from './PhysicsSettings';
 

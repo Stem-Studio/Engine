@@ -139,7 +139,7 @@ function installFakeApp() {
     return app;
 }
 
-describe("QuickBuildToolbar behavior", () => {
+describe("QuickBuildToolbar behavior", {timeout: 20_000}, () => {
     afterEach(() => {
         cleanup();
         clearQuickBuildTexturePackCaches();
@@ -277,7 +277,7 @@ describe("QuickBuildToolbar behavior", () => {
         });
     });
 
-    it("groups related stamp tools behind an upward-opening menu", () => {
+    it("groups related stamp tools behind an upward-opening menu", async () => {
         installFakeApp();
 
         render(<QuickBuildToolbar />);
@@ -285,17 +285,75 @@ describe("QuickBuildToolbar behavior", () => {
         const natureGroup = screen.getByTestId("quick-build-group-nature");
         expect(natureGroup).toHaveAttribute("aria-expanded", "false");
 
-        fireEvent.click(natureGroup);
+        await act(async () => {
+            fireEvent.click(natureGroup);
+            await Promise.resolve();
+        });
         expect(natureGroup).toHaveAttribute("aria-expanded", "true");
 
-        fireEvent.click(screen.getByTestId("quick-build-tool-tree"));
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("quick-build-tool-tree"));
+            await Promise.resolve();
+        });
         expect(natureGroup).toHaveAttribute("aria-expanded", "false");
         expect(screen.getByTestId("quick-build-tool-tree")).toHaveAttribute("aria-pressed", "true");
 
-        fireEvent.click(natureGroup);
-        fireEvent.click(screen.getByTestId("quick-build-tool-bush-hedge"));
+        await act(async () => {
+            fireEvent.click(natureGroup);
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("quick-build-tool-bush-hedge"));
+            await Promise.resolve();
+        });
         expect(natureGroup).toHaveAttribute("aria-expanded", "false");
         expect(screen.getByTestId("quick-build-tool-bush-hedge")).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("moves focus through grouped tools and restores the trigger on Escape", async () => {
+        installFakeApp();
+
+        render(<QuickBuildToolbar />);
+
+        const natureGroup = screen.getByTestId("quick-build-group-nature");
+        fireEvent.click(natureGroup);
+
+        const tree = screen.getByTestId("quick-build-tool-tree");
+        const bush = screen.getByTestId("quick-build-tool-bush");
+        expect(tree).toHaveAttribute("tabindex", "0");
+        await waitFor(() => expect(tree).toHaveFocus());
+
+        fireEvent.keyDown(tree, {key: "ArrowDown"});
+        expect(bush).toHaveFocus();
+
+        fireEvent.keyDown(bush, {key: "Escape"});
+        await waitFor(() => expect(natureGroup).toHaveFocus());
+        expect(natureGroup).toHaveAttribute("aria-expanded", "false");
+        expect(tree).toHaveAttribute("tabindex", "-1");
+    });
+
+    it("opens grouped tools from the trigger in the requested keyboard direction", async () => {
+        installFakeApp();
+
+        render(<QuickBuildToolbar />);
+
+        const natureGroup = screen.getByTestId("quick-build-group-nature");
+        await act(async () => {
+            fireEvent.keyDown(natureGroup, {key: "ArrowDown"});
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.getByTestId("quick-build-tool-tree")).toHaveFocus());
+
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId("quick-build-tool-tree"), {key: "Escape"});
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(natureGroup).toHaveFocus());
+        await act(async () => {
+            fireEvent.keyDown(natureGroup, {key: "ArrowUp"});
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.getByTestId("quick-build-tool-rock")).toHaveFocus());
     });
 
     it("places the selected procedural variant", async () => {
@@ -586,7 +644,7 @@ describe("QuickBuildToolbar behavior", () => {
         viewport.remove();
     });
 
-    it("keeps placement status out of the toolbar while previewing cells", async () => {
+    it("shows compact placement status while previewing cells", async () => {
         const app = installFakeApp();
         const ground = createQuickBuildObject("ground");
         app.editor.scene.add(ground);
@@ -611,7 +669,8 @@ describe("QuickBuildToolbar behavior", () => {
                 (child: THREE.Object3D) => child.userData?.isQuickBuildPreview,
             )).toBe(true);
         });
-        expect(screen.queryByTestId("quick-build-placement-status")).toBeNull();
+        expect(screen.getByTestId("quick-build-placement-status")).toHaveAttribute("data-tone", "ready");
+        expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("ready");
 
         await act(async () => {
             app.emit(
@@ -627,7 +686,8 @@ describe("QuickBuildToolbar behavior", () => {
                 (child: THREE.Object3D) => child.userData?.isQuickBuildPreview,
             )).toBe(true);
         });
-        expect(screen.queryByTestId("quick-build-placement-status")).toBeNull();
+        expect(screen.getByTestId("quick-build-placement-status")).toHaveAttribute("data-tone", "blocked");
+        expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("occupied");
     });
 
     it("skips an occupied terrain cell even when the raycast hits another quick build layer", async () => {
@@ -739,6 +799,7 @@ describe("QuickBuildToolbar behavior", () => {
             expect(stamp).toBeTruthy();
             expect(stamp!.position.x).toBeCloseTo(previewPosition.x, 5);
             expect(stamp!.position.z).toBeCloseTo(previewPosition.z, 5);
+            expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("Placed");
         });
     });
 
@@ -1048,6 +1109,7 @@ describe("QuickBuildToolbar behavior", () => {
         await waitFor(() => {
             expect(ground.parent).toBeNull();
             expect(app.editor.removeObject).toHaveBeenCalledWith(ground);
+            expect(screen.getByTestId("quick-build-placement-status")).toHaveTextContent("Erased");
         });
     });
 

@@ -12,9 +12,8 @@ import global from "@web-shared/global";
 import type {LambdaConfig} from "@web-shared/lambdas/Lambda";
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
-import {IS_OSS} from "../../../buildMode";
 import {AssetType, getAsset, getAssetDerivatives, getAssetRevisionData, GetAssetRevisionDataOptions, getMyAssets, getSceneAssets} from "../asset";
-import { AccessContext } from '../client';
+import type {AccessContext} from "../client";
 
 export type LegacyBehaviorBackendData = {
     ID: string;
@@ -139,7 +138,7 @@ export const getBehaviorsList = async (): Promise<BehaviorBackendData[]> => {
 
     if (scene) {
         const apiClientOptions = {
-            context: AccessContext.User,
+            context: "user" as AccessContext,
         };
 
         const {assets: behaviorAssets} = await getMyAssets({
@@ -167,24 +166,8 @@ export const getBehaviorsList = async (): Promise<BehaviorBackendData[]> => {
     return [...legacyBehaviors, ...newBehaviors].map(expandConfig);
 };
 
-export const legacyGetBehaviorsListForScene = async (sceneId: string): Promise<LegacyBehaviorBackendData[]> => {
-    if (IS_OSS) return [];
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Behavior/ListForScene?sceneID=${sceneId}`),
-            needAuthorization: false,
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to list behaviors for scene.");
-        }
-
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error listing behaviors for scene:", message);
-        throw new Error(message || "Failed to list behaviors for scene.");
-    }
+export const legacyGetBehaviorsListForScene = async (_sceneId: string): Promise<LegacyBehaviorBackendData[]> => {
+    return [];
 };
 
 /**
@@ -248,7 +231,7 @@ export const getBehaviorsListForScene = async (sceneId: string, scene: Scene): P
                 }
                 const {config, code} = await getAssetRevisionData(asset.id, revisionId, "json");
                 if (config === undefined || config === null) {
-                    // No payload resolved (e.g. an OSS asset whose revision
+                    // No payload resolved (e.g. a local asset whose revision
                     // data couldn't be decoded). Skip rather than feeding
                     // `JSON.parse(undefined)` into expandConfig.
                     console.warn(`No config payload for behavior ${asset.id}`);

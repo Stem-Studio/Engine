@@ -5,6 +5,7 @@ import HingeJointBehavior from "./HingeJointBehavior";
 
 const createGame = (scene: THREE.Scene) => ({
     scene,
+    getObjectByUUID: (uuid: string) => scene.getObjectByProperty("uuid", uuid) ?? null,
     physics: {
         addHingeJoint: vi.fn(),
         removeJoint: vi.fn(),

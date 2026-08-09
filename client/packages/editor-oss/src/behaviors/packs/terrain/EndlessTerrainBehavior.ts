@@ -306,25 +306,25 @@ class EndlessTerrainBehavior extends BehaviorBase {
 
         // TODO: do this more efficiently
         // In runtime, prompt updates might be desired? Assuming consistent with legacy logic:
-        this.restartBehavior();
+        void this.restartBehavior();
     }
 
-    private restartBehavior() {
+    private async restartBehavior(): Promise<void> {
         this.onStop();
-        void this.onStart();
+        await this.onStart();
     }
 
     onReset() { }
 
     // Editor methods
 
-    onEditorAdded(editor: Editor): void {
+    onEditorAdded(editor: Editor): Promise<void> {
         // Store editor reference for camera access
         this.editor = editor;
         // Initialize terrain objects with defaults early so UI shows them
         this.initializeTerrainObjectsIfEmpty();
         this.initializeDefaultTextureAttributes();
-        void this.onStart();
+        return this.onStart();
     }
 
     onEditorRemoved(): void {
@@ -364,7 +364,12 @@ class EndlessTerrainBehavior extends BehaviorBase {
 
         this.debounceTimer = setTimeout(() => {
             this.debounceTimer = null;
-            this.restartBehavior();
+            // onStart is async and rebuilds the instanced meshes after the
+            // restart. Reapply the editor-only render cap once that rebuild
+            // has settled instead of leaving a freshly generated mesh uncapped.
+            void this.restartBehavior().finally(() => {
+                this.editor?.scheduleEditorPreviewInstancingBudget?.();
+            });
         }, 200);
     }
 
@@ -442,7 +447,9 @@ class EndlessTerrainBehavior extends BehaviorBase {
 
             // Trigger terrain regeneration (use restartBehavior directly to avoid
             // onEditorAttributesUpdated setting isDefaultState = false)
-            this.restartBehavior();
+            void this.restartBehavior().finally(() => {
+                this.editor?.scheduleEditorPreviewInstancingBudget?.();
+            });
         }
     }
 

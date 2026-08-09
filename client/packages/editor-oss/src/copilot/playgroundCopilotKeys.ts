@@ -14,8 +14,16 @@
 //      projects use a one-navigation session handoff because `openEditorRoute`
 //      reloads the app and loses the encrypted store's in-memory unlock.
 
-import {getBYOKKeyStore} from "../ai";
-import type {AIProvider} from "../ai";
+import {getBYOKKeyStore} from "../ai/aiBackendFactory";
+import type {AIProvider} from "../ai/types";
+import {
+    notifyCopilotKeysChanged,
+    writeCopilotKeysMarker,
+} from "./playgroundCopilotKeyMarker";
+export {
+    COPILOT_KEYS_CHANGED_EVENT,
+    hasCopilotKeysSync,
+} from "./playgroundCopilotKeyMarker";
 
 /**
  * Providers that can back the playground copilot. Ordered for stable UI and
@@ -29,11 +37,9 @@ export const CHAT_PROVIDERS: ReadonlyArray<CopilotChatProvider> = [
     "gemini",
 ];
 
-const COPILOT_READY_MARKER = "stem.playground.copilotReady";
 const COPILOT_SELECTED_PROVIDER = "stem.playground.copilot.selectedProvider";
 const COPILOT_ROUTE_KEY_HANDOFF = "stem.playground.copilot.routeKeyHandoff";
 const COPILOT_ROUTE_KEY_HANDOFF_TTL_MS = 15 * 60 * 1000;
-export const COPILOT_KEYS_CHANGED_EVENT = "stem:playground-copilot-keys-changed";
 export const OPENAI_COPILOT_MODEL = "gpt-5.5";
 export const OPENAI_COPILOT_REASONING_EFFORT = "high";
 
@@ -167,43 +173,6 @@ export function clearCopilotChatKeyHandoff(): void {
     }
 }
 
-/**
- * Synchronous best-effort answer to "can the playground copilot run?". Reads
- * the localStorage marker written by `refreshCopilotKeysMarker()`. When the
- * marker has never been written (first load before the async refresh lands)
- * this returns `false`, which makes AI-prompt projects fall back to advanced
- * mode until a key is confirmed — the intended conservative default.
- */
-export function hasCopilotKeysSync(): boolean {
-    const storage = getLocalStorage();
-    if (!storage) return false;
-    try {
-        return storage.getItem(COPILOT_READY_MARKER) === "1";
-    } catch {
-        return false;
-    }
-}
-
-function notifyKeysChanged(): void {
-    if (typeof window === "undefined") return;
-    try {
-        window.dispatchEvent(new Event(COPILOT_KEYS_CHANGED_EVENT));
-    } catch {
-        // Ignore environments that do not support Event construction.
-    }
-}
-
-function writeMarker(ready: boolean): void {
-    const storage = getLocalStorage();
-    if (!storage) return;
-    try {
-        if (ready) storage.setItem(COPILOT_READY_MARKER, "1");
-        else storage.removeItem(COPILOT_READY_MARKER);
-    } catch {
-        // Ignore storage failures (private mode, denied access, quota).
-    }
-}
-
 function modelStorageKey(provider: CopilotChatProvider): string {
     return `stem.playground.copilot.${provider}Model`;
 }
@@ -332,7 +301,7 @@ export async function resolveCopilotChatKey(): Promise<CopilotChatKey | null> {
 export async function prepareCopilotChatKeyHandoff(): Promise<boolean> {
     const choice = await resolveCopilotChatKeyChoice({includeHandoff: false});
     if (choice.kind !== "ready") return false;
-    writeMarker(true);
+    writeCopilotKeysMarker(true);
     return writeRouteHandoffKey(choice.key);
 }
 
@@ -344,7 +313,7 @@ export async function prepareCopilotChatKeyHandoff(): Promise<boolean> {
 export async function refreshCopilotKeysMarker(): Promise<boolean> {
     const ready = (await resolveCopilotChatKeys({consumeHandoff: false})).length > 0;
     if (!ready) clearCopilotChatKeyHandoff();
-    writeMarker(ready);
-    notifyKeysChanged();
+    writeCopilotKeysMarker(ready);
+    notifyCopilotKeysChanged();
     return ready;
 }

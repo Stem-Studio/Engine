@@ -2,7 +2,7 @@
 import JSZip from "jszip";
 import * as THREE from "three";
 import {Camera, Object3D, Scene} from "three";
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter.js";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
 
 import {
     AI_OPERATION,
@@ -51,7 +51,6 @@ import {getAIBackend} from "@stem/editor-oss/ai";
 import Ajax from "@stem/editor-oss/utils/Ajax";
 import ImageGeneratorProvider from "@stem/editor-oss/utils/ImageGeneratorProvider";
 import ModelGeneratorProvider, {GENERATOR_TYPES, getGeneratorCapability} from "@stem/editor-oss/utils/ModelGeneratorProvider";
-import {ModelUtils} from "@stem/editor-oss/utils/ModelUtils";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 
 /**
@@ -71,7 +70,6 @@ class AIWorldController {
     private engine: EngineRuntime;
     private camera: Camera;
     private sceneId: string = "";
-    private CHARACTERS_MODEL_ID = "model_gHafnTZ4kzGzcN2mvAFdo7BQ";
     private OBJECTS_MODEL_ID = "model_hTRC1xN4YN3mWNDRroV85eCX";
     private playerWidth = "1";
     private playerHeight = "2";
@@ -724,6 +722,7 @@ class AIWorldController {
     uploadModel = async (model: THREE.Object3D, name: string, imageUrl: string) => {
         try {
             const exporter = new GLTFExporter();
+            const {ModelUtils} = await import("@stem/editor-oss/utils/ModelUtils");
 
             await new Promise<string>((resolve, reject) => {
                 exporter.parse(
@@ -812,7 +811,6 @@ class AIWorldController {
         modelBlob: Blob,
         thumbnailUrl: string,
         name: string,
-        sceneId: string,
         riggingMetadata?: RiggingMetadata,
     ) => {
         // Build metadata including rigging info
@@ -910,7 +908,6 @@ class AIWorldController {
                     modelBlob,
                     image ?? "",
                     name,
-                    sceneID || this.sceneId,
                     riggingMetadata,
                 );
                 return result;

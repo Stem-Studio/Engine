@@ -8,6 +8,8 @@ import BehaviorDataFactory from "./BehaviorDataFactory";
 import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
 import { getPrefabRoot, isPrefabUnlocked } from '@stem/editor-oss/prefab/util';
 import { showToast } from "@stem/editor-oss/showToast";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
+import {findObjectDepthFirst, traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 class BehaviorDataManager {
     private behaviorConfigRegistry: BehaviorConfigRegistry;
@@ -40,9 +42,9 @@ class BehaviorDataManager {
             uuid: MathUtils.generateUUID(),
             enabled: data.enabled,
             priority: data.priority,
-            attributesData: JSON.parse(JSON.stringify(data.attributesData)),
+            attributesData: cloneJsonCompatible(data.attributesData),
             throttleConfig: data.throttleConfig
-                ? JSON.parse(JSON.stringify(data.throttleConfig))
+                ? cloneJsonCompatible(data.throttleConfig)
                 : undefined,
             target: data.target,
         };
@@ -291,7 +293,7 @@ class BehaviorDataManager {
     } {
         const disabledBehaviors: Array<{behavior: BehaviorData; objectName: string}> = [];
 
-        scene.traverse((object: Object3D) => {
+        traverseObjectDepthFirst(scene, (object: Object3D) => {
             if (object.userData?.behaviors) {
                 object.userData.behaviors.forEach((behavior: BehaviorData) => {
                     // Skip the behavior we're updating
@@ -341,15 +343,13 @@ class BehaviorDataManager {
     private findBehaviorInScene(scene: Scene, behaviorUuid: string): BehaviorData | null {
         let foundBehavior: BehaviorData | null = null;
 
-        scene.traverse((object: Object3D) => {
-            if (foundBehavior) return; // Already found
-
-            if (object.userData?.behaviors) {
-                const behavior = object.userData.behaviors.find((b: BehaviorData) => b.uuid === behaviorUuid);
-                if (behavior) {
-                    foundBehavior = behavior;
-                }
+        findObjectDepthFirst(scene, (object: Object3D) => {
+            const behavior = object.userData?.behaviors?.find((b: BehaviorData) => b.uuid === behaviorUuid);
+            if (behavior) {
+                foundBehavior = behavior;
+                return true;
             }
+            return false;
         });
 
         return foundBehavior;
@@ -370,32 +370,34 @@ class BehaviorDataManager {
     ): BehaviorData | null {
         let foundBehavior: BehaviorData | null = null;
 
-        scene.traverse((object: Object3D) => {
-            if (foundBehavior) return; // Already found
-
-            if (object.userData?.behaviors) {
-                object.userData.behaviors.forEach((behavior: BehaviorData) => {
-                    if (foundBehavior) return; // Already found
-
-                    // Skip the excluded behavior if specified
-                    if (excludeBehaviorUuid && behavior.uuid === excludeBehaviorUuid) {
-                        return;
-                    }
-
-                    const config = this.behaviorConfigRegistry.getConfig(behavior.id);
-                    if (
-                        config &&
-                        config.attributes &&
-                        config.attributes[attributeName] &&
-                        config.attributes[attributeName].type === "boolean" &&
-                        config.attributes[attributeName].isExclusive &&
-                        behavior.attributesData != null &&
-                        behavior.attributesData[attributeName] === attributeValue
-                    ) {
-                        foundBehavior = behavior;
-                    }
-                });
+        findObjectDepthFirst(scene, (object: Object3D) => {
+            const behaviors = object.userData?.behaviors as BehaviorData[] | undefined;
+            if (!behaviors) {
+                return false;
             }
+
+            for (const behavior of behaviors) {
+                // Skip the excluded behavior if specified
+                if (excludeBehaviorUuid && behavior.uuid === excludeBehaviorUuid) {
+                    continue;
+                }
+
+                const config = this.behaviorConfigRegistry.getConfig(behavior.id);
+                if (
+                    config &&
+                    config.attributes &&
+                    config.attributes[attributeName] &&
+                    config.attributes[attributeName].type === "boolean" &&
+                    config.attributes[attributeName].isExclusive &&
+                    behavior.attributesData != null &&
+                    behavior.attributesData[attributeName] === attributeValue
+                ) {
+                    foundBehavior = behavior;
+                    return true;
+                }
+            }
+
+            return false;
         });
 
         return foundBehavior;

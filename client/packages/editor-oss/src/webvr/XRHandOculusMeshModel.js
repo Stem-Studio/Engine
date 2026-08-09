@@ -1,4 +1,4 @@
-import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 
 class XRHandOculusMeshModel {
     constructor(handModel, controller, path, handedness, options) {

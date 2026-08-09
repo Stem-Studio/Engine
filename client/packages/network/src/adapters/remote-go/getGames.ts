@@ -7,7 +7,6 @@ import global from "@web-shared/global";
 import {showToast} from "@web-shared/showToast";
 import {getInitProfileData} from "./helpers/mockedData";
 import Ajax from "@web-shared/utils/Ajax";
-import {IS_OSS} from "../../buildMode";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 import {getGameUrl} from "@web-shared/v2/pages/links";
 import {IBasicGameInterface, IUserProfileData, SEARCH_GAME_QUERY} from "@web-shared/v2/pages/types";
@@ -161,28 +160,8 @@ export const getProfileData = async () => {
     }
 };
 
-export const updatePlayCount = async (sceneID: string): Promise<IStats | null> => {
-    if (IS_OSS) return null;
-    try {
-        if (!global?.app) return null;
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/Scene/IncrementPlayCount`),
-            needAuthorization: false,
-            data: {
-                ID: sceneID,
-            },
-            msgBodyType: "urlEncoded",
-        });
-        const obj = response?.data;
-        if (obj.Code !== 200) {
-            showToast({type: "warning", body: I18n.t(obj.Msg)});
-            return null;
-        }
-        return {playCount: obj.Data.PlayCount, likes: obj.Data.Likes};
-    } catch (error) {
-        console.log(`Error from updating playCount: ${error}`);
-        return null;
-    }
+export const updatePlayCount = async (_sceneID: string): Promise<IStats | null> => {
+    return null;
 };
 
 export enum LIKES_ACTION {

@@ -2,7 +2,8 @@ import styled from "styled-components";
 
 export const StyledNav = styled.nav`
     position: fixed;
-    z-index: 2001;
+    /* Keep the player host controls above body-level runtime HUD overlays. */
+    z-index: 10000;
     top: 0;
     left: 0;
     right: 0;

@@ -2,7 +2,7 @@
 title: Rendering and Performance
 slug: post-processing
 description: Quality presets, post-processing effects, shadow settings, physics options, and behavior performance tuning.
-status: draft
+status: current
 audience: technical-creators
 prerequisites: [editor/04-project-settings]
 ---
@@ -20,29 +20,17 @@ The Rendering & Performance panel lets you control visual quality, post-processi
 
 ## Quality Presets
 
-Quality presets provide pre-configured combinations of rendering settings optimized for different platforms and hardware capabilities.
+Quality presets are named groups of target settings. The current preset
+registry includes general, desktop, Apple Silicon, iOS, and Android lanes.
+Choose a conservative preset, measure the actual project in play mode, and
+adjust from there.
 
-### Desktop Presets
-
-| Preset | Shadow Quality | Shadow Map | Post-Processing | SSAO | Bloom | Pixel Ratio |
-|--------|---------------|-----------|-----------------|------|-------|-------------|
-| **Ultra** | Ultra | 4096 | On | On (High) | On (High) | 2.0 |
-| **High** | High | 2048 | On | On (Medium) | On (Medium) | 1.5 |
-| **Medium** | Medium | 1024 | On | On (Low) | On (Low) | 1.0 |
-| **Low** | Low | 512 | Off | Off | Off | 0.75 |
-
-### Mobile Presets
-
-| Preset | Shadow Quality | Post-Processing | Pixel Ratio |
-|--------|---------------|-----------------|-------------|
-| **Performance** | Low | Off | 0.5 |
-| **Optimized** | Medium | Limited | 0.75 |
-
-### iOS Presets
-
-| Preset | Shadow Quality | Post-Processing | Pixel Ratio |
-|--------|---------------|-----------------|-------------|
-| **Optimized** | Medium | Limited | 0.75 |
+> **Implementation boundary:** a preset contains more targets than the live
+> renderer currently applies. Pixel ratio and shadow mode are applied runtime
+> controls. Several anti-aliasing, texture, cascade, reflection, volumetric,
+> batching, and culling fields remain policy metadata or are owned by another
+> subsystem. Do not document or budget a feature as active merely because its
+> field exists in a preset.
 
 ---
 
@@ -50,8 +38,8 @@ Quality presets provide pre-configured combinations of rendering settings optimi
 
 | Setting | Description |
 |---------|-------------|
-| **Dynamic Batching** | Combines small objects into fewer draw calls to improve rendering performance |
-| **Mesh Instancing** | Renders multiple copies of the same mesh in a single draw call |
+| **Dynamic Batching** | A policy preference; confirm the project's meshes are actually batched in renderer statistics |
+| **Mesh Instancing** | A policy preference; use instanced assets/systems and verify the resulting draw-call count |
 
 ---
 
@@ -98,7 +86,7 @@ Cascaded Shadow Maps (CSM) settings control how directional light shadows are re
 
 | Property | Type | Description |
 |----------|------|-------------|
-| **Fade** | toggle | Enables soft fading at shadow cascade boundaries |
+| **Fade** | toggle | Retained/stored CSM setting; it is not currently wired to the live CSM node |
 | **Mode** | dropdown | Distribution of shadow cascades: **Uniform**, **Logarithmic**, or **Practical** |
 | **Cascades** | number | Number of shadow cascade levels (more = better quality at distance, higher cost) |
 | **Light Margin** | number | Extra space around the shadow camera frustum |
@@ -107,10 +95,10 @@ Cascaded Shadow Maps (CSM) settings control how directional light shadows are re
 
 ## Graphics API
 
-| Setting | Description |
-|---------|-------------|
-| **Force WebGL** | Force the renderer to use WebGL instead of WebGPU |
-| **Force WebGL for VFX** | Force particle effects to use WebGL rendering even when the main renderer uses WebGPU |
+The runtime prefers WebGPU. **Force WebGL** requests Three.js's WebGL backend,
+and WebGPU initialization failure automatically retries through that
+compatibility path. Renderer-specific post-processing may be reduced or
+unavailable, so verify every enabled effect after a fallback.
 
 ---
 
@@ -119,7 +107,7 @@ Cascaded Shadow Maps (CSM) settings control how directional light shadows are re
 | Setting | Description |
 |---------|-------------|
 | **Sleeping** | Allows physics bodies at rest to stop simulating, improving performance |
-| **Multi-Threaded** | Runs physics simulation on a separate thread for better frame rates |
+| **Multi-Threaded** | Requests the backend's worker/thread path where the selected engine and browser support it; verify behavior on the deployment's cross-origin isolation setup |
 
 ---
 
@@ -127,8 +115,8 @@ Cascaded Shadow Maps (CSM) settings control how directional light shadows are re
 
 | Setting | Description |
 |---------|-------------|
-| **Modern Game Scheduler** | Enables the FrameOrchestrator pipeline for structured frame processing |
-| **Fixed Rate Updates** | Runs behavior `fixedUpdate()` at a consistent timestep (e.g., 60 Hz) for deterministic physics interaction |
+| **Runtime Frame Budget** | Sets the per-frame budget used by active behavior and lambda update loops |
+| **Fixed Rate Metadata** | Retained for older scenes and APIs; the retired FrameOrchestrator controls are no longer exposed |
 
 ---
 
@@ -157,11 +145,15 @@ These settings control how behaviors are optimized at runtime to maintain frame 
 
 ## Tips
 
-- **Start with a preset** that matches your target platform, then fine-tune individual settings.
+- **Start with a conservative preset**, then verify actual renderer statistics
+  and frame time in play mode.
 - **Disable post-processing on mobile** for significant performance gains.
 - **Reduce shadow cascades** from 4 to 2 if shadows are causing frame rate drops.
 - **Enable physics sleeping** to prevent idle objects from consuming simulation time.
-- **Use distance throttling** for large scenes with many behaviors to keep frame rates smooth.
+- **Use distance throttling** for suitable non-critical behaviors in large
+  scenes, and verify that gameplay remains correct.
+- **Measure effects individually.** A checked UI field or preset entry is not
+  proof that a rendering pass is active.
 
 ## Next Steps
 

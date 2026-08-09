@@ -11,7 +11,7 @@ import {
     Scene,
     Vector2,
 } from "three";
-import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import global from "../global";
 import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
@@ -20,7 +20,7 @@ import {canSelectObject, findObjectsInRectangle, getNonSelectableReason} from ".
 const makeApp = (overrides: {
     scene?: Object3D | null;
     camera?: Object3D | null;
-    sceneLockedItems?: string[];
+    sceneLockedItems?: string[] | ReadonlySet<string>;
     mode?: string;
     playerUuid?: string;
 }) => ({
@@ -32,6 +32,18 @@ const makeApp = (overrides: {
     mode: overrides.mode,
     game: overrides.playerUuid ? {player: {uuid: overrides.playerUuid}} : undefined,
 });
+
+function addDeepObjectChain(root: Object3D, depth = 12_000): Object3D {
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        current.add(child);
+        current = child;
+    }
+
+    return current;
+}
 
 describe("SelectionUtils.getNonSelectableReason", () => {
     it("rejects null/undefined", () => {
@@ -65,6 +77,12 @@ describe("SelectionUtils.getNonSelectableReason", () => {
     it("rejects objects whose uuid is in sceneLockedItems", () => {
         const obj = new Mesh();
         const app = makeApp({sceneLockedItems: [obj.uuid]});
+        expect(getNonSelectableReason(obj, app)).toBe("locked-item");
+    });
+
+    it("accepts set-backed sceneLockedItems for repeated selection checks", () => {
+        const obj = new Mesh();
+        const app = makeApp({sceneLockedItems: new Set([obj.uuid])});
         expect(getNonSelectableReason(obj, app)).toBe("locked-item");
     });
 
@@ -106,6 +124,28 @@ describe("SelectionUtils.getNonSelectableReason", () => {
         expect(getNonSelectableReason(dynamicRoot, makeApp({mode: "edit"}))).toBe("hidden-hierarchy");
         expect(getNonSelectableReason(helperRoot, makeApp({mode: "edit"}))).toBe("hidden-hierarchy");
         expect(getNonSelectableReason(helperMesh, makeApp({mode: "edit"}))).toBe("hidden-hierarchy");
+    });
+
+    it("allows runtime BIM wrapper groups when descendants carry BIM metadata", () => {
+        const wrapper = new Group();
+        wrapper.userData.isRuntimeOnly = true;
+
+        const planObject = new Group();
+        planObject.userData.isPlanCadManaged = true;
+        planObject.userData.planNodeId = "wall-1";
+        wrapper.add(planObject);
+
+        expect(getNonSelectableReason(wrapper, makeApp({mode: "edit"}))).toBeNull();
+    });
+
+    it("rejects runtime wrapper groups when descendants do not carry BIM metadata", () => {
+        const wrapper = new Group();
+        wrapper.userData.isRuntimeOnly = true;
+
+        const ordinaryChild = new Group();
+        wrapper.add(ordinaryChild);
+
+        expect(getNonSelectableReason(wrapper, makeApp({mode: "edit"}))).toBe("hidden-hierarchy");
     });
 
     it("allows ordinary meshes", () => {
@@ -196,6 +236,26 @@ describe("SelectionUtils.findObjectsInRectangle", () => {
         expect(found).toHaveLength(1);
     });
 
+    it("selects meshes in deep hierarchies without recursive scene traversal", () => {
+        const scene = new Scene();
+        const leaf = addDeepObjectChain(scene);
+        const mesh = makeMeshAt(0, 0);
+        leaf.add(mesh);
+        const traverseSpy = vi.spyOn(scene, "traverse");
+
+        const found = findObjectsInRectangle({
+            scene,
+            camera: makeCamera(),
+            viewport: VIEWPORT,
+            start: new Vector2(40, 40),
+            end: new Vector2(60, 60),
+            app: makeApp({}),
+        });
+
+        expect(found).toContain(mesh);
+        expect(traverseSpy).not.toHaveBeenCalled();
+    });
+
     it("requires every corner inside on left-to-right drag", () => {
         // Mesh projection corners are (~45, ~45), (~45, ~55), (~55, ~45), (~55, ~55).
         // Rect (43,43)→(50,50) cleanly contains only the (45,45) corner, so the
@@ -274,6 +334,74 @@ describe("SelectionUtils.findObjectsInRectangle", () => {
         expect(found).toEqual([]);
     });
 
+    it("converts large locked-item arrays once during rectangle selection", () => {
+        const scene = new Scene();
+        const locked = makeMeshAt(0, 0);
+        scene.add(locked);
+        scene.updateMatrixWorld(true);
+        const lockedItems = [
+            "locked-0",
+            "locked-1",
+            "locked-2",
+            "locked-3",
+            "locked-4",
+            "locked-5",
+            "locked-6",
+            locked.uuid,
+        ];
+        const includes = vi.spyOn(lockedItems, "includes");
+
+        const found = findObjectsInRectangle({
+            scene,
+            camera: makeCamera(),
+            viewport: VIEWPORT,
+            start: new Vector2(40, 40),
+            end: new Vector2(60, 60),
+            app: makeApp({sceneLockedItems: lockedItems}),
+        });
+
+        expect(found).toEqual([]);
+        expect(includes).not.toHaveBeenCalled();
+    });
+
+    it("promotes generated BIM wall segment meshes to their owner group without global editor state", () => {
+        const previousApp = global.app;
+        global.app = null;
+
+        const scene = new Scene();
+        const wallGroup = new Group();
+        wallGroup.userData = {
+            isStemObject: true,
+            isRuntimeOnly: true,
+            isPlanCadManaged: true,
+            planNodeId: "wall-1",
+            planNodeType: "wall",
+            managedBy: "BIM Plan",
+        };
+        const wallSegment = makeMeshAt(0, 0);
+        wallSegment.userData = {
+            isRuntimeOnly: true,
+            isPlanCadGeneratedChild: true,
+            planCadOwnerNodeId: "wall-1",
+            planCadOwnerNodeType: "wall",
+        };
+        wallGroup.add(wallSegment);
+        scene.add(wallGroup);
+        scene.updateMatrixWorld(true);
+
+        const found = findObjectsInRectangle({
+            scene,
+            camera: makeCamera(),
+            viewport: VIEWPORT,
+            start: new Vector2(40, 40),
+            end: new Vector2(60, 60),
+            app: makeApp({}),
+        });
+
+        global.app = previousApp;
+        expect(found).toEqual([wallGroup]);
+    });
+
     describe("with editor scene set on global (partToMesh promotion)", () => {
         let prevApp: typeof global.app;
 
@@ -311,6 +439,45 @@ describe("SelectionUtils.findObjectsInRectangle", () => {
             });
 
             expect(found).toEqual([root]);
+        });
+
+        it("promotes imported BIM model children to the managed BIM group", () => {
+            const scene = new Scene();
+            const bimGroup = new Object3D();
+            bimGroup.userData = {
+                isStemObject: true,
+                isRuntimeOnly: true,
+                isPlanCadManaged: true,
+                planNodeId: "item-1",
+                managedBy: "BIM Plan",
+            };
+            const importedRoot = new Object3D();
+            importedRoot.userData = {
+                isStemObject: true,
+                isRuntimeOnly: true,
+            };
+            const leaf = makeMeshAt(0, 0);
+            leaf.userData.isRuntimeOnly = true;
+            leaf.userData.isPlanCadExternalModelChild = true;
+            importedRoot.add(leaf);
+            bimGroup.add(importedRoot);
+            scene.add(bimGroup);
+            scene.updateMatrixWorld(true);
+
+            global.app = {
+                editor: {scene} as never,
+            } as never;
+
+            const found = findObjectsInRectangle({
+                scene,
+                camera: makeCamera(),
+                viewport: VIEWPORT,
+                start: new Vector2(40, 40),
+                end: new Vector2(60, 60),
+                app: makeApp({}),
+            });
+
+            expect(found).toEqual([bimGroup]);
         });
     });
 });

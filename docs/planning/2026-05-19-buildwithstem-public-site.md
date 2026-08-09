@@ -1,5 +1,12 @@
 # buildwithstem.com — public site, playground, docs
 
+> **Status: Superseded for the current release scope (2026-07-30).**
+> This is a historical public-site/deployment plan. The active program targets
+> local Playground persistence and play flows; remote scene/API mode is not
+> deployed or a valid fallback. See the
+> [planning index](./README.md) and
+> [AAA Web Engine Quality Program](./2026-07-30-aaa-engine-quality-program.md).
+
 ## Goal
 
 Ship a public marketing site for the StemStudio OSS engine at
@@ -200,6 +207,8 @@ is incremental and needs a dedicated audit pass:
 - Settings panel + menu entry
 - BYOK key-management panel
 - Export/publish menu items
+- Download/export icon styling in playground mode: the download icon currently
+  renders with an unexpected background and needs a chrome/style audit.
 - Multiplayer room setup
 - Asset upload / library admin
 - Account / login / signup surfaces (no-op in OSS but still mounted)

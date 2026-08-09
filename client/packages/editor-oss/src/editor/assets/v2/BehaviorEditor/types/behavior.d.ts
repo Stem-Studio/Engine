@@ -184,10 +184,11 @@ interface Behavior {
     update(deltaTime: number): void;
 
     /**
-     * Called at a fixed timestep (e.g. 60Hz) for deterministic simulation.
-     * Requires the frame-based scheduler with fixed updates enabled
-     * (Scene Settings > Scheduler > Behavior Update Mode = "fixed").
-     * @param fixedDeltaTime - Fixed time step in seconds
+     * Compatibility hook for older fixed-update-only behaviors.
+     * The active runtime currently invokes this from the variable frame loop
+     * when separate fixed stages are unavailable; do not use it for
+     * deterministic timing until the fixed-step scheduler is re-enabled.
+     * @param fixedDeltaTime - Current frame delta in seconds in compatibility mode
      */
     fixedUpdate?(fixedDeltaTime: number): void;
 

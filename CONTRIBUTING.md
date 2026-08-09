@@ -2,13 +2,22 @@
 
 Thanks for your interest in contributing. This document explains how the codebase is organized and how to land a good PR.
 
+## Product target
+
+The active deployment and optimization target is **Playground mode**, backed by
+the browser-local `ProjectStore` (IndexedDB or a user-selected folder). Hosted
+scene APIs are not deployed. Do not validate a scene feature by switching to a
+remote backend or assume gallery, publishing, collaboration, or share-link
+services exist. Start the target surface with `bun run dev:editor`, then open
+`http://localhost:5173/playground`.
+
 ## Code of Conduct
 
 Please read and follow our [Code of Conduct](./CODE_OF_CONDUCT.md). Be kind, be specific, assume good intent.
 
 ## Quick links
 
-- [Where to file issues](https://github.com/your-org/stemstudio/issues)
+- [Where to file issues](https://github.com/Stem-Studio/Engine/issues)
 - [Architecture overview](./docs/architecture.md)
 - [BYOK setup](./docs/byok.md)
 - [Multiplayer guide](./docs/multiplayer.md)
@@ -17,16 +26,20 @@ Please read and follow our [Code of Conduct](./CODE_OF_CONDUCT.md). Be kind, be 
 ## Development setup
 
 ```bash
-git clone https://github.com/your-org/stemstudio.git
-cd stemstudio
-git submodule update --init --recursive
+git clone https://github.com/Stem-Studio/Engine.git
+cd Engine
 bun install
-bun run dev
+bun run dev:editor
 ```
 
-Open `http://localhost:5173` and follow the first-time bootstrap.
+Open `http://localhost:5173/playground`. Playground hides the first-run storage
+chooser and defaults to IndexedDB; do not wait for or test through a bootstrap
+modal on this surface. Use `bun run dev` only when your work also needs the
+optional local Go AI proxy and Colyseus sidecar.
 
-For AI features, copy `.env.example` to `.env` and fill in whichever provider keys you want — or skip them all and the editor will prompt you when needed.
+For AI features, follow [BYOK setup](./docs/byok.md). Playground uses
+browser-direct providers; the all-services development stack can also use keys
+through the local Go proxy.
 
 ## How the codebase is organized
 
@@ -36,11 +49,13 @@ client/
     editor-oss/        ← Editor, player, runtime, behaviors, lambdas,
                          physics, render, multiplayer client, Monaco,
                          AI/persistence/asset interfaces.
-    shared/            ← Thin re-export shims plus app boot.
-    network/           ← HTTP client adapters (api/scene, api/asset, etc.).
+    shared/            ← Shared types, app boot, player shell, and compatibility
+                         re-exports.
+    network/           ← API-shaped adapters. Playground scene reads/writes are
+                         redirected to ProjectStore, not a deployed scene API.
 
-stemstudio-multiplayer/ ← Colyseus server. Runs as a sidecar in dev
-                          (bun run dev:mp); deploy standalone for production.
+stemstudio-multiplayer/ ← Optional Colyseus development sidecar
+                          (`bun run dev:mp`).
 
 server/
   cmd/ai-server/       ← Go AI proxy entry point. Forwards calls to
@@ -64,7 +79,12 @@ A few practical constraints keep the codebase consistent:
 - **Auth** goes through `IAuthProvider` (`client/packages/editor-oss/src/auth/IAuthProvider.ts`). The default `NullAuthProvider` returns a dummy local user so backend requests can carry a stable token.
 - **Analytics** goes through `IAnalyticsRecorder` (default: no-op).
 - **Remote docs** go through `IRemoteDocStore` (default: no-op).
-- **Project save/load** goes through `ProjectStore` (`client/packages/editor-oss/src/persistence/ProjectStore.ts`). Implementations: `IndexedDBProjectStore`, `FileSystemProjectStore`.
+- **Project save/load** goes through `ProjectStore`
+  (`client/packages/editor-oss/src/persistence/ProjectStore.ts`). Playground
+  uses `IndexedDBProjectStore` or `FileSystemProjectStore`.
+- **Remote scene APIs are not deployed.** `RemoteProjectStore` and generated
+  remote API shapes are compatibility/future integration seams, not the
+  current product path. Do not add a network fallback to local scene loading.
 - **Copilot** goes through `ICopilotProvider`. Wire in an ACP-compatible bridge to enable it.
 
 If you need a capability these interfaces don't expose, extend the interface — don't bypass it.
@@ -100,7 +120,7 @@ bun run lint:oss-boundary   # narrow gate on packages/editor-oss/
    - **What:** one-paragraph summary.
    - **Why:** the user problem or technical motivation.
    - **How:** brief design notes if the change is non-trivial.
-   - **Test plan:** what you did to verify, including OSS-boundary checks.
+   - **Test plan:** what you did to verify, including open-source boundary checks.
 
 ## Reviewer checklist
 
@@ -108,8 +128,12 @@ Reviewers will look for:
 
 - [ ] No new imports in `editor-oss/` from packages outside this repo.
 - [ ] AI / persistence / asset code paths go through the interfaces.
-- [ ] `bun run dev` still boots cleanly end-to-end.
-- [ ] First-time bootstrap modal still works on a fresh IndexedDB.
+- [ ] `bun run dev:editor` boots the Playground and the changed workflow works
+      against local `ProjectStore` data.
+- [ ] If optional service code changed, `bun run dev` still boots the relevant
+      sidecar(s).
+- [ ] Playground suppresses the storage chooser and starts with IndexedDB; if
+      non-Playground persistence UI changed, its storage chooser still works.
 - [ ] If the change touches behaviors: behavior lifecycle is respected, Three.js resources are disposed, no leaked timers/listeners.
 - [ ] If the change touches multiplayer: graceful degradation when sidecar is unavailable.
 - [ ] If the change touches AI: graceful degradation when no key is configured.
@@ -138,6 +162,6 @@ The AI server registers providers by environment variable. To add a new one:
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/your-org/stemstudio/discussions) or an [Issue](https://github.com/your-org/stemstudio/issues). For security disclosures, see [SECURITY.md](./SECURITY.md).
+Open a [GitHub Discussion](https://github.com/Stem-Studio/Engine/discussions) or an [Issue](https://github.com/Stem-Studio/Engine/issues). For security disclosures, see [SECURITY.md](./SECURITY.md).
 
 Thanks for contributing.

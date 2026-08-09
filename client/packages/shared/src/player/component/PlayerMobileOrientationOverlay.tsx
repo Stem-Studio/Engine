@@ -8,6 +8,7 @@ import {
     getCurrentDeviceOrientation,
     getOrientationTarget,
     isOrientationRequired,
+    normalizeOrientationPolicy,
     type OrientationPolicy,
     requestOrientationLock,
     shouldApplyOrientationPolicy,
@@ -22,17 +23,18 @@ export const PlayerMobileOrientationOverlay: React.FC<Props> = ({
     policy = DEFAULT_ORIENTATION_POLICY,
     enabled = true,
 }) => {
+    const effectivePolicy = normalizeOrientationPolicy(policy);
     const [currentOrientation, setCurrentOrientation] = useState(getCurrentDeviceOrientation);
 
     useEffect(() => {
-        if (!enabled || !shouldApplyOrientationPolicy(policy)) return;
+        if (!enabled || !shouldApplyOrientationPolicy(effectivePolicy)) return;
 
         const updateOrientationState = () => {
             setCurrentOrientation(getCurrentDeviceOrientation());
         };
 
         const relockOrientation = () => {
-            void requestOrientationLock(policy).finally(updateOrientationState);
+            void requestOrientationLock(effectivePolicy).finally(updateOrientationState);
         };
 
         const orientationQuery = window.matchMedia("(orientation: portrait)");
@@ -63,18 +65,18 @@ export const PlayerMobileOrientationOverlay: React.FC<Props> = ({
             window.removeEventListener("resize", handleResize);
             document.removeEventListener("fullscreenchange", handleFullscreenChange);
         };
-    }, [enabled, policy]);
+    }, [enabled, effectivePolicy]);
 
-    if (!enabled || !shouldApplyOrientationPolicy(policy) || doesOrientationMatchPolicy(policy, currentOrientation)) {
+    if (!enabled || !shouldApplyOrientationPolicy(effectivePolicy) || doesOrientationMatchPolicy(effectivePolicy, currentOrientation)) {
         return null;
     }
 
-    const target = getOrientationTarget(policy);
+    const target = getOrientationTarget(effectivePolicy);
     const subtitle = target === "portrait"
-        ? isOrientationRequired(policy)
+        ? isOrientationRequired(effectivePolicy)
             ? t("This experience requires portrait mode.")
             : t("This experience works best in portrait mode.")
-        : isOrientationRequired(policy)
+        : isOrientationRequired(effectivePolicy)
             ? t("This experience requires landscape mode.")
             : t("This experience works best in landscape mode.");
 

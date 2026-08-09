@@ -23,8 +23,8 @@ html[data-playground-mode="true"] [data-playground-hide] {
     display: none !important;
 }
 
-/* Hide the OSS bootstrap modal in playground mode — visitors should not
- * need to pick a persistence backend; the iframe defaults to IndexedDB. */
+/* Hide the local storage bootstrap modal in playground mode — visitors should
+ * not need to pick a persistence backend; the iframe defaults to IndexedDB. */
 html[data-playground-mode="true"] [data-oss-bootstrap-modal] {
     display: none !important;
 }

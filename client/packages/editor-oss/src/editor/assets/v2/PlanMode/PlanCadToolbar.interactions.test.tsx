@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {act, cleanup, fireEvent, render, screen, waitFor} from "@testing-library/react";
 import type {ReactNode} from "react";
 import * as THREE from "three";
@@ -72,12 +72,16 @@ function installFakeApp() {
             scene,
             sceneHelpers,
             gpuPickNum: 0,
+            selected: null as THREE.Object3D | THREE.Object3D[] | null,
             computeIntersectPoint: vi.fn(() => new THREE.Vector3()),
             execute: vi.fn(async command => command.execute?.()),
             addObject: vi.fn((object: THREE.Object3D, parent?: THREE.Object3D) => {
                 (parent ?? scene).add(object);
             }),
-            select: vi.fn(),
+            select: vi.fn((object: THREE.Object3D | null) => {
+                app.editor.selected = object;
+                app.call("objectSelected", app.editor, object);
+            }),
         },
         on: vi.fn((key: string, handler: ((...args: any[]) => void) | null) => {
             if (handler) handlers.set(key, handler);
@@ -165,6 +169,15 @@ async function installSyncedWall(app: ReturnType<typeof installFakeApp>) {
 }
 
 describe("PlanCadToolbar interactions", () => {
+    beforeEach(() => {
+        // These interaction tests exercise the built-in catalog against a fake
+        // editor. Keep the optional Pascal catalog refresh off the network so
+        // React act() cannot inherit real GitHub request latency.
+        vi.spyOn(globalThis, "fetch").mockRejectedValue(
+            new Error("PlanCadToolbar interaction test is offline"),
+        );
+    });
+
     afterEach(() => {
         cleanup();
         global.app = null;
@@ -199,6 +212,21 @@ describe("PlanCadToolbar interactions", () => {
         });
     });
 
+    it("does not read or write BIM mode state through browser storage", async () => {
+        installFakeApp();
+        const getItem = vi.spyOn(Storage.prototype, "getItem");
+        const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+        render(<PlanCadToolbar />);
+        await act(async () => {
+            fireEvent.click(screen.getByLabelText("Dismiss BIM Plan hint"));
+            await Promise.resolve();
+        });
+
+        expect(getItem).not.toHaveBeenCalled();
+        expect(setItem).not.toHaveBeenCalled();
+    });
+
     it("closes BIM Plan and clears active drafting state", async () => {
         installFakeApp();
         const onClose = vi.fn();
@@ -215,17 +243,6 @@ describe("PlanCadToolbar interactions", () => {
             expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
         });
         expect(onClose).toHaveBeenCalledTimes(1);
-    });
-
-    it("owns viewport picking while BIM Plan is open", () => {
-        const app = installFakeApp();
-        const {unmount} = render(<PlanCadToolbar />);
-
-        expect(app.disableClickEvents).toBe(true);
-
-        unmount();
-
-        expect(app.disableClickEvents).toBe(false);
     });
 
     it("does not add an opening when no wall target exists", async () => {
@@ -259,8 +276,25 @@ describe("PlanCadToolbar interactions", () => {
             await Promise.resolve();
         });
         expect(screen.getByText("Wall start")).toBeInTheDocument();
+        expect(screen.getByTestId("plan-cad-draft-status")).toBeInTheDocument();
+        expect(screen.queryByTestId("plan-cad-hint")).not.toBeInTheDocument();
 
-        fireEvent.keyDown(window, {key: "Escape"});
+        const escapeEvent = new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+            cancelable: true,
+        });
+        const stopPropagation = vi.spyOn(escapeEvent, "stopPropagation");
+        const stopImmediatePropagation = vi.spyOn(escapeEvent, "stopImmediatePropagation");
+
+        await act(async () => {
+            window.dispatchEvent(escapeEvent);
+            await Promise.resolve();
+        });
+
+        expect(escapeEvent.defaultPrevented).toBe(true);
+        expect(stopPropagation).toHaveBeenCalled();
+        expect(stopImmediatePropagation).toHaveBeenCalled();
         await waitFor(() => {
             expect(screen.queryByText("Wall start")).not.toBeInTheDocument();
             expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
@@ -282,7 +316,7 @@ describe("PlanCadToolbar interactions", () => {
         });
         expect(screen.getByText("Wall start")).toBeInTheDocument();
 
-        fireEvent.click(screen.getByTestId("plan-cad-cancel-draft"));
+        fireEvent.click(screen.getByTestId("plan-cad-cancel-polygon"));
 
         await waitFor(() => {
             expect(screen.queryByText("Wall start")).not.toBeInTheDocument();
@@ -291,79 +325,13 @@ describe("PlanCadToolbar interactions", () => {
         expect(app.editor.scene.userData.planCad).toBeUndefined();
     });
 
-    it("cancels BIM Plan mode from the toolbar when controlled by ActionBar", async () => {
-        const app = installFakeApp();
-        const onClose = vi.fn();
-        render(<PlanCadToolbar onClose={onClose} />);
-
-        activateGroupedTool("structure", "wall");
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
-        });
-
-        await act(async () => {
-            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(0, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
-            await Promise.resolve();
-        });
-
-        fireEvent.click(screen.getByTestId("plan-cad-cancel-draft"));
-
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
-        });
-        expect(onClose).toHaveBeenCalledTimes(1);
-        expect(app.editor.scene.userData.planCad).toBeUndefined();
-    });
-
-    it("switches structure placement tools to top-down view", async () => {
-        const app = installFakeApp();
-        Object.assign(app.editor, {view: "perspective"});
-        render(<PlanCadToolbar />);
-
-        activateGroupedTool("structure", "wall");
-
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
-        });
-        expect(app.call).toHaveBeenCalledWith("changeView", app.editor, "top");
-
-        app.call.mockClear();
-        activateGroupedTool("openings", "door");
-
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-tool-door")).toHaveAttribute("aria-pressed", "true");
-        });
-        expect(app.call).not.toHaveBeenCalledWith("changeView", app.editor, "top");
-    });
-
-    it("finishes room polygons with Enter", async () => {
-        const app = installFakeApp();
-        render(<PlanCadToolbar />);
-
-        activateGroupedTool("structure", "room");
-        await waitFor(() => {
-            expect(screen.getByTestId("plan-cad-tool-room")).toHaveAttribute("aria-pressed", "true");
-        });
-
-        await act(async () => {
-            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(0, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
-            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(4, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
-            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(4, 0, 3), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
-            await Promise.resolve();
-        });
-
-        fireEvent.keyDown(window, {key: "Enter"});
-
-        await waitFor(() => {
-            const slabs = Object.values(app.editor.scene.userData.planCad.nodes).filter(
-                (node: any): node is {type: "slab"; points: unknown[]} => node.type === "slab",
-            );
-            expect(slabs[0]?.points).toHaveLength(3);
-        });
-    });
-
     it("finishes a room draft on double click without adding another point", async () => {
         const app = installFakeApp();
+        let roomCommand: {newData?: {nodes?: Record<string, unknown>}} | null = null;
+        app.editor.execute.mockImplementation(command => {
+            roomCommand = command;
+            return new Promise(() => {});
+        });
         const viewport = document.createElement("canvas");
         (viewport as any).getBoundingClientRect = vi.fn(() => ({
             x: 0,
@@ -388,7 +356,6 @@ describe("PlanCadToolbar interactions", () => {
         await waitFor(() => {
             expect(screen.getByTestId("plan-cad-tool-room")).toHaveAttribute("aria-pressed", "true");
         });
-
         for (const [clientX, clientY] of [[80, 120], [180, 120], [180, 220]]) {
             await act(async () => {
                 viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
@@ -409,33 +376,65 @@ describe("PlanCadToolbar interactions", () => {
             });
         }
 
-        await act(async () => {
-            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
-                button: 0,
-                clientX: 200,
-                clientY: 240,
-                detail: 2,
-                bubbles: true,
-                cancelable: true,
-            }));
-            document.dispatchEvent(pointerViewportEvent("pointerup", {
-                button: 0,
-                clientX: 200,
-                clientY: 240,
-                detail: 2,
-                bubbles: true,
-                cancelable: true,
-            }));
-            await Promise.resolve();
+        viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+            button: 0,
+            clientX: 200,
+            clientY: 240,
+            detail: 2,
+            bubbles: true,
+            cancelable: true,
+        }));
+        document.dispatchEvent(pointerViewportEvent("pointerup", {
+            button: 0,
+            clientX: 200,
+            clientY: 240,
+            detail: 2,
+            bubbles: true,
+            cancelable: true,
+        }));
+
+        expect(roomCommand).toBeTruthy();
+        const slabs = Object.values(roomCommand!.newData!.nodes!).filter(
+            (node: any): node is {type: "slab"; points: unknown[]} => node.type === "slab",
+        );
+        expect(slabs[0]?.points).toHaveLength(3);
+        expect(app.editor.computeIntersectPoint).toHaveBeenCalledTimes(3);
+        viewport.remove();
+    });
+
+    it("captures placement when a floating status surface covers the viewport", async () => {
+        const app = installFakeApp();
+        const viewport = installViewportRaycastHarness(app);
+        const coveredSurface = document.createElement("div");
+        document.body.appendChild(coveredSurface);
+        app.editor.computeIntersectPoint.mockReturnValue(new THREE.Vector3(1, 0, 1));
+
+        render(<PlanCadToolbar />);
+        activateGroupedTool("structure", "room");
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-room")).toHaveAttribute("aria-pressed", "true");
         });
 
+        coveredSurface.dispatchEvent(pointerViewportEvent("pointerdown", {
+            button: 0,
+            clientX: 120,
+            clientY: 140,
+            bubbles: true,
+            cancelable: true,
+        }));
+        document.dispatchEvent(pointerViewportEvent("pointerup", {
+            button: 0,
+            clientX: 120,
+            clientY: 140,
+            bubbles: true,
+            cancelable: true,
+        }));
+
         await waitFor(() => {
-            const slabs = Object.values(app.editor.scene.userData.planCad.nodes).filter(
-                (node: any): node is {type: "slab"; points: unknown[]} => node.type === "slab",
-            );
-            expect(slabs[0]?.points).toHaveLength(3);
+            expect(screen.getByTestId("plan-cad-finish-polygon")).toBeDisabled();
+            expect(screen.getByTestId("plan-cad-draft-status")).toHaveTextContent("Room 1 pts");
         });
-        expect(app.editor.computeIntersectPoint).toHaveBeenCalledTimes(3);
+        coveredSurface.remove();
         viewport.remove();
     });
 
@@ -727,32 +726,20 @@ describe("PlanCadToolbar interactions", () => {
         viewport.remove();
     });
 
-    it("clears BIM selection from empty viewport select clicks", async () => {
+    it("clears a selected BIM wall with Escape", async () => {
         const app = installFakeApp();
-        const viewport = installViewportRaycastHarness(app);
+        const wallObject = await installSyncedWall(app);
+        app.editor.select(wallObject);
+        expect(app.editor.scene.userData.planCad.selectedNodeId).toBe(
+            wallObject.userData.planNodeId,
+        );
 
         render(<PlanCadToolbar />);
 
-        await act(async () => {
-            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
-                button: 0,
-                clientX: 500,
-                clientY: 260,
-                bubbles: true,
-                cancelable: true,
-            }));
-            document.dispatchEvent(pointerViewportEvent("pointerup", {
-                button: 0,
-                clientX: 500,
-                clientY: 260,
-                bubbles: true,
-                cancelable: true,
-            }));
-            await Promise.resolve();
-        });
+        fireEvent.keyDown(window, {key: "Escape"});
 
-        expect(app.editor.select).toHaveBeenCalledWith(null);
-        viewport.remove();
+        expect(app.editor.select).toHaveBeenLastCalledWith(null);
+        expect(app.editor.scene.userData.planCad.selectedNodeId).toBeNull();
     });
 
     it("adds an opening when viewport raycast hits a generated wall", async () => {

@@ -5,6 +5,7 @@ import styled from "styled-components";
 import { renderingEditorToApi } from '@stem/network/api/scene';
 import {useAuthorizationContext} from "@stem/editor-oss/context";
 import global from "@stem/editor-oss/global";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
 import Converter from "../../../../serialization/Converter";
 import {showToast} from "@stem/editor-oss/showToast";
 import {EDITOR_TOP_NAV_HEIGHT, IFRAME_MESSAGES} from "@stem/editor-oss/types/editor";
@@ -44,7 +45,7 @@ export const GameIframe = ({iframeRef}: {iframeRef: MutableRefObject<HTMLIFrameE
                     scripts: app.scripts,
                 });
 
-                const serializableJsons = JSON.parse(JSON.stringify(jsons));
+                const serializableJsons = cloneJsonCompatible(jsons);
 
                 iframe.contentWindow?.postMessage(
                     {

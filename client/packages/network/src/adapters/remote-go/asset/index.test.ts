@@ -5,6 +5,7 @@ import {
     createOssAssetRegistry,
     getOssAssetRegistry,
     getOssAssetsForProject,
+    dataToBase64,
     lookupOssAsset,
     processWithConcurrencyLimit,
     registerOssAsset,
@@ -66,6 +67,20 @@ describe('processWithConcurrencyLimit', () => {
     it('should run with at least one worker when concurrency is zero', async () => {
         const result = await processWithConcurrencyLimit([1, 2], 0, async (item) => item + 1);
         expect(result).toEqual([2, 3]);
+    });
+});
+
+describe('dataToBase64', () => {
+    it('preserves binary data across chunk boundaries', async () => {
+        const bytes = new Uint8Array(0x8000 + 17);
+        for (let i = 0; i < bytes.length; i++) {
+            bytes[i] = i % 256;
+        }
+
+        const encoded = await dataToBase64(bytes.buffer);
+        const decoded = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+
+        expect(decoded).toEqual(bytes);
     });
 });
 

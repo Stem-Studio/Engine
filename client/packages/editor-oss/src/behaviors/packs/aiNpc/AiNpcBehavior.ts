@@ -85,11 +85,13 @@ class AiNpcBehavior extends BehaviorBase {
     private actionQueue: SelectedAction[] = [];
     private currentActionIndex: number = -1;
     private actionState: NPCActionState = NPCActionState.IDLE;
-    private targetPosition: Vector3 | null = null;
+    private readonly targetPosition: Vector3 = new Vector3();
+    private hasTargetPosition: boolean = false;
     private moveDirection: Vector3 = new Vector3();
     private physics: IPhysics | null = null;
     private currentRotation: Quaternion = new Quaternion();
     private readonly POSITION_THRESHOLD: number = 0.5; // Distance to consider "reached"
+    private readonly POSITION_THRESHOLD_SQ: number = this.POSITION_THRESHOLD * this.POSITION_THRESHOLD;
     private readonly ROTATION_SPEED: number = 5; // Rotation speed
     private actionStartTime: number = 0;
 
@@ -108,6 +110,17 @@ class AiNpcBehavior extends BehaviorBase {
     private heldObject: Object3D | null = null; // Reference to currently held object
     private heldObjectUuid: string | null = null; // UUID of held object for joint management
     private holdJointActive: boolean = false; // Flag to track if joint is active
+    private readonly yAxis: Vector3 = new Vector3(0, 1, 0);
+    private readonly zeroVelocity: Vector3 = new Vector3();
+    private readonly forwardDirection: Vector3 = new Vector3();
+    private readonly scratchDirection: Vector3 = new Vector3();
+    private readonly scratchPosition: Vector3 = new Vector3();
+    private readonly scratchPosition2: Vector3 = new Vector3();
+    private readonly scratchBox: Box3 = new Box3();
+    private readonly scratchBox2: Box3 = new Box3();
+    private readonly scratchSize: Vector3 = new Vector3();
+    private readonly surroundedObjectsScratch: GameObject[] = [];
+    private readonly surroundingObjectTraversalStack: Object3D[] = [];
 
     init(game: GameManager): void {
         this.gameManager = game;
@@ -356,41 +369,56 @@ class AiNpcBehavior extends BehaviorBase {
     }
 
     private getSurroundedObjects(): void {
-        if (!this.target || !this.gameManager || !this.gameManager.scene) {
-            this.gameContext.surroundedObjects = [];
+        const target = this.target;
+        const scene = this.gameManager?.scene;
+        const surroundedObjects = this.surroundedObjectsScratch;
+        surroundedObjects.length = 0;
+
+        if (!target || !scene) {
+            this.gameContext.surroundedObjects = surroundedObjects;
             return;
         }
 
         const detectionRadius = (this.attributes.object_interaction_range as number) || 5;
-        const npcPosition = this.target.position;
-        const surroundedObjects: GameObject[] = [];
+        const detectionRadiusSq = detectionRadius * detectionRadius;
+        const npcPosition = target.getWorldPosition(this.scratchPosition);
+        const traversalStack = this.surroundingObjectTraversalStack;
+        traversalStack.length = 0;
+        traversalStack.push(scene);
 
-        // Traverse scene to find nearby objects
-        this.gameManager.scene.traverse((object: Object3D) => {
-            // Skip the NPC itself and its children
-            if (object === this.target || object.parent === this.target) {
-                return;
+        while (traversalStack.length > 0) {
+            const object = traversalStack.pop();
+            if (!object) {
+                continue;
             }
 
-            // Skip objects without userData or name
-            if (!object.userData || !object.name || !object.userData.visibleByAI) {
-                return;
+            if (object === target) {
+                continue;
             }
 
-            // Calculate distance
-            const distance = npcPosition.distanceTo(object.position);
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                traversalStack.push(object.children[i]!);
+            }
 
-            if (distance <= detectionRadius) {
-                const boundingBox = new Box3().setFromObject(object);
+            if (!object.name || !object.userData?.visibleByAI) {
+                continue;
+            }
+
+            const objectPosition = object.getWorldPosition(this.scratchPosition2);
+            const distanceSq = npcPosition.distanceToSquared(objectPosition);
+
+            if (distanceSq <= detectionRadiusSq) {
+                const distance = Math.sqrt(distanceSq);
+                const boundingBox = this.scratchBox.setFromObject(object);
                 const gameObject: GameObject = {
                     id: object.uuid,
                     name: object.name,
                     type: object.type,
                     distance: Math.round(distance * 100) / 100, // Round to 2 decimals
                     position: {
-                        x: Math.round(object.position.x * 100) / 100,
-                        y: Math.round(object.position.y * 100) / 100,
-                        z: Math.round(object.position.z * 100) / 100,
+                        x: Math.round(objectPosition.x * 100) / 100,
+                        y: Math.round(objectPosition.y * 100) / 100,
+                        z: Math.round(objectPosition.z * 100) / 100,
                     },
                     size: {
                         x: Math.round((boundingBox.max.x - boundingBox.min.x) * 100) / 100,
@@ -401,10 +429,12 @@ class AiNpcBehavior extends BehaviorBase {
 
                 surroundedObjects.push(gameObject);
             }
-        });
+        }
 
         // Sort by distance (closest first)
-        surroundedObjects.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        if (surroundedObjects.length > 1) {
+            surroundedObjects.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        }
 
         this.gameContext.surroundedObjects = surroundedObjects;
     }
@@ -553,13 +583,30 @@ class AiNpcBehavior extends BehaviorBase {
         }
     }
 
+    private setPhysicsYaw(targetRotation: number): void {
+        if (!this.target || !this.physics) return;
+        this.currentRotation.setFromAxisAngle(this.yAxis, targetRotation);
+        this.physics.setRotation(this.target.uuid, this.currentRotation);
+    }
+
+    private setForwardLinearVelocity(speed: number): void {
+        if (!this.target || !this.physics) return;
+        this.forwardDirection
+            .set(0, 0, 1)
+            .applyQuaternion(this.currentRotation)
+            .normalize()
+            .multiplyScalar(speed);
+        this.forwardDirection.y -= speed / 2;
+        this.physics.setLinearVelocity(this.target.uuid, this.forwardDirection);
+    }
+
     /**
      * Process standing state
      */
     private processStanding(): void {
         // Stop movement completely
         if (this.physics && this.target) {
-            this.physics.setLinearVelocity(this.target.uuid, new Vector3(0, 0, 0));
+            this.physics.setLinearVelocity(this.target.uuid, this.zeroVelocity.set(0, 0, 0));
         }
 
         // Play idle animation
@@ -582,12 +629,13 @@ class AiNpcBehavior extends BehaviorBase {
         if (!this.target || !this.physics) return;
 
         // Check distance from original position
-        const distanceFromOrigin = this.target.position.distanceTo(this.originalPosition);
         const maxRoamDistance = ((this.attributes.object_interaction_range as number) || 5) * 0.5; // Use half of interaction range
+        const maxRoamDistanceSq = maxRoamDistance * maxRoamDistance;
+        const isBeyondRoamDistance = this.target.position.distanceToSquared(this.originalPosition) > maxRoamDistanceSq;
 
         // Change direction periodically or if too far from origin
-        if (this.wanderTimer <= 0 || distanceFromOrigin > maxRoamDistance) {
-            if (distanceFromOrigin > maxRoamDistance) {
+        if (this.wanderTimer <= 0 || isBeyondRoamDistance) {
+            if (isBeyondRoamDistance) {
                 // Return to origin
                 this.wanderDirection.copy(this.originalPosition).sub(this.target.position).normalize();
             } else {
@@ -603,21 +651,11 @@ class AiNpcBehavior extends BehaviorBase {
         const targetRotation = Math.atan2(this.wanderDirection.x, this.wanderDirection.z);
         this.target.rotation.y = this.lerp(this.target.rotation.y, targetRotation, this.ROTATION_SPEED * delta);
 
-        // Set quaternion for physics
-        this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-        this.physics.setRotation(this.target.uuid, this.currentRotation);
+        this.setPhysicsYaw(targetRotation);
 
         // Calculate velocity
         const speed = ((this.attributes.walkSpeed as number) || 2.5) * 0.5; // Half speed for wandering
-        const forwardDirection = new Vector3(0, 0, 1);
-        forwardDirection.applyQuaternion(this.currentRotation);
-        forwardDirection.normalize();
-
-        const forwardVelocity = forwardDirection.multiplyScalar(speed);
-        const downwardVelocity = new Vector3(0, -speed / 2, 0);
-        const totalVelocity = forwardVelocity.add(downwardVelocity);
-
-        this.physics.setLinearVelocity(this.target.uuid, totalVelocity);
+        this.setForwardLinearVelocity(speed);
 
         // Play walk animation AFTER setting velocity
         this.playAnimation(this.attributes.walkAnimation as string);
@@ -638,10 +676,8 @@ class AiNpcBehavior extends BehaviorBase {
     private processReturningHome(delta: number): void {
         if (!this.target || !this.physics) return;
 
-        const distanceFromOrigin = this.target.position.distanceTo(this.originalPosition);
-
         // Check if reached home
-        if (distanceFromOrigin < this.POSITION_THRESHOLD) {
+        if (this.target.position.distanceToSquared(this.originalPosition) < this.POSITION_THRESHOLD_SQ) {
             this.idleState = NPCIdleState.STANDING;
             this.idleStateTimer = 0;
             this.standingDuration = Math.random() * 5 + 3;
@@ -650,28 +686,18 @@ class AiNpcBehavior extends BehaviorBase {
         }
 
         // Calculate direction to home
-        const directionToHome = new Vector3().copy(this.originalPosition).sub(this.target.position).normalize();
+        const directionToHome = this.scratchDirection.copy(this.originalPosition).sub(this.target.position).normalize();
         directionToHome.y = 0;
 
         // Apply rotation
         const targetRotation = Math.atan2(directionToHome.x, directionToHome.z);
         this.target.rotation.y = this.lerp(this.target.rotation.y, targetRotation, this.ROTATION_SPEED * delta);
 
-        // Set quaternion for physics
-        this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-        this.physics.setRotation(this.target.uuid, this.currentRotation);
+        this.setPhysicsYaw(targetRotation);
 
         // Calculate velocity
         const speed = ((this.attributes.walkSpeed as number) || 2.5) * 0.5; // Half speed for returning
-        const forwardDirection = new Vector3(0, 0, 1);
-        forwardDirection.applyQuaternion(this.currentRotation);
-        forwardDirection.normalize();
-
-        const forwardVelocity = forwardDirection.multiplyScalar(speed);
-        const downwardVelocity = new Vector3(0, -speed / 2, 0);
-        const totalVelocity = forwardVelocity.add(downwardVelocity);
-
-        this.physics.setLinearVelocity(this.target.uuid, totalVelocity);
+        this.setForwardLinearVelocity(speed);
 
         // Play walk animation
         this.playAnimation(this.attributes.walkAnimation as string);
@@ -720,7 +746,7 @@ class AiNpcBehavior extends BehaviorBase {
         }
 
         // Handle movement actions
-        if (this.actionState === NPCActionState.MOVING && this.targetPosition) {
+        if (this.actionState === NPCActionState.MOVING && this.hasTargetPosition) {
             const reached = this.updateMovement(delta);
             if (reached) {
                 this.completeCurrentAction();
@@ -857,21 +883,20 @@ class AiNpcBehavior extends BehaviorBase {
      * @returns true if target reached
      */
     private updateMovement(delta: number): boolean {
-        if (!this.target || !this.targetPosition || !this.physics) {
+        if (!this.target || !this.hasTargetPosition || !this.physics) {
             return true;
         }
 
         // Get NPC foot position for horizontal distance calculation
-        const npcBoundingBox = new Box3().setFromObject(this.target);
+        const npcBoundingBox = this.scratchBox.setFromObject(this.target);
         const npcFootY = npcBoundingBox.min.y;
-        const currentPos = new Vector3(this.target.position.x, npcFootY, this.target.position.z);
+        const currentPos = this.scratchPosition.set(this.target.position.x, npcFootY, this.target.position.z);
 
         // Calculate horizontal distance (ignore Y)
-        const horizontalTarget = new Vector3(this.targetPosition.x, npcFootY, this.targetPosition.z);
-        const distance = currentPos.distanceTo(horizontalTarget);
+        const horizontalTarget = this.scratchPosition2.set(this.targetPosition.x, npcFootY, this.targetPosition.z);
 
         // Check if reached
-        if (distance < this.POSITION_THRESHOLD) {
+        if (currentPos.distanceToSquared(horizontalTarget) < this.POSITION_THRESHOLD_SQ) {
             return true;
         }
 
@@ -883,21 +908,11 @@ class AiNpcBehavior extends BehaviorBase {
         const targetRotation = Math.atan2(this.moveDirection.x, this.moveDirection.z);
         this.target.rotation.y = this.lerp(this.target.rotation.y, targetRotation, this.ROTATION_SPEED * delta);
 
-        // Set quaternion for physics
-        this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-        this.physics.setRotation(this.target.uuid, this.currentRotation);
+        this.setPhysicsYaw(targetRotation);
 
         // Calculate velocity
         const speed = (this.attributes.walkSpeed as number) || 2.5;
-        const forwardDirection = new Vector3(0, 0, 1);
-        forwardDirection.applyQuaternion(this.currentRotation);
-        forwardDirection.normalize();
-
-        const forwardVelocity = forwardDirection.multiplyScalar(speed);
-        const downwardVelocity = new Vector3(0, -speed / 2, 0);
-        const totalVelocity = forwardVelocity.add(downwardVelocity);
-
-        this.physics.setLinearVelocity(this.target.uuid, totalVelocity);
+        this.setForwardLinearVelocity(speed);
 
         return false;
     }
@@ -907,9 +922,9 @@ class AiNpcBehavior extends BehaviorBase {
      */
     private stopMovement(): void {
         if (this.physics && this.target) {
-            this.physics.setLinearVelocity(this.target.uuid, new Vector3(0, 0, 0));
+            this.physics.setLinearVelocity(this.target.uuid, this.zeroVelocity.set(0, 0, 0));
         }
-        this.targetPosition = null;
+        this.hasTargetPosition = false;
         this.actionState = NPCActionState.IDLE;
         this.playAnimation(this.attributes.idleAnimation as string);
     }
@@ -923,6 +938,10 @@ class AiNpcBehavior extends BehaviorBase {
      */
     private lerp(start: number, end: number, factor: number): number {
         return start + (end - start) * factor;
+    }
+
+    private getSceneObjectByUUID(uuid: string): Object3D | null {
+        return this.gameManager?.getObjectByUUID(uuid) ?? null;
     }
 
     /**
@@ -953,15 +972,15 @@ class AiNpcBehavior extends BehaviorBase {
         console.log(`[AI NPC] Setting up navigation to object: ${objectId}`);
 
         // Find the target object in the scene
-        const targetObject = this.gameManager?.scene?.getObjectByProperty("uuid", objectId);
+        const targetObject = this.getSceneObjectByUUID(objectId);
 
         if (!targetObject) {
             throw new Error(`Object not found: ${objectId}`);
         }
 
         // Calculate bounding box to stop in front of the object
-        const boundingBox = new Box3().setFromObject(targetObject);
-        const objectSize = new Vector3();
+        const boundingBox = this.scratchBox.setFromObject(targetObject);
+        const objectSize = this.scratchSize;
         boundingBox.getSize(objectSize);
 
         // Calculate direction from NPC to object
@@ -970,18 +989,18 @@ class AiNpcBehavior extends BehaviorBase {
         }
 
         // Get NPC bounding box to calculate foot position
-        const npcBoundingBox = new Box3().setFromObject(this.target);
+        const npcBoundingBox = this.scratchBox2.setFromObject(this.target);
         const npcFootY = npcBoundingBox.min.y; // Bottom of NPC
 
         // Get object base position (bottom of object)
         const objectBaseY = boundingBox.min.y;
 
         // Use object base position for horizontal positioning
-        const objectBasePosition = new Vector3(targetObject.position.x, objectBaseY, targetObject.position.z);
-        const npcBasePosition = new Vector3(this.target.position.x, npcFootY, this.target.position.z);
+        const objectBasePosition = this.scratchPosition.set(targetObject.position.x, objectBaseY, targetObject.position.z);
+        const npcBasePosition = this.scratchPosition2.set(this.target.position.x, npcFootY, this.target.position.z);
 
         // Calculate direction on horizontal plane from NPC base to object base
-        const direction = new Vector3().copy(objectBasePosition).sub(npcBasePosition).normalize();
+        const direction = this.scratchDirection.copy(objectBasePosition).sub(npcBasePosition).normalize();
         direction.y = 0; // Keep on horizontal plane
 
         // Calculate stopping distance (half of object's depth + small offset)
@@ -989,8 +1008,9 @@ class AiNpcBehavior extends BehaviorBase {
         const stoppingDistance = objectRadius + 0.5; // 0.5m offset in front of object
 
         // Set target position in front of the object at ground level
-        this.targetPosition = objectBasePosition.clone().sub(direction.multiplyScalar(stoppingDistance));
+        this.targetPosition.copy(objectBasePosition).sub(direction.multiplyScalar(stoppingDistance));
         this.targetPosition.y = npcFootY; // Keep NPC at ground level
+        this.hasTargetPosition = true;
 
         this.actionState = NPCActionState.MOVING;
 
@@ -1023,29 +1043,31 @@ class AiNpcBehavior extends BehaviorBase {
         // Check if target position is too close to player
         if (this.gameManager?.player) {
             const playerPos = this.gameManager.player.position;
-            const targetPos = new Vector3(x, y, z);
-            const distanceToPlayer = playerPos.distanceTo(targetPos);
+            const targetPos = this.scratchPosition.set(x, y, z);
 
             const playerSafeDistance = 1; // Minimum distance from player
+            const playerSafeDistanceSq = playerSafeDistance * playerSafeDistance;
 
-            if (distanceToPlayer < playerSafeDistance) {
+            if (playerPos.distanceToSquared(targetPos) < playerSafeDistanceSq) {
                 // Calculate direction from player to target position
-                const directionFromPlayer = new Vector3().copy(targetPos).sub(playerPos).normalize();
+                const directionFromPlayer = this.scratchDirection.copy(targetPos).sub(playerPos);
 
                 // If direction is too small (target is almost exactly at player position),
                 // use a default forward direction from player's perspective
-                if (directionFromPlayer.length() < 0.01) {
+                if (directionFromPlayer.lengthSq() < 0.0001) {
                     // Get player's forward direction
-                    const playerForward = new Vector3(0, 0, 1);
+                    const playerForward = this.scratchPosition2.set(0, 0, 1);
                     playerForward.applyQuaternion(this.gameManager.player.quaternion);
                     directionFromPlayer.copy(playerForward);
+                } else {
+                    directionFromPlayer.normalize();
                 }
 
                 directionFromPlayer.y = 0; // Keep on horizontal plane
                 directionFromPlayer.normalize();
 
                 // Set new target position in front of player
-                const adjustedPos = new Vector3()
+                const adjustedPos = this.scratchPosition2
                     .copy(playerPos)
                     .add(directionFromPlayer.multiplyScalar(playerSafeDistance));
 
@@ -1060,7 +1082,8 @@ class AiNpcBehavior extends BehaviorBase {
         }
 
         // Set target position
-        this.targetPosition = new Vector3(x, y, z);
+        this.targetPosition.set(x, y, z);
+        this.hasTargetPosition = true;
         this.actionState = NPCActionState.MOVING;
 
         // Play walk animation
@@ -1091,22 +1114,15 @@ class AiNpcBehavior extends BehaviorBase {
         }
 
         // Find the object in the scene
-        const object = this.gameManager?.scene?.getObjectByProperty("uuid", objectId);
+        const object = this.getSceneObjectByUUID(objectId);
 
         if (!object) {
             throw new Error(`Object not found: ${objectId}`);
         }
 
-        // Check distance to object
         if (!this.target) {
             throw new Error("NPC target not defined");
         }
-
-        const npcPosition = new Vector3();
-        this.target.getWorldPosition(npcPosition);
-
-        const objectPosition = new Vector3();
-        object.getWorldPosition(objectPosition);
 
         this.actionState = NPCActionState.PERFORMING_ACTION;
 
@@ -1127,7 +1143,7 @@ class AiNpcBehavior extends BehaviorBase {
         if (this.physics && this.target) {
             try {
                 // Calculate NPC height
-                const npcBoundingBox = new Box3().setFromObject(this.target);
+                const npcBoundingBox = this.scratchBox.setFromObject(this.target);
                 const npcHeight = npcBoundingBox.max.y - npcBoundingBox.min.y;
 
                 // Position object at half NPC height and 0.5m in front
@@ -1253,7 +1269,7 @@ class AiNpcBehavior extends BehaviorBase {
         console.log(`[AI NPC] Rotating to face object: ${objectId}`);
 
         // Find the target object
-        const targetObject = this.gameManager?.scene?.getObjectByProperty("uuid", objectId);
+        const targetObject = this.getSceneObjectByUUID(objectId);
 
         if (!targetObject) {
             throw new Error(`Object not found: ${objectId}`);
@@ -1266,7 +1282,7 @@ class AiNpcBehavior extends BehaviorBase {
         this.actionState = NPCActionState.PERFORMING_ACTION;
 
         // Calculate direction to target
-        const direction = new Vector3().copy(targetObject.position).sub(this.target.position);
+        const direction = this.scratchDirection.copy(targetObject.position).sub(this.target.position);
         direction.y = 0; // Keep on horizontal plane
         direction.normalize();
 
@@ -1278,8 +1294,7 @@ class AiNpcBehavior extends BehaviorBase {
 
         // Update physics rotation
         if (this.physics) {
-            this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-            this.physics.setRotation(this.target.uuid, this.currentRotation);
+            this.setPhysicsYaw(targetRotation);
         }
 
         EventBus.instance.send(IN_GAME_EVENTS.NPC_ACTION_STARTED, {
@@ -1310,11 +1325,11 @@ class AiNpcBehavior extends BehaviorBase {
             const objectId = parameters.objectId as string;
             console.log(`[AI NPC] Rotating to face object before waving: ${objectId}`);
 
-            const targetObject = this.gameManager?.scene?.getObjectByProperty("uuid", objectId);
+            const targetObject = this.getSceneObjectByUUID(objectId);
 
             if (targetObject && this.target) {
                 // Calculate direction to target
-                const direction = new Vector3().copy(targetObject.position).sub(this.target.position);
+                const direction = this.scratchDirection.copy(targetObject.position).sub(this.target.position);
                 direction.y = 0; // Keep on horizontal plane
                 direction.normalize();
 
@@ -1324,8 +1339,7 @@ class AiNpcBehavior extends BehaviorBase {
 
                 // Update physics rotation
                 if (this.physics) {
-                    this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-                    this.physics.setRotation(this.target.uuid, this.currentRotation);
+                    this.setPhysicsYaw(targetRotation);
                 }
             }
         }
@@ -1359,7 +1373,7 @@ class AiNpcBehavior extends BehaviorBase {
         console.log(`[AI NPC] Pointing at: ${targetId}`);
 
         // Find the target object
-        const target = this.gameManager?.scene?.getObjectByProperty("uuid", targetId);
+        const target = this.getSceneObjectByUUID(targetId);
 
         if (!target) {
             throw new Error(`Target not found: ${targetId}`);
@@ -1372,7 +1386,7 @@ class AiNpcBehavior extends BehaviorBase {
 
         // Rotate to face target
         if (this.target) {
-            const direction = new Vector3().copy(target.position).sub(this.target.position);
+            const direction = this.scratchDirection.copy(target.position).sub(this.target.position);
             direction.y = 0;
             direction.normalize();
 
@@ -1380,8 +1394,7 @@ class AiNpcBehavior extends BehaviorBase {
             this.target.rotation.y = targetRotation;
 
             if (this.physics) {
-                this.currentRotation.setFromAxisAngle(new Vector3(0, 1, 0), targetRotation);
-                this.physics.setRotation(this.target.uuid, this.currentRotation);
+                this.setPhysicsYaw(targetRotation);
             }
         }
 

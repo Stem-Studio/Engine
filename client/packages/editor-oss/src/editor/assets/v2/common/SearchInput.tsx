@@ -72,6 +72,15 @@ const Wrapper = styled.div<{
     }
      `};
     }
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        min-width: 44px;
+        min-height: 44px;
+
+        > input {
+            height: 44px;
+        }
+    }
 `;
 
 const IconWrapper = styled.div`

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {CSS3DObject, CSS3DSprite} from "three/examples/jsm/renderers/CSS3DRenderer.js";
+import {CSS3DObject, CSS3DSprite} from "three/addons/renderers/CSS3DRenderer.js";
 
 import {getAssetResolutionContext} from "@web-shared/asset-management/AssetResolutionContext";
 import {applyMaterialSettingsToObject} from "@stem/editor-oss/editor/assets/v2/materials/materialUtils";
@@ -43,16 +43,39 @@ const propertiesToOmit = [
     "modelViewMatrix",
 ];
 
-const copyProperties = ["position", "quaternion", "scale", "up"];
+const DEFAULT_OBJECT_3D = new THREE.Object3D();
+const propertiesToOmitSet = new Set(propertiesToOmit);
+const copyProperties = new Set(["position", "quaternion", "scale", "up"]);
+
+function hasEquals(value) {
+    return value && typeof value.equals === "function";
+}
+
+function isDefaultPropertyValue(obj, defaultObject, key) {
+    const value = obj[key];
+    const defaultValue = defaultObject[key];
+
+    if (value === defaultValue) {
+        return true;
+    }
+
+    if (hasEquals(value)) {
+        return value.equals(defaultValue);
+    }
+
+    return false;
+}
+
 class Object3DSerializer extends BaseSerializer {
     toJSON(obj, defaultObject) {
-        const object3D = defaultObject ? defaultObject : new THREE.Object3D();
+        const object3D = defaultObject ? defaultObject : DEFAULT_OBJECT_3D;
         const json = BaseSerializer.prototype.toJSON.call(this, obj);
 
-        properties.forEach(key => {
+        for (let i = 0; i < properties.length; i++) {
+            const key = properties[i];
             if (key === "parent" && obj.parent) {
                 json[key] = obj.parent.uuid;
-            } else if (JSON.stringify(obj[key]) === JSON.stringify(object3D[key])) {
+            } else if (isDefaultPropertyValue(obj, object3D, key)) {
                 delete json[key];
             } else if (key === "quaternion") {
                 json[key] = {x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w};
@@ -61,7 +84,7 @@ class Object3DSerializer extends BaseSerializer {
             } else {
                 json[key] = obj[key];
             }
-        });
+        }
 
         if (obj.element) {
             json.element = obj.element.outerHTML;
@@ -72,6 +95,10 @@ class Object3DSerializer extends BaseSerializer {
             delete json.userData?.helper;
             delete json.userData?.animation;
             delete json.userData?.isTemplateVariant;
+            if (json.userData?.planCad?.schema === "stem.planCad.v1") {
+                json.userData.planCad = {...json.userData.planCad};
+                delete json.userData.planCad.selectedNodeId;
+            }
             if (obj instanceof THREE.Camera) {
                 delete json.userData?.behaviors;
                 delete json.userData?.characterOptions;
@@ -111,10 +138,11 @@ class Object3DSerializer extends BaseSerializer {
 
         BaseSerializer.prototype.fromJSON.call(this, json, obj);
 
-        properties.forEach(key => {
-            if (propertiesToOmit.includes(key)) {
-                return;
-            } else if (copyProperties.includes(key) && json[key]) {
+        for (let i = 0; i < properties.length; i++) {
+            const key = properties[i];
+            if (propertiesToOmitSet.has(key)) {
+                continue;
+            } else if (copyProperties.has(key) && json[key]) {
                 obj[key].copy(json[key]);
             } else if (key === "rotation" && json[key]) {
                 obj[key].set(json[key].x, json[key].y, json[key].z, json[key].order);
@@ -123,7 +151,7 @@ class Object3DSerializer extends BaseSerializer {
             } else if ((key !== "uuid" || revertUuid) && json[key] !== undefined) {
                 obj[key] = json[key];
             }
-        });
+        }
 
         Object.assign(obj.userData, json.userData);
 

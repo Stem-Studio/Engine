@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 
 import {Row} from "./Limits.style";
-import {useAppGlobalContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import Ajax from "@stem/editor-oss/utils/Ajax";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";

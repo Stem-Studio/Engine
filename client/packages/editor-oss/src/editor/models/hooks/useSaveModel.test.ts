@@ -18,14 +18,14 @@ const hoisted = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("three/examples/jsm/exporters/GLTFExporter.js", () => ({
+vi.mock("three/addons/exporters/GLTFExporter.js", () => ({
     GLTFExporter: class {
         setTextureUtils = vi.fn();
         register = (...args: unknown[]) => hoisted.gltfExporterRegister(...args);
         parse = (...args: unknown[]) => hoisted.gltfExporterParse(...args);
     },
 }));
-vi.mock("three/examples/jsm/utils/WebGLTextureUtils.js", () => ({}));
+vi.mock("three/addons/utils/WebGLTextureUtils.js", () => ({}));
 vi.mock("toastywave", () => ({toast: {warn: vi.fn()}}));
 
 vi.mock("@stem/network/api/asset", () => ({

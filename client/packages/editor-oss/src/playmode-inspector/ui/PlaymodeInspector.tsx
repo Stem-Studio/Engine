@@ -10,6 +10,7 @@ import {usePopoutWindow} from "./usePopoutWindow";
 import global from "../../global";
 import {showToast} from "../../showToast";
 import {diffPlaymodeSnapshot, formatPlaymodeDiff} from "../playmodeSnapshot";
+import {findObjectByUuidDepthFirst} from "../../utils/SceneTraverser";
 
 const Z_INDEX = 14990;
 const POSITION_STORAGE_KEY = "playmodeInspector.position";
@@ -167,7 +168,7 @@ export const PlaymodeInspector: React.FC = () => {
 
     const selectedObject = useMemo<THREE.Object3D | null>(() => {
         if (!selectedUuid || !scene) return null;
-        return scene.getObjectByProperty("uuid", selectedUuid) ?? null;
+        return findObjectByUuidDepthFirst(scene, selectedUuid);
     }, [selectedUuid, scene]);
 
     const handleToggleFreeCamera = () => {

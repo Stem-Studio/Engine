@@ -1,6 +1,6 @@
 import type {QuaternionLike, Vector3Like} from "three";
 
-import {CollisionBehavior, CollisionShape, CommonData} from "./types";
+import {CollisionBehavior, CollisionShape, CommonData, ObjectMotionState} from "./types";
 
 export const SIMPLE_EVENTS = {
     ADD: {
@@ -88,12 +88,15 @@ export const PHYSICS_EVENTS = {
     RESUME: "physics:resume",
     PING: "physics:ping",
     PONG: "physics:pong",
+    DEBUG: {
+        ENABLE: "physics:debug:enable",
+        FRAME: "physics:debug:frame",
+    },
 
     ADD: {
         BODY: "physics:add:body",
         BOX: "physics:add:box",
         VEHICLE: "physics:add:vehicle",
-        MODEL: "physics:add:model",
         PLAYER: "physics:add:player",
         SPHERE: "physics:add:sphere",
         TERRAIN: "physics:add:terrain",
@@ -117,12 +120,15 @@ export const PHYSICS_EVENTS = {
     APPLY: {
         CENTRAL_IMPULSE: "physics:apply:central_impulse",
         IMPULSE_TO_RIGIDBODY: "physics:apply:impulse_to_rigidbody",
+        KICK_NEARBY_OBJECTS: "physics:apply:kick_nearby_objects",
     } as const,
 
     SET: {
+        SOLVER_ITERATIONS: "physics:set:solver_iterations",
         ORIGIN: "physics:set:origin",
         ROTATION: "physics:set:rotation",
         SCALE: "physics:set:scale",
+        SHAPE: "physics:set:shape",
         ANGULAR_VELOCITY: "physics:set:angular_velocity",
         LINEAR_VELOCITY: "physics:set:linear_velocity",
         COLLISION_BEHAVIOR: "physics:set:collision_behavior",
@@ -132,6 +138,7 @@ export const PHYSICS_EVENTS = {
 
     BODY: {
         UPDATE: "physics:body:update",
+        UPDATE_BATCH: "physics:body:update_batch",
     } as const,
 
     PLAYER: {
@@ -170,6 +177,13 @@ export const PHYSICS_EVENTS = {
     } as const,
 } as const;
 
+export interface PhysicsDebugFrameEvent {
+    event: typeof PHYSICS_EVENTS.DEBUG.FRAME;
+    vertices: Float32Array;
+    colors: Float32Array;
+    drawCount: number;
+}
+
 export interface BatchObjectUpdate {
     position: Vector3Like | null;
     quaternion: QuaternionLike | null;
@@ -179,6 +193,20 @@ export interface BatchObjectUpdate {
 export interface BatchUpdateEvent {
     event: typeof PHYSICS_EVENTS.BATCH.UPDATE;
     objects: Record<string, BatchObjectUpdate>;
+}
+
+export interface BodyUpdate {
+    uuid: string;
+    position: Vector3Like;
+    quaternion: QuaternionLike;
+    scale: Vector3Like;
+    motionState?: ObjectMotionState;
+    dt: number;
+}
+
+export interface BodyUpdateBatchEvent {
+    event: typeof PHYSICS_EVENTS.BODY.UPDATE_BATCH;
+    updates: BodyUpdate[];
 }
 
 export interface AddShapeEvent {

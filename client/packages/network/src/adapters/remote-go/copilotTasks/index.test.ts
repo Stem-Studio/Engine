@@ -25,10 +25,9 @@ describe("copilotTasks API", () => {
         vi.clearAllMocks();
     });
 
-    it("returns an empty list without a network call in OSS (no task service)", async () => {
-        // The suite runs under BUILD_MODE=oss, so listCopilotTasks short-
-        // circuits: OSS ships only the AI proxy and has no Copilot task
-        // service to query.
+    it("returns an empty list without a network call when no task service exists", async () => {
+        // The open-source adapter ships only the AI proxy and has no Copilot
+        // task service to query.
         const tasks = await listCopilotTasks({sceneID: "scene-1", sessionID: "session-1", status: "todo", limit: 5});
 
         expect(tasks).toEqual([]);

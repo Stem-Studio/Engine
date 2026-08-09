@@ -29,7 +29,13 @@ export interface PhysicsKernelInput {
     freezeRotationX: Uint8Array;
     freezeRotationY: Uint8Array;
     freezeRotationZ: Uint8Array;
-    visibilityMask: Float32Array | null;
+    visibilityMask: ArrayLike<number> | null;
+    dpx?: Float32Array;
+    dpy?: Float32Array;
+    dpz?: Float32Array;
+    drx?: Float32Array;
+    dry?: Float32Array;
+    drz?: Float32Array;
 }
 
 export interface PhysicsKernelOutput {
@@ -49,6 +55,14 @@ export interface PhysicsKernelOutput {
     drz: Float32Array;
 }
 
+function prepareOutputBuffer(buffer: Float32Array | undefined, count: number): Float32Array {
+    if (!buffer || buffer.length < count) {
+        return new Float32Array(count);
+    }
+    buffer.fill(0, 0, count);
+    return buffer;
+}
+
 /**
  * Run the fused physics simulation kernel.
  * @param input SoA field arrays and simulation parameters.
@@ -65,12 +79,12 @@ export function runPhysicsKernel(input: PhysicsKernelInput): PhysicsKernelOutput
         visibilityMask,
     } = input;
 
-    const dpx = new Float32Array(count);
-    const dpy = new Float32Array(count);
-    const dpz = new Float32Array(count);
-    const drx = new Float32Array(count);
-    const dry = new Float32Array(count);
-    const drz = new Float32Array(count);
+    const dpx = prepareOutputBuffer(input.dpx, count);
+    const dpy = prepareOutputBuffer(input.dpy, count);
+    const dpz = prepareOutputBuffer(input.dpz, count);
+    const drx = prepareOutputBuffer(input.drx, count);
+    const dry = prepareOutputBuffer(input.dry, count);
+    const drz = prepareOutputBuffer(input.drz, count);
 
     for (let i = 0; i < count; i++) {
         if (isKinematic[i]) continue;

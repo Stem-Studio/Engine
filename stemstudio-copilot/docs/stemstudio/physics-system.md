@@ -1,30 +1,26 @@
 # Physics System
 
-Ammo.js, Rapier3D, Jolt, and PhysX physics — body shapes, collision types, joints, and character controller.
+Ammo.js and Rapier3D physics — body shapes, collision types, joints, and character controller.
 
 > **Authoritative type source:** `stem-types.d.ts` (generated from `web/src/physics/common/types.ts` and `web/src/physics/common/events.ts`)
 
 ## Engines
 
-Four physics engines are available, selected via factory pattern. Engine choice is **scene-level** (`scene.userData.physics.engine`); all physics-enabled objects in a scene share the same engine instance.
+Two physics engines are available, selected via factory pattern. Engine choice is **scene-level** (`scene.userData.physics.engine`); all physics-enabled objects in a scene share the same engine instance.
 
 | Engine | `engine` value | Status | Notes |
 |--------|----------------|--------|-------|
 | **Ammo (Bullet)** | `"ammo"` | Default, most mature | Widest feature coverage (vehicles, character controller, joints) |
-| **Rapier** | `"rapier"` | Stable | **No vehicle support** — `addVehicleObject` is a runtime error on Rapier; otherwise a strong option for bodies + character controller + joints |
-| **Jolt** | `"jolt"` | New (PR #4538, 2026-04-09) | Fast; verify feature parity for the specific scene before committing |
-| **PhysX** | `"physx"` | New (PR #4538, 2026-04-09) | Verify feature parity before committing; heaviest WASM payload |
+| **Rapier** | `"rapier"` | Stable | Supports rigid bodies, vehicles, character controllers, and joints |
 
 ```typescript
 enum PhysicsEngineType {
   Ammo   = "ammo",
   Rapier = "rapier",
-  Jolt   = "jolt",
-  PhysX  = "physx",
 }
 ```
 
-Source: `web/src/physics/ammo/`, `web/src/physics/rapier/`, `web/src/physics/jolt/`, `web/src/physics/physx/`
+Source: `web/src/physics/ammo/`, `web/src/physics/rapier/`
 Factory: `web/src/physics/PhysicsEngineFactory.ts`
 
 Set the engine via the `set_physics_engine` command (alias `physics engine <type> [gravity=<n>]`) or the editor's Project Settings panel. Both write `scene.userData.physics.engine` and round-trip cleanly through scene export.
@@ -255,7 +251,7 @@ Source: `COLLISION_MATERIAL_TYPE` enum in `web/src/types/editor.ts` and `stem-ev
 
 ## IPhysics Interface (Complete API)
 
-The `IPhysics` interface is the core abstraction implemented by all four engines (Ammo.js, Rapier, Jolt, PhysX). All methods below are defined in `web/src/physics/common/types.ts` and mirrored in `stem-types.d.ts`. Engine-specific feature gaps (notably Rapier has no `addVehicleObject`) are flagged inline below.
+The `IPhysics` interface is the core abstraction implemented by both engines (Ammo.js and Rapier). All methods below are defined in `web/src/physics/common/types.ts` and mirrored in `stem-types.d.ts`.
 
 ### Engine Type Queries
 

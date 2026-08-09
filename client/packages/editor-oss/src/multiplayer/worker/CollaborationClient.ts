@@ -16,7 +16,11 @@ import type {LambdaConfig} from "@stem/editor-oss/lambdas/Lambda";
 import {SNAPSHOT_EVENTS, BEHAVIOR_EVENTS, ASSET_EVENTS, LAMBDA_EVENTS} from "@stem/editor-oss/physics/common/events";
 import {isPrefab, isPrefabUnlocked} from "@stem/editor-oss/prefab/util";
 import {queryClient} from "@web-shared/queryClient";
-import {NoDeserializeSerializers} from "@stem/editor-oss/serialization/Converter";
+import {NoDeserializeSerializers} from "@stem/editor-oss/core/noDeserializeSerializers";
+import {
+    findObjectByUuidDepthFirst,
+    traverseObjectDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
 import {Behavior, Script} from "../GameRoomState";
 
 const behaviorsToOmit = ["character", "csm", "terrain"];
@@ -167,7 +171,7 @@ export class CollaborationClient {
 
         if (obj.userData?.isBillboardContent) return;
 
-        if (this.engine.scene.getObjectByProperty("uuid", obj.uuid)) {
+        if (findObjectByUuidDepthFirst(this.engine.scene, obj.uuid)) {
             return;
         }
 
@@ -184,14 +188,14 @@ export class CollaborationClient {
     }
 
     private async processObjectAdd(obj: SnapshotObject): Promise<void> {
-        if (this.engine.scene.getObjectByProperty("uuid", obj.uuid)) {
+        if (findObjectByUuidDepthFirst(this.engine.scene, obj.uuid)) {
             return;
         }
 
         const sceneObject = await this.engine.editor?.deserializeObject(obj);
 
         if (sceneObject) {
-            const parent = this.engine.scene.getObjectByProperty("uuid", obj.parentUuid) || this.engine.scene;
+            const parent = findObjectByUuidDepthFirst(this.engine.scene, obj.parentUuid) || this.engine.scene;
             parent.add(sceneObject);
             await this.addObjectBehaviors(sceneObject, sceneObject.userData?.behaviors || []);
             this.attachEditorBehaviorPlugins(sceneObject);
@@ -223,7 +227,7 @@ export class CollaborationClient {
 
     // eslint-disable-next-line @typescript-eslint/require-await
     private async processObjectRemove(obj: SnapshotObject): Promise<void> {
-        const sceneObject = this.engine.scene.getObjectByProperty("uuid", obj.uuid);
+        const sceneObject = findObjectByUuidDepthFirst(this.engine.scene, obj.uuid);
         if (sceneObject) {
             this.removeObjectBehaviors(sceneObject, sceneObject.userData?.behaviors || []);
             this.detachEditorBehaviorPlugins(sceneObject);
@@ -277,11 +281,11 @@ export class CollaborationClient {
 
     private async processObjectUpdate(obj: SnapshotObject): Promise<void> {
         const isSelected = this.selectedObjectUUID === obj.uuid;
-        const oldObject = this.engine.scene.getObjectByProperty("uuid", obj.uuid) || null;
+        const oldObject = findObjectByUuidDepthFirst(this.engine.scene, obj.uuid);
 
         if (!oldObject) return;
 
-        const parent = this.engine.scene.getObjectByProperty("uuid", obj.parent) || this.engine.scene;
+        const parent = findObjectByUuidDepthFirst(this.engine.scene, obj.parent) || this.engine.scene;
         const index = oldObject.parent?.children.indexOf(oldObject) ?? -1;
 
         try {
@@ -525,7 +529,6 @@ export class CollaborationClient {
     }
 
     private addObject(object: Object3D): void {
-        //object = this.engine.scene.getObjectByProperty("uuid", object?.uuid) || object; // Ensure we have the latest reference
         if (!object?.uuid) return;
 
         const objArr = this.engine.editor?.serializeObject(object, !!object.userData?.Server);
@@ -542,7 +545,7 @@ export class CollaborationClient {
     private removeObject(object: Object3D): void {
         if (!object?.uuid) return;
 
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             if (child.userData?.Server || child.userData?.isRuntimeOnly) return;
             this.workerHandler?.postMessage({event: SNAPSHOT_EVENTS.REMOVE.OBJECT, uuid: child.uuid});
         });
@@ -574,7 +577,7 @@ export class CollaborationClient {
     private executeUpdateObject(object: Object3D): void {
         if (!object) return;
 
-        const sceneObj = this.engine.scene.getObjectByProperty("uuid", object?.uuid);
+        const sceneObj = findObjectByUuidDepthFirst(this.engine.scene, object?.uuid);
         if (sceneObj) {
             object.position.copy(sceneObj.position);
             object.quaternion?.copy(sceneObj.quaternion);
@@ -614,7 +617,7 @@ export class CollaborationClient {
 
     private executeSelectObject(object: Object3D | null): void {
         if (this.selectedObjectUUID && this.selectedObjectUUID !== object?.uuid) {
-            const prevSelected = this.engine.scene.getObjectByProperty("uuid", this.selectedObjectUUID) || null;
+            const prevSelected = findObjectByUuidDepthFirst(this.engine.scene, this.selectedObjectUUID);
             if (prevSelected) {
                 const prevSelectedBy = prevSelected.userData.selectedBy;
                 if (!prevSelectedBy || prevSelectedBy === this.engine.userId) {
@@ -742,37 +745,13 @@ export class CollaborationClient {
         let existingCount = 0;
         let updatedCount = 0;
 
-        // Collect UUIDs from room state
-        // const roomObjectUUIDs = new Set(objectsData.map((obj: any) => obj.uuid));
-
-        // Find objects in local scene that don't exist in room (should be removed)
-        /* const localObjectsToRemove: any[] = [];
-        this.engine.scene.traverse(sceneObj => {
-            if (sceneObj === this.engine.scene) return;
-            if (sceneObj.userData.Server || sceneObj.userData.isRuntimeOnly) return;
-
-            if (!roomObjectUUIDs.has(sceneObj.uuid)) {
-                localObjectsToRemove.push({uuid: sceneObj.uuid});
-            }
-        });*/
-
-        // Remove objects that don't exist in room
-        /*if (localObjectsToRemove.length > 0) {
-            console.warn(
-                `[CollaborationClient] Found ${localObjectsToRemove.length} objects to remove (not in room state)`,
-            );
-            localObjectsToRemove.forEach(obj => {
-                this.onSnapshotObjectRemove(obj);
-            });
-        }*/
-
         // Process objects from room state
         objectsData.forEach((roomObject: SnapshotObject) => {
             const generator = roomObject?.metadata?.generator;
             if (generator && NoDeserializeSerializers.includes(generator)) {
                 return; // Skip objects with non-deserializable serializers
             }
-            const sceneObject = this.engine.scene.getObjectByProperty("uuid", roomObject.uuid);
+            const sceneObject = findObjectByUuidDepthFirst(this.engine.scene, roomObject.uuid);
 
             if (!sceneObject) {
                 // Object missing in scene - add it
@@ -977,7 +956,7 @@ export class CollaborationClient {
     private clearLocksForUser(userId: string | undefined): void {
         if (!userId) return;
 
-        this.engine.scene.traverse(object => {
+        traverseObjectDepthFirst(this.engine.scene, object => {
             if (object.userData?.selectedBy === userId) {
                 delete object.userData.selectedBy;
                 this.engine.call("objectChanged", this, object);
@@ -998,23 +977,34 @@ export class CollaborationClient {
     }
 
     private updateSceneChildren(scene: Scene): SceneChild[] {
-        let children: SceneChild[] = [];
+        const children: SceneChild[] = [];
+        const objectStack: Object3D[] = [scene];
+        const childrenListStack: SceneChild[][] = [children];
 
-        const traverse = (obj: Object3D, childrenList: SceneChild[]) => {
-            if (obj.userData.Server === true || obj.userData.isRuntimeOnly) return;
-            if (obj.children && obj.userData?.type === undefined) {
-                obj.children.forEach(n => {
-                    let children1: SceneChild[] = [];
-                    childrenList.push({
-                        uuid: n.uuid,
-                        children: children1,
-                    });
-                    traverse(n, children1);
+        while (objectStack.length > 0) {
+            const obj = objectStack.pop()!;
+            const childrenList = childrenListStack.pop()!;
+            if (obj.userData.Server === true || obj.userData.isRuntimeOnly) continue;
+            if (!obj.children || obj.userData?.type !== undefined) continue;
+
+            const childTasks: Array<{object: Object3D; children: SceneChild[]}> = [];
+            for (let i = 0, l = obj.children.length; i < l; i++) {
+                const child = obj.children[i]!;
+                const childChildren: SceneChild[] = [];
+                childrenList.push({
+                    uuid: child.uuid,
+                    children: childChildren,
                 });
+                childTasks.push({object: child, children: childChildren});
             }
-        };
 
-        traverse(scene, children);
+            for (let i = childTasks.length - 1; i >= 0; i--) {
+                const task = childTasks[i]!;
+                objectStack.push(task.object);
+                childrenListStack.push(task.children);
+            }
+        }
+
         this.workerHandler?.postMessage({event: SNAPSHOT_EVENTS.UPDATE.SCENE_CHILDREN, uuid: scene.uuid, children});
         return children;
     }
@@ -1097,7 +1087,7 @@ export class CollaborationClient {
         }
 
         const objects: Object3D[] = [];
-        this.engine.scene.traverse(child => {
+        traverseObjectDepthFirst(this.engine.scene, child => {
             if (child !== this.engine.scene) {
                 objects.push(child);
             }

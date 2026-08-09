@@ -5,6 +5,7 @@ import FixedJointBehavior from "./FixedJointBehavior";
 
 const createGame = (scene: THREE.Scene) => ({
     scene,
+    getObjectByUUID: (uuid: string) => scene.getObjectByProperty("uuid", uuid) ?? null,
     physics: {
         addFixedJoint: vi.fn(),
         removeJoint: vi.fn(),

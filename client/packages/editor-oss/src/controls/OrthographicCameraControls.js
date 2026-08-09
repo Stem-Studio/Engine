@@ -5,8 +5,7 @@
  */
 
 
-import * as THREE from "three";
-
+import {Vector2} from "three";
 /**
  *
  *
@@ -20,7 +19,7 @@ class OrthographicCameraControls {
 
         this.enabled = false;
         this.isDown = false;
-        this.offsetXY = new THREE.Vector2();
+        this.offsetXY = new Vector2();
 
         this.onMouseDown = this.onMouseDown.bind(this);
         this.onMouseMove = this.onMouseMove.bind(this);

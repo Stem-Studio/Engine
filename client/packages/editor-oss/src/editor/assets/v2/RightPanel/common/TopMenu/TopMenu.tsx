@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import I18n from "i18next";
-import moment from "moment";
 import {useCallback, useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import styled from "styled-components";
@@ -25,10 +24,70 @@ import {Avatar} from "../../../Avatar/Avatar";
 import {UserMenu} from "../../../common/AppMenu/UserMenu";
 import {Section} from "../../../common/Section";
 import {StyledButton} from "../../../common/StyledButton";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {CreditsBar} from "../../../CreditsBar/CreditsBar";
 import {InGameButton} from "../../../HUD/HUDView/FloatingNav/FloatingNav.style";
 import {BorderedWrapper} from "../../RightPanel.style";
+
+const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", {numeric: "always"});
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const MONTH = 30 * DAY;
+const YEAR = 365 * DAY;
+
+const formatRelativeTime = (date: Date | string | number, baseDate: Date | string | number) => {
+    const timestamp = new Date(date).getTime();
+    const baseTimestamp = new Date(baseDate).getTime();
+
+    if (!Number.isFinite(timestamp) || !Number.isFinite(baseTimestamp)) {
+        return "";
+    }
+
+    const diff = timestamp - baseTimestamp;
+    const absDiff = Math.abs(diff);
+
+    if (absDiff < 45 * SECOND) {
+        return diff < 0 ? "a few seconds ago" : "in a few seconds";
+    }
+
+    if (absDiff < 90 * SECOND) {
+        return relativeTimeFormatter.format(Math.sign(diff), "minute");
+    }
+
+    if (absDiff < 45 * MINUTE) {
+        return relativeTimeFormatter.format(Math.round(diff / MINUTE), "minute");
+    }
+
+    if (absDiff < 90 * MINUTE) {
+        return relativeTimeFormatter.format(Math.sign(diff), "hour");
+    }
+
+    if (absDiff < 22 * HOUR) {
+        return relativeTimeFormatter.format(Math.round(diff / HOUR), "hour");
+    }
+
+    if (absDiff < 36 * HOUR) {
+        return relativeTimeFormatter.format(Math.sign(diff), "day");
+    }
+
+    if (absDiff < 26 * DAY) {
+        return relativeTimeFormatter.format(Math.round(diff / DAY), "day");
+    }
+
+    if (absDiff < 45 * DAY) {
+        return relativeTimeFormatter.format(Math.sign(diff), "month");
+    }
+
+    if (absDiff < 320 * DAY) {
+        return relativeTimeFormatter.format(Math.round(diff / MONTH), "month");
+    }
+
+    if (absDiff < 548 * DAY) {
+        return relativeTimeFormatter.format(Math.sign(diff), "year");
+    }
+
+    return relativeTimeFormatter.format(Math.round(diff / YEAR), "year");
+};
 
 type Props = {
     inGameUI?: boolean;
@@ -61,14 +120,7 @@ export const TopMenu = ({inGameUI}: Props) => {
     // access via the root-asset edit scope, even without scene collaboration.
     const hasStemEditGrant = stemEditorMode && !!app.assetToken;
     const [canSave, setCanSave] = useState(
-        !app.editor?.isReadOnly
-        // OSS treats every project as owned by the local user — there is
-        // no remote ownership, no public gallery, no clone-vs-save split.
-        && (IS_OSS
-            || app.editor?.projectUserId === dbUser?.id
-            || isAdmin
-            || isCollaborator
-            || hasStemEditGrant),
+        !app.editor?.isReadOnly,
     );
     const [refresher, setRefresher] = useState(false);
     const [lastSaveTime, setLastSaveTime] = useState("");
@@ -205,9 +257,8 @@ export const TopMenu = ({inGameUI}: Props) => {
 
     const formatLastSaveTime = () => {
         if (app?.editor?.scene.userData.lastSaveTime) {
-            const lastSaveTime = moment(app.editor.scene.userData.lastSaveTime);
             const serverTime = TimeUtils.getServerUTCTime();
-            const timeAgo = lastSaveTime.from(moment(serverTime));
+            const timeAgo = formatRelativeTime(app.editor.scene.userData.lastSaveTime, serverTime);
             setLastSaveTime(timeAgo);
         } else {
             console.debug("scene.userData.lastSaveTime is undefined");
@@ -221,15 +272,7 @@ export const TopMenu = ({inGameUI}: Props) => {
         const isReadOnly = !!app.editor?.isReadOnly;
         setCanSave(
             !isTemplate
-            && !isReadOnly
-            // OSS treats every project as owned by the local user — there is
-            // no remote ownership, so keep Save available (matches the
-            // initial canSave useState above).
-            && (IS_OSS
-                || app.editor?.projectUserId === dbUser?.id
-                || isAdmin
-                || isCollaborator
-                || hasStemEditGrant),
+            && !isReadOnly,
         );
         setIsCloneable(!!app.editor?.isCloneable || isTemplate);
     };
@@ -334,14 +377,7 @@ export const TopMenu = ({inGameUI}: Props) => {
     useEffect(() => {
         const isTemplate = isTemplateScene(app.editor?.sceneID);
         setCanSave(
-            !isTemplate &&
-                // OSS has no remote ownership — every local project is
-                // editable, so Save stays available (see line ~67).
-                (IS_OSS ||
-                    app.editor?.projectUserId === dbUser?.id ||
-                    isAdmin ||
-                    isCollaborator ||
-                    hasStemEditGrant),
+            !isTemplate,
         );
     }, [isAdmin, isCollaborator, hasStemEditGrant, app.editor, dbUser, refresher]);
 
@@ -468,71 +504,18 @@ export const TopMenu = ({inGameUI}: Props) => {
                             >
                                 Save
                             </InGameButton>
-                            <InGameButton
-                                onClick={() => setPublishPanelOpen(true)}
-                                $background="#FAFAFA"
-                                style={{color: "#27272A"}}
-                            >
-                                Publish
-                            </InGameButton>
                         </>
                     )
                 ) : (
-                    <InGameButton
-                        disabled={!isCloneable}
-                        onClick={handleCloneScene}
-                        $background="transparent"
-                    >
-                        Clone
-                    </InGameButton>
-                )}
-                {/* OSS has no account system or AI credits — the avatar /
-                    UserMenu ("Account Settings") and the credits balance are
-                    meaningless here. The DashboardHeader hides the same entry
-                    behind `!IS_OSS`; keep the editor TopMenu consistent.
-                    BYOK key management stays reachable via the Copilot panel. */}
-                {!IS_OSS && (
-                    <Section
-                        $gap="8px"
-                        $direction="row"
-                        $width="auto"
-                        $align="center"
-                    >
-                        <CreditsBar />
-                        <button
-                            onClick={isLoading ? undefined : handleOpenMenu}
-                            className="reset-css"
-                            ref={userMenuButtonRef}
-                        >
-                            <Avatar
-                                name={dbUser?.username || undefined}
-                                image={dbUser?.avatar || undefined}
-                                size={32}
-                            />
-                        </button>
-                    </Section>
+                    null
                 )}
                 {publishPanel}
-                {!IS_OSS && isMenuOpen && (
-                    <UserMenu
-                        close={handleCloseMenu}
-                        userMenuButtonRef={userMenuButtonRef}
-                        isLoading={isLoading}
-                    />
-                )}
             </>
         );
 
     return (
         <>
             {publishPanel}
-            {!IS_OSS && isMenuOpen && (
-                <UserMenu
-                    close={handleCloseMenu}
-                    userMenuButtonRef={userMenuButtonRef}
-                    isLoading={isLoading}
-                />
-            )}
             <BorderedWrapper
                 height="40px"
                 style={{gap: "8px", borderBottom: "none"}}
@@ -554,55 +537,9 @@ export const TopMenu = ({inGameUI}: Props) => {
                             >
                                 Save
                             </StyledButton>
-                            {!IS_OSS && (
-                                // OSS has no public gallery / cloud publish.
-                                <StyledButton
-                                    isGreySecondary
-                                    onClick={() => setPublishPanelOpen(true)}
-                                    width="66px"
-                                >
-                                    Publish
-                                </StyledButton>
-                            )}
                         </>
-                    ) : !IS_OSS ? (
-                        <StyledButton
-                            isGreySecondary
-                            disabled={!isCloneable}
-                            onClick={handleCloneScene}
-                            width="auto"
-                            style={{height: "24px", fontSize: "11px"}}
-                        >
-                            Clone Project
-                        </StyledButton>
                     ) : null}
                 </Section>
-                {/* OSS has no account system or AI credits — the avatar /
-                    UserMenu ("Account Settings") and the credits balance are
-                    meaningless here. The DashboardHeader hides the same entry
-                    behind `!IS_OSS`; keep the editor TopMenu consistent.
-                    BYOK key management stays reachable via the Copilot panel. */}
-                {!IS_OSS && (
-                    <Section
-                        $gap="8px"
-                        $direction="row"
-                        $width="auto"
-                        $align="center"
-                    >
-                        <CreditsBar />
-                        <button
-                            onClick={isLoading ? undefined : handleOpenMenu}
-                            className="reset-css"
-                            ref={userMenuButtonRef}
-                        >
-                            <Avatar
-                                name={dbUser?.username || undefined}
-                                image={dbUser?.avatar || undefined}
-                                size={32}
-                            />
-                        </button>
-                    </Section>
-                )}
             </BorderedWrapper>
         </>
     );

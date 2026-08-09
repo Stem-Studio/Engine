@@ -4697,6 +4697,12 @@ Type: npm (production)
 Repository: https://github.com/komagata/eastasianwidth
 --------------------------------------------------------------------------------
 
+Package: earcut@3.0.2
+License: ISC
+Type: npm (production)
+Repository: https://github.com/mapbox/earcut
+--------------------------------------------------------------------------------
+
 Package: easy-table@1.1.0
 License: MIT
 Type: npm (development)
@@ -5631,11 +5637,6 @@ Package: gradle-to-js@2.0.1
 License: Apache-2.0
 Type: npm (production)
 Repository: https://github.com/ninetwozero/gradle-to-js
---------------------------------------------------------------------------------
-
-Package: greenworks@0.1.0
-License: UNKNOWN
-Type: npm (production)
 --------------------------------------------------------------------------------
 
 Package: handlebars@4.7.8
@@ -7275,12 +7276,6 @@ Type: npm (production)
 Repository: https://github.com/sindresorhus/modify-values
 --------------------------------------------------------------------------------
 
-Package: moment@2.30.1
-License: MIT
-Type: npm (production)
-Repository: https://github.com/moment/moment
---------------------------------------------------------------------------------
-
 Package: monaco-editor@0.55.1
 License: MIT
 Type: npm (production)
@@ -7934,12 +7929,6 @@ Type: npm (development)
 Repository: https://github.com/jdxcode/password-prompt
 --------------------------------------------------------------------------------
 
-Package: patch-package@8.0.1
-License: MIT
-Type: npm (development)
-Repository: https://github.com/ds300/patch-package
---------------------------------------------------------------------------------
-
 Package: path-exists@3.0.0
 License: MIT
 Type: npm (production)
@@ -8423,12 +8412,6 @@ Package: react-is@18.2.0
 License: MIT
 Type: npm (production)
 Repository: https://github.com/facebook/react
---------------------------------------------------------------------------------
-
-Package: react-multi-carousel@2.8.6
-License: MIT
-Type: npm (production)
-Repository: https://github.com/YIZHUANG/react-multi-carousel
 --------------------------------------------------------------------------------
 
 Package: react-redux@9.2.0

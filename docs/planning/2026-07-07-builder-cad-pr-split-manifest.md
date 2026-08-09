@@ -2,13 +2,14 @@
 
 Prepared on 2026-07-07 from branch `tinyskies-playground-port`.
 
-This manifest turns the remaining branch-hygiene items from
-`2026-07-06-builder-cad-production-hardening.md` into concrete split buckets.
+This manifest turns the remaining branch-hygiene items from the
+[Builder/CAD production-hardening plan](./2026-07-06-builder-cad-production-hardening.md)
+into concrete split buckets.
 It does not claim the PRs exist yet. The review branches are published to
 `origin`, but `gh`/`hub` and GitHub API credentials are not installed in this
 environment, so opening the PR records still needs a GitHub-capable environment.
-The exact commands and compare URLs are recorded in
-`2026-07-07-builder-cad-pr-create-handoff.md`.
+The exact commands and compare URLs are recorded in the
+[PR creation handoff](./2026-07-07-builder-cad-pr-create-handoff.md).
 
 Local patch bundles were generated with:
 
@@ -180,7 +181,7 @@ only; the shared `ActionBar.tsx` and `package.json` hunks still need
 hunk-level assignment before this becomes the final review PR.
 
 Stacked review branch status: created as
-`builder-hardening/quick-build-stacked` at `cb4910b`, based on
+`builder-hardening/quick-build-stacked` at `3edc789`, based on
 `builder-hardening/behavior-packs-with-baseline`. This branch assigns the
 Quick Build shared hunks by adding a Quick-only ActionBar stage, shared
 ActionBar styles/icons, and Quick-stage package scripts.
@@ -246,7 +247,7 @@ the shared `ActionBar.tsx` hunks and the `TransformControlsEvent.js`
 owner decision still need review before this becomes the final review PR.
 
 Stacked review branch status: created as
-`builder-hardening/mesh-cad-stacked` at `f621ed5`, based on
+`builder-hardening/mesh-cad-stacked` at `6ec2bf3`, based on
 `builder-hardening/quick-build-stacked`. This branch assigns the Mesh CAD
 shared ActionBar hunks with a two-mode Quick/Mesh ActionBar and Mesh-only
 ActionBar tests.
@@ -315,7 +316,7 @@ the shared `ActionBar.tsx`, `package.json`, and `GameSettings.tsx` hunks still
 need hunk-level assignment before this becomes the final review PR.
 
 Stacked review branch status: created as
-`builder-hardening/bim-plan-stacked` at `1a108c8`, based on
+`builder-hardening/bim-plan-stacked` at `c110589`, based on
 `builder-hardening/mesh-cad-stacked`. This branch assigns the BIM/Plan
 ActionBar hunks, `test:e2e:plan-cad`, and the `StyledSwitch` accessibility/test
 hook needed by the Plan settings controls.

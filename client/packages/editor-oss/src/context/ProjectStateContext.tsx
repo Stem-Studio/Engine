@@ -1,8 +1,10 @@
 import React, {useCallback, useEffect, useMemo, useState} from "react";
+import type {Object3D} from "three";
 
 import global from "../global";
 import i18n from "../i18n/config";
 import {estimateSceneObjectBytes} from "../utils/estimateSceneObjectBytes";
+import {collectObjectSizeMap, deleteObjectSizesFromMap, writeObjectSizesToMap} from "./sceneSizeTracker";
 
 export interface ProjectStateContextValue {
     projectPhase: number;
@@ -46,14 +48,7 @@ const ProjectStateContextProvider: React.FC<ProjectStateContextProviderProps> = 
     const initializeSceneSize = useCallback(() => {
         if (!app?.scene || app.isPlaying) return;
 
-        const newSizeMap = new Map<string, number>();
-
-        app.scene.traverse(object => {
-            if (object.uuid && object !== app.scene) {
-                const objectSize = calculateObjectSize(object);
-                newSizeMap.set(object.uuid, objectSize);
-            }
-        });
+        const newSizeMap = collectObjectSizeMap(app.scene, calculateObjectSize, {includeRoot: false});
 
         setObjectSizeMap(newSizeMap);
     }, [calculateObjectSize]);
@@ -64,10 +59,7 @@ const ProjectStateContextProvider: React.FC<ProjectStateContextProviderProps> = 
 
             setObjectSizeMap(prev => {
                 const newMap = new Map(prev);
-                object.traverse((child: any) => {
-                    const objectSize = calculateObjectSize(child);
-                    newMap.set(child.uuid, objectSize);
-                });
+                writeObjectSizesToMap(newMap, object as Object3D, calculateObjectSize);
                 return newMap;
             });
         },
@@ -81,10 +73,7 @@ const ProjectStateContextProvider: React.FC<ProjectStateContextProviderProps> = 
             if (object.isObject3D) {
                 setObjectSizeMap(prev => {
                     const newMap = new Map(prev);
-                    object.traverse((child: any) => {
-                        const objectSize = calculateObjectSize(child);
-                        newMap.set(child.uuid, objectSize);
-                    });
+                    writeObjectSizesToMap(newMap, object as Object3D, calculateObjectSize);
                     return newMap;
                 });
             }
@@ -97,9 +86,7 @@ const ProjectStateContextProvider: React.FC<ProjectStateContextProviderProps> = 
 
         setObjectSizeMap(prev => {
             const newMap = new Map(prev);
-            object.traverse((child: any) => {
-                newMap.delete(child.uuid);
-            });
+            deleteObjectSizesFromMap(newMap, object as Object3D);
             return newMap;
         });
     }, [app]);

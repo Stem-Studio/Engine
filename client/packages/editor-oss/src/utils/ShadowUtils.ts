@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 import global from "../global";
 import { showToast, createClickableItems } from "@stem/editor-oss/showToast";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 type ShadowFogSettings = {
     userData?: {
@@ -29,7 +30,7 @@ type FogMaterial = THREE.Material & { fog?: boolean };
 export const checkShadowCastingLights = (scene: THREE.Scene, additionalLight?: THREE.Light): THREE.Light[] => {
     const shadowLights: THREE.Light[] = [];
 
-    scene.traverse((object) => {
+    traverseObjectDepthFirst(scene, (object) => {
         if (object instanceof THREE.Light && object.castShadow) {
             shadowLights.push(object);
         }
@@ -126,7 +127,7 @@ export const applyReceiveShadow = (obj: THREE.Object3D, value: boolean, saveStat
     };
 
     if (obj instanceof THREE.Group || obj instanceof THREE.Scene) {
-        obj.traverse(obj => _applyReceiveShadow(obj));
+        traverseObjectDepthFirst(obj, _applyReceiveShadow);
     } else {
         _applyReceiveShadow(obj);
     }
@@ -148,7 +149,7 @@ export const applyCastShadow = (obj: THREE.Object3D, value: boolean, saveState: 
     };
 
     if (obj instanceof THREE.Group || obj instanceof THREE.Scene) {
-        obj.traverse(obj => _applyCastShadow(obj));
+        traverseObjectDepthFirst(obj, _applyCastShadow);
     } else {
         _applyCastShadow(obj);
     }
@@ -173,7 +174,7 @@ export const applyReceiveFog = (obj: THREE.Object3D, value: boolean, saveState: 
     };
 
     if (obj instanceof THREE.Group || obj instanceof THREE.Scene) {
-        obj.traverse(target => _applyReceiveFog(target));
+        traverseObjectDepthFirst(obj, _applyReceiveFog);
     } else {
         _applyReceiveFog(obj);
     }
@@ -212,7 +213,7 @@ export const isReceiveFogEnabled = (obj: THREE.Object3D): boolean => {
 
     let fogEnabled = true;
     let foundMesh = false;
-    obj.traverse(target => {
+    traverseObjectDepthFirst(obj, target => {
         if (!foundMesh && target instanceof THREE.Mesh) {
             const material = (Array.isArray(target.material) ? target.material[0] : target.material) as FogMaterial;
             fogEnabled = material.fog ?? true;

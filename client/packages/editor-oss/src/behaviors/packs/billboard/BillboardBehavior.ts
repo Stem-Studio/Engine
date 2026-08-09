@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {CSS3DObject} from "three/examples/jsm/renderers/CSS3DRenderer.js";
+import {CSS3DObject} from "three/addons/renderers/CSS3DRenderer.js";
 
 import {BILLBOARD_TYPES} from "@stem/editor-oss/types/editor";
 import Billboard from "@stem/editor-oss/utils/Billboard";
@@ -12,6 +12,8 @@ class BillboardBehavior extends BehaviorBase {
     private v1: THREE.Vector3 = new THREE.Vector3();
     private v2: THREE.Vector3 = new THREE.Vector3();
     private v3: THREE.Vector3 = new THREE.Vector3();
+    private screenPosition: THREE.Vector2 = new THREE.Vector2();
+    private intersections: THREE.Intersection<THREE.Object3D>[] = [];
 
     init(gameManager: GameManager) {
         this.game = gameManager;
@@ -64,7 +66,7 @@ class BillboardBehavior extends BehaviorBase {
         const cameraPos = this.v2.setFromMatrixPosition(camera.matrixWorld);
         const deltaCamObj = objectPos.sub(cameraPos);
         const camDir = camera.getWorldDirection(this.v3);
-        return deltaCamObj.angleTo(camDir) > Math.PI / 2;
+        return deltaCamObj.dot(camDir) < 0;
     }
 
     private isObjectVisible(
@@ -74,16 +76,16 @@ class BillboardBehavior extends BehaviorBase {
         occlude: THREE.Object3D[],
     ): boolean {
         const elPos = this.v1.setFromMatrixPosition(el.matrixWorld);
-        const screenPos = elPos.clone();
-        screenPos.project(camera);
+        const screenPos = this.v2.copy(elPos).project(camera);
 
-        // @ts-expect-error - screenPos is a Vector3 used as a Vector2-like for setFromCamera
-        raycaster.setFromCamera(screenPos, camera);
-        const intersects = raycaster.intersectObjects(occlude, true);
-        if (intersects.length) {
-            const intersectionDistance = intersects[0]!.distance;
-            const pointDistance = elPos.distanceTo(raycaster.ray.origin);
-            return pointDistance < intersectionDistance;
+        this.screenPosition.set(screenPos.x, screenPos.y);
+        raycaster.setFromCamera(this.screenPosition, camera);
+        this.intersections.length = 0;
+        raycaster.intersectObjects(occlude, true, this.intersections);
+        if (this.intersections.length) {
+            const intersectionDistance = this.intersections[0]!.distance;
+            const pointDistanceSq = elPos.distanceToSquared(raycaster.ray.origin);
+            return pointDistanceSq < intersectionDistance * intersectionDistance;
         }
         return true;
     }

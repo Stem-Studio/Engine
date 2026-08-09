@@ -6,8 +6,6 @@ export type AOSettings = {
     kernelRadius: number;
     resolutionScale: number;
     thickness: number;
-    distanceExponent: number;
-    distanceFallOff: number;
     scale: number;
     samples: number;
 };
@@ -111,8 +109,6 @@ export const POST_PROCESSING_DEFAULTS: PostProcessingDefaults = {
         kernelRadius: 0.25,
         resolutionScale: 1.0,
         thickness: 1.0,
-        distanceExponent: 1.0,
-        distanceFallOff: 1.0,
         scale: 1.0,
         samples: 8,
     },

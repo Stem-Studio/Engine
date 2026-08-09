@@ -51,6 +51,8 @@ export const FUSED_PHYSICS_SCHEMA: ComponentFieldSchema[] = [
     { name: "freezeRotationZ", type: "u8", default: 0 },
 ];
 
+const FUSED_PHYSICS_SYNC_FIELDS = ["vx", "vy", "vz", "avx", "avy", "avz"] as const;
+
 export default class FusedPhysicsLambda extends SoALambdaBase {
     /** Minimum entity count before offloading to Web Worker */
     private static readonly WORKER_THRESHOLD = 128;
@@ -58,10 +60,30 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
     private worker: Worker | null = null;
     private workerBusy = false;
     private pendingResult: PhysicsWorkerResult | null = null;
+    private dpxScratch = new Float32Array(0);
+    private dpyScratch = new Float32Array(0);
+    private dpzScratch = new Float32Array(0);
+    private drxScratch = new Float32Array(0);
+    private dryScratch = new Float32Array(0);
+    private drzScratch = new Float32Array(0);
 
     constructor(id: string, options: LambdaOptions) {
         super(id, options, FUSED_PHYSICS_SCHEMA);
         this.tryInitWorker();
+    }
+
+    dispose(): void {
+        this.worker?.terminate();
+        this.worker = null;
+        this.workerBusy = false;
+        this.pendingResult = null;
+        this.dpxScratch = new Float32Array(0);
+        this.dpyScratch = new Float32Array(0);
+        this.dpzScratch = new Float32Array(0);
+        this.drxScratch = new Float32Array(0);
+        this.dryScratch = new Float32Array(0);
+        this.drzScratch = new Float32Array(0);
+        super.dispose();
     }
 
     private tryInitWorker(): void {
@@ -107,6 +129,7 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
     private runMainThread(deltaTime: number, gravity: number): void {
         const store = this.store;
         const count = store.count;
+        this.ensureDeltaScratchCapacity(count);
 
         const result = runPhysicsKernel({
             count,
@@ -131,12 +154,19 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
             freezeRotationX: store.getField("freezeRotationX") as Uint8Array,
             freezeRotationY: store.getField("freezeRotationY") as Uint8Array,
             freezeRotationZ: store.getField("freezeRotationZ") as Uint8Array,
-            visibilityMask: this._visibilityMask as Float32Array | null,
+            visibilityMask: this._visibilityMask,
+            dpx: this.dpxScratch,
+            dpy: this.dpyScratch,
+            dpz: this.dpzScratch,
+            drx: this.drxScratch,
+            dry: this.dryScratch,
+            drz: this.drzScratch,
         });
 
         // Apply position/rotation deltas to Object3D
+        const objects = store.getObjectRefs();
         for (let i = 0; i < count; i++) {
-            const obj = store.getObject(i);
+            const obj = objects[i];
             if (!obj) continue;
             obj.position.x += result.dpx[i]!;
             obj.position.y += result.dpy[i]!;
@@ -147,7 +177,21 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
             obj.updateMatrix();
         }
 
-        this.syncSoAToMap(["vx", "vy", "vz", "avx", "avy", "avz"]);
+        this.syncSoAToMap(FUSED_PHYSICS_SYNC_FIELDS);
+    }
+
+    private ensureDeltaScratchCapacity(count: number): void {
+        if (this.dpxScratch.length >= count) {
+            return;
+        }
+
+        const nextCapacity = Math.max(count, this.dpxScratch.length * 2 || 64);
+        this.dpxScratch = new Float32Array(nextCapacity);
+        this.dpyScratch = new Float32Array(nextCapacity);
+        this.dpzScratch = new Float32Array(nextCapacity);
+        this.drxScratch = new Float32Array(nextCapacity);
+        this.dryScratch = new Float32Array(nextCapacity);
+        this.drzScratch = new Float32Array(nextCapacity);
     }
 
     private dispatchToWorker(deltaTime: number, gravity: number): void {
@@ -163,7 +207,7 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
         };
 
         const visMask = this._visibilityMask;
-        const visBuffer = visMask ? new Float32Array(visMask.subarray(0, count)).buffer : null;
+        const visBuffer = visMask ? new Uint8Array(visMask.subarray(0, count)).buffer : null;
 
         const msg = {
             type: "run" as const,
@@ -236,8 +280,9 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
         const dry = new Float32Array(result.dry);
         const drz = new Float32Array(result.drz);
 
+        const objects = store.getObjectRefs();
         for (let i = 0; i < count; i++) {
-            const obj = store.getObject(i);
+            const obj = objects[i];
             if (!obj) continue;
             obj.position.x += dpx[i]!;
             obj.position.y += dpy[i]!;
@@ -248,84 +293,7 @@ export default class FusedPhysicsLambda extends SoALambdaBase {
             obj.updateMatrix();
         }
 
-        this.syncSoAToMap(["vx", "vy", "vz", "avx", "avy", "avz"]);
+        this.syncSoAToMap(FUSED_PHYSICS_SYNC_FIELDS);
     }
 
-    /**
-     * Sliced version: yields every SLICE_SIZE entities for time-sliced execution
-     * @param deltaTime
-     */
-    protected *updateSoASliced(deltaTime: number): Generator {
-        const store = this.store;
-        const count = store.count;
-        if (count === 0) return;
-
-        const SLICE = 64;
-        const gravity = this.attributes.gravity ?? this.attributes.gravityStrength ?? 9.81;
-
-        const vx = store.getField("vx") as Float32Array;
-        const vy = store.getField("vy") as Float32Array;
-        const vz = store.getField("vz") as Float32Array;
-        const avx = store.getField("avx") as Float32Array;
-        const avy = store.getField("avy") as Float32Array;
-        const avz = store.getField("avz") as Float32Array;
-        const dragArr = store.getField("drag") as Float32Array;
-        const angularDrag = store.getField("angularDrag") as Float32Array;
-        const gravityScale = store.getField("gravityScale") as Float32Array;
-        const dampingArr = store.getField("damping") as Float32Array;
-        const maxSpeedArr = store.getField("maxSpeed") as Float32Array;
-        const useGravity = store.getField("useGravity") as Uint8Array;
-        const isKinematic = store.getField("isKinematic") as Uint8Array;
-        const freezePX = store.getField("freezePositionX") as Uint8Array;
-        const freezePY = store.getField("freezePositionY") as Uint8Array;
-        const freezePZ = store.getField("freezePositionZ") as Uint8Array;
-        const freezeRX = store.getField("freezeRotationX") as Uint8Array;
-        const freezeRY = store.getField("freezeRotationY") as Uint8Array;
-        const freezeRZ = store.getField("freezeRotationZ") as Uint8Array;
-
-        for (let i = 0; i < count; i++) {
-            if (isKinematic[i]) continue;
-
-            const multiplier = this._visibilityMask?.[i] ?? 1;
-            if (multiplier === 0) continue;
-            const effectiveDt = deltaTime * multiplier;
-
-            let cvx = vx[i]!;
-            let cvy = vy[i]!;
-            let cvz = vz[i]!;
-
-            if (useGravity[i]) cvy -= gravity * gravityScale[i]! * effectiveDt;
-
-            const d = dragArr[i]!;
-            if (d > 0) { const f = 1 - d; cvx *= f; cvy *= f; cvz *= f; }
-
-            const ad = angularDrag[i]!;
-            if (ad > 0) { const f = 1 - ad; avx[i]! *= f; avy[i]! *= f; avz[i]! *= f; }
-
-            const ms = maxSpeedArr[i]!;
-            const speed = Math.sqrt(cvx * cvx + cvy * cvy + cvz * cvz);
-            if (speed > ms && speed > 0) { const s = ms / speed; cvx *= s; cvy *= s; cvz *= s; }
-
-            const damp = dampingArr[i]!;
-            if (damp > 0) { const f = 1 - damp; cvx *= f; cvy *= f; cvz *= f; }
-
-            vx[i] = cvx; vy[i] = cvy; vz[i] = cvz;
-
-            const obj = store.getObject(i);
-            if (obj) {
-                if (!freezePX[i]) obj.position.x += cvx * effectiveDt;
-                if (!freezePY[i]) obj.position.y += cvy * effectiveDt;
-                if (!freezePZ[i]) obj.position.z += cvz * effectiveDt;
-                if (!freezeRX[i]) obj.rotation.x += avx[i]! * effectiveDt;
-                if (!freezeRY[i]) obj.rotation.y += avy[i]! * effectiveDt;
-                if (!freezeRZ[i]) obj.rotation.z += avz[i]! * effectiveDt;
-                obj.updateMatrix();
-            }
-
-            // Yield between slices to let TimeSliceRunner check budget
-            if ((i + 1) % SLICE === 0) yield;
-        }
-
-        this.syncSoAToMap(["vx", "vy", "vz", "avx", "avy", "avz"]);
-    }
 }

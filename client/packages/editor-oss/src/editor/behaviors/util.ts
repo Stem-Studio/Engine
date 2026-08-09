@@ -2,7 +2,12 @@ import {getModifiedAttributeKeys} from "./attributeDiff";
 import {BehaviorConfig} from "./BehaviorConfig";
 import BehaviorObjectSettingsApplier from "./BehaviorObjectSettingsApplier";
 import {AssetType, isConflictError, isNoChangesError} from "@stem/network/api/asset";
-import {getAssetResolutionContext, removeAssetRevision, setAssetRevision} from "@stem/editor-oss/asset-management/AssetResolutionContext";
+import {
+    getAssetResolutionContext,
+    removeAssetRevision,
+    setAssetRevision,
+    type ReadonlyAssetResolutionContext,
+} from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import BehaviorData from "../../behaviors/BehaviorData";
 import global from "@stem/editor-oss/global";
 import {isPrefab, isPrefabUnlocked} from "@stem/editor-oss/prefab/util";
@@ -11,8 +16,9 @@ import {seedScriptDependencyEntry} from "../../script-runtime/scriptDependencyCa
 import {
     buildNameAwareScriptImportContext,
     getScriptImportDependencyMap,
-    loadScriptImportRevisionMap,
-} from "../../script-runtime/scriptImports";
+    loadReferencedScriptImportRevisionMap,
+    type ScriptImportRevisionMap,
+} from "../../script-runtime/scriptImportCore";
 import {traverseSceneDepthFirst} from "@stem/editor-oss/utils/SceneUtil";
 import type {AssetSource} from "../asset-management/AssetSource";
 import {createAsset, createAssetRevision, getAsset, seedAssetRevisionData} from "../asset-management/hooks/assets";
@@ -103,6 +109,8 @@ export interface UpdateBehaviorRegistriesParams {
     config: BehaviorConfig;
     /** Also register under this alias ID (e.g. YAML config.id for imports) */
     aliasId?: string;
+    /** Skip immediate script parsing when the caller will parse with a resolved import map. */
+    skipParse?: boolean;
     /** When provided and different from behaviorId, the previous id is
      * unregistered before registering behaviorId. Used for fork-on-edit when
      * an asset id changes. */
@@ -125,6 +133,7 @@ export const updateBehaviorRegistries = ({
     code,
     config,
     aliasId,
+    skipParse,
     previousBehaviorId,
 }: UpdateBehaviorRegistriesParams) => {
     const editor = global.app?.editor;
@@ -163,7 +172,7 @@ export const updateBehaviorRegistries = ({
         behaviorScriptRegistry?.registerScript(aliasId, code);
     }
 
-    if (code && editor) {
+    if (code && editor && !skipParse) {
         void editor.parseAndRegisterScriptBehavior(behaviorId, code);
     }
 };
@@ -175,6 +184,12 @@ export interface UpdateSceneBehaviorRevisionParams {
     config: BehaviorConfig;
     /** Register under this alias ID in addition to assetId (e.g. YAML config.id for imports) */
     aliasId?: string;
+    /** Defer the expensive scene config sync/objectChanged event to a caller-managed batch flush. */
+    deferSceneSync?: boolean;
+    /** Precomputed script import context for batch imports. Avoids per-behavior scene script scans. */
+    scriptImportContext?: ReadonlyAssetResolutionContext;
+    /** Shared batch cache of fetched script import revision sources. */
+    scriptImportRevisionMap?: ScriptImportRevisionMap;
     /** When set and different from assetId, swap behavior instances from
      * assetId to this new id. Used by fork-on-edit when the user starts
      * editing a behavior they don't own and we transparently fork it. */
@@ -203,6 +218,9 @@ export const updateSceneBehaviorRevision = async ({
     code,
     config,
     aliasId,
+    deferSceneSync,
+    scriptImportContext,
+    scriptImportRevisionMap,
     newAssetId,
 }: UpdateSceneBehaviorRevisionParams) => {
     const app = global.app;
@@ -223,7 +241,7 @@ export const updateSceneBehaviorRevision = async ({
     // dependencies under the new asset id because the saved revision belongs
     // to the fork.
     const sceneContext = getAssetResolutionContext(scene) || undefined;
-    const importContext = await buildNameAwareScriptImportContext(editor.sceneID, sceneContext);
+    const importContext = scriptImportContext ?? await buildNameAwareScriptImportContext(editor.sceneID, sceneContext);
     const dependencies = getScriptImportDependencyMap(code, importContext);
     seedScriptDependencyEntry({
         assetId: effectiveAssetId,
@@ -231,12 +249,20 @@ export const updateSceneBehaviorRevision = async ({
         ownerType: "behavior",
         dependencies,
     });
-    const importRevisionMap = await loadScriptImportRevisionMap(code, importContext);
+    const importRevisionMap = await loadReferencedScriptImportRevisionMap(
+        code,
+        importContext,
+        scriptImportRevisionMap,
+    );
+    if (scriptImportRevisionMap) {
+        Object.assign(scriptImportRevisionMap, importRevisionMap);
+    }
     updateBehaviorRegistries({
         behaviorId: effectiveAssetId,
         code,
         config,
         aliasId,
+        skipParse: true,
         previousBehaviorId: isAssetIdChange ? assetId : undefined,
     });
 
@@ -251,10 +277,13 @@ export const updateSceneBehaviorRevision = async ({
     // 3. Swap existing behavior instances in the scene
     swapExistingBehaviors(assetId, editor, modifiedAttributeKeys, isAssetIdChange ? effectiveAssetId : undefined);
 
-    // 4. Sync and fire events
-    editor.syncSceneBehaviorConfigs();
-    app.call("objectChanged", null, scene);
-    await editor.parseAndRegisterScriptBehavior(effectiveAssetId, code, importContext, importRevisionMap);
+    // 4. Sync and fire events. Batch imports can register many behaviors in a
+    // row; callers may defer this to one final flush after the import batch.
+    if (!deferSceneSync) {
+        editor.syncSceneBehaviorConfigs();
+        app.call("objectChanged", null, scene);
+    }
+    await editor.parseAndRegisterScriptBehavior(effectiveAssetId, code, importContext, importRevisionMap, {contextIsNameAware: true});
 };
 
 export interface CreateBehaviorParams {
@@ -265,6 +294,12 @@ export interface CreateBehaviorParams {
     description?: string;
     /** Register under this alias ID in addition to the new asset ID */
     aliasId?: string;
+    /** Defer scene config sync/objectChanged to a caller-managed batch flush. */
+    deferSceneSync?: boolean;
+    /** Precomputed script import context for batch imports. */
+    scriptImportContext?: ReadonlyAssetResolutionContext;
+    /** Shared batch cache of fetched script import revision sources. */
+    scriptImportRevisionMap?: ScriptImportRevisionMap;
 }
 
 /**
@@ -287,13 +322,17 @@ export const createBehavior = async ({
     config,
     description,
     aliasId,
+    deferSceneSync,
+    scriptImportContext,
+    scriptImportRevisionMap,
 }: CreateBehaviorParams) => {
     const sceneContext = global.app?.scene ? getAssetResolutionContext(global.app.scene) || undefined : undefined;
-    const importContext = await buildNameAwareScriptImportContext(global.app?.editor?.sceneID, sceneContext);
+    const importContext = scriptImportContext ?? await buildNameAwareScriptImportContext(global.app?.editor?.sceneID, sceneContext);
     const dependencies = getScriptImportDependencyMap(code, importContext);
     const asset = await createAsset({
         type: AssetType.Behavior,
         assetSource,
+        deferAssetSourceSceneSync: deferSceneSync,
         name,
         data: JSON.stringify({config: JSON.stringify(config), code}),
         format: "json",
@@ -322,6 +361,9 @@ export const createBehavior = async ({
             code,
             config,
             aliasId,
+            deferSceneSync,
+            scriptImportContext: importContext,
+            scriptImportRevisionMap,
         });
     }
 
@@ -337,6 +379,12 @@ export interface CreateBehaviorRevisionParams {
     assetSource?: AssetSource;
     /** Register under this alias ID in addition to the asset ID */
     aliasId?: string;
+    /** Defer scene config sync/objectChanged to a caller-managed batch flush. */
+    deferSceneSync?: boolean;
+    /** Precomputed script import context for batch imports. */
+    scriptImportContext?: ReadonlyAssetResolutionContext;
+    /** Shared batch cache of fetched script import revision sources. */
+    scriptImportRevisionMap?: ScriptImportRevisionMap;
     /**
      * If true, retry once with a fresh parent revision on 409 Conflict. Only safe
      * for automated callers (copilot, import) that don't need merge resolution.
@@ -370,15 +418,18 @@ export const createBehaviorRevision = async ({
     config,
     assetSource,
     aliasId,
+    deferSceneSync,
+    scriptImportContext,
+    scriptImportRevisionMap,
     retryOnConflict,
 }: CreateBehaviorRevisionParams): Promise<{id: string}> => {
     const configStr = JSON.stringify(config);
     const data = JSON.stringify({config: configStr, code});
     const sceneContext = global.app?.scene ? getAssetResolutionContext(global.app.scene) || undefined : undefined;
-    const importContext = await buildNameAwareScriptImportContext(global.app?.editor?.sceneID, sceneContext);
+    const importContext = scriptImportContext ?? await buildNameAwareScriptImportContext(global.app?.editor?.sceneID, sceneContext);
     const dependencies = getScriptImportDependencyMap(code, importContext);
 
-    const applyScene = (revisionId: string) => {
+    const applyScene = async (revisionId: string) => {
         seedAssetRevisionData(queryClient, assetId, revisionId, "json", {config: configStr, code});
         seedScriptDependencyEntry({
             assetId,
@@ -387,7 +438,16 @@ export const createBehaviorRevision = async ({
             dependencies,
         });
         if (assetSource) {
-            void updateSceneBehaviorRevision({assetId, revisionId, code, config, aliasId});
+            await updateSceneBehaviorRevision({
+                assetId,
+                revisionId,
+                code,
+                config,
+                aliasId,
+                deferSceneSync,
+                scriptImportContext: importContext,
+                scriptImportRevisionMap,
+            });
         }
     };
 
@@ -408,7 +468,7 @@ export const createBehaviorRevision = async ({
                 contentType: "application/json",
                 options: {dependencies},
         });
-        applyScene(revision.id);
+        await applyScene(revision.id);
         return revision;
     } catch (err: unknown) {
         // No changes: server rejected because data matches current head.
@@ -420,7 +480,7 @@ export const createBehaviorRevision = async ({
                 assetId,
                 parentRevisionId,
             });
-            applyScene(parentRevisionId);
+            await applyScene(parentRevisionId);
             return {id: parentRevisionId};
         }
         // Stale parent: retry once with fresh head, if caller opted in
@@ -434,7 +494,7 @@ export const createBehaviorRevision = async ({
                 contentType: "application/json",
                 options: {dependencies},
             });
-            applyScene(revision.id);
+            await applyScene(revision.id);
             return revision;
         }
         throw err;

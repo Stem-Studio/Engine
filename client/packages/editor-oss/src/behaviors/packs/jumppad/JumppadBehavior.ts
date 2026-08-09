@@ -22,6 +22,11 @@ class JumppadBehavior extends BehaviorBase {
     private listenerId?: string;
     private lastActivationTime: number = 0;
     private readonly COOLDOWN_MS: number = 500;
+    private readonly impulse = new THREE.Vector3();
+    private readonly angleAxis = new THREE.Vector3(0, 0, 1);
+    private readonly movementDirection = new THREE.Vector3();
+    private readonly padForward = new THREE.Vector3();
+    private readonly crossDirection = new THREE.Vector3();
 
     init(game: GameManager) {
         this.game = game;
@@ -68,13 +73,12 @@ class JumppadBehavior extends BehaviorBase {
         }
 
         const radians = angle * Math.PI / 180;
-        const impulse = new THREE.Vector3(0, 1, 0);
-        impulse.applyAxisAngle(new THREE.Vector3(0, 0, 1), radians);
+        const impulse = this.impulse.set(0, 1, 0);
+        impulse.applyAxisAngle(this.angleAxis, radians);
         impulse.multiplyScalar(strength);
 
         // rotate impulse to match object rotation
-        const quaternion = this.target.quaternion.clone();
-        impulse.applyQuaternion(quaternion);
+        impulse.applyQuaternion(this.target.quaternion);
 
         // Apply impulse to the object that actually triggered this collision.
         this.physics?.applyImpulseToPlayer(object.uuid, impulse);
@@ -126,17 +130,17 @@ class JumppadBehavior extends BehaviorBase {
                 if (motionState && this.target) {
                     const velocity = motionState.linearVelocity;
                     // Calculate movement direction in world space
-                    const moveDir = new THREE.Vector3(velocity.x, 0, velocity.z);
+                    const moveDir = this.movementDirection.set(velocity.x, 0, velocity.z);
                     if (moveDir.lengthSq() > 0.01) {
                         moveDir.normalize();
                         // Get jump pad's forward direction
-                        const padForward = new THREE.Vector3(0, 0, 1);
+                        const padForward = this.padForward.set(0, 0, 1);
                         padForward.applyQuaternion(this.target.quaternion);
                         padForward.y = 0;
                         padForward.normalize();
                         // Calculate angle between movement and pad forward
                         const dot = moveDir.dot(padForward);
-                        const cross = moveDir.clone().cross(padForward);
+                        const cross = this.crossDirection.copy(moveDir).cross(padForward);
                         const signedAngle = Math.atan2(cross.y, dot) * (180 / Math.PI);
                         // Clamp to allowed range
                         return MathUtils.clamp(signedAngle, minAngle, maxAngle);

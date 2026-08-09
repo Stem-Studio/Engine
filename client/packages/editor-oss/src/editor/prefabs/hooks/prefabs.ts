@@ -1,5 +1,4 @@
-import {Object3D, Scene} from "three";
-import {Vector3Like} from "three/webgpu";
+import {Object3D, Scene, type Vector3Like} from "three";
 
 import {AssetType, forkAsset, getAsset} from "@stem/network/api/asset";
 import {saveScene} from "@stem/network/api/scene";
@@ -32,6 +31,7 @@ import Converter from "@stem/editor-oss/utils/Converter";
 import {ElementsUtils} from "@stem/editor-oss/utils/ElementsUtils";
 import MeshUtils from "@stem/editor-oss/utils/MeshUtils";
 import {ModelUtils} from "@stem/editor-oss/utils/ModelUtils";
+import {retainObjectGpuResources} from "@stem/editor-oss/core/resources/GpuResourceOwnership";
 import {cloneObject} from "@stem/editor-oss/utils/ObjectUtils";
 import {getScene, traverseSceneDepthFirst} from "@stem/editor-oss/utils/SceneUtil";
 import {generateUniqueName, getObjectNamesInScene} from "../../../v2/pages/services";
@@ -616,6 +616,7 @@ export const useUpdatePrefabInstances = () => {
         // swapping asset references on fork-on-edit.
         const loadId = newPrefabId ?? prefabId;
         const prefab = await loadPrefab(loadId, context);
+        retainObjectGpuResources(prefab);
 
         const excludeSet = new Set(options.excludeUuids ?? []);
         const instances: Object3D[] = [];
@@ -638,7 +639,13 @@ export const useUpdatePrefabInstances = () => {
 
         for (const instance of instances) {
             const newInstance = cloneObject(prefab);
-            await replacePrefabInstance(instance, newInstance);
+            retainObjectGpuResources(newInstance);
+            try {
+                await replacePrefabInstance(instance, newInstance);
+            } catch (error) {
+                MeshUtils.dispose(newInstance);
+                throw error;
+            }
         }
 
         MeshUtils.dispose(prefab);

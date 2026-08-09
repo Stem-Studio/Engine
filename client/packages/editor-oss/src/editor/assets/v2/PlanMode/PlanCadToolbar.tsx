@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -28,12 +29,15 @@ import {
   createPlanCadPolygonZone,
   createPlanCadWall,
   findPlanCadNodeObject,
+  findPlanCadNodeObjectById,
   getOrCreatePlanCadSceneData,
+  getPlanCadPartCatalogs,
+  getPlanCadPartPresets,
   getPlanCadSceneData,
-  PLAN_CAD_PART_CATALOGS,
-  PLAN_CAD_PART_PRESETS,
   planCadDataToState,
   planCadStateToData,
+  refreshPascalPlanCadPartCatalogs,
+  setPlanCadSceneSelection,
   syncPlanCadScene,
 } from "./planCadEditorBridge";
 import type {
@@ -43,10 +47,15 @@ import type {
 } from "./planCadEditorBridge";
 import {
   getPlanCadOpeningPlacement,
+  getPlanCadToolMeasurement,
   planPointDistanceSq,
   snapPlanPointToGuides,
 } from "./planCadGuides";
-import type { PlanCadOpeningPlacement, PlanCadSnapResult } from "./planCadGuides";
+import type {
+  PlanCadMeasurement,
+  PlanCadOpeningPlacement,
+  PlanCadSnapResult,
+} from "./planCadGuides";
 import { createPlanNode } from "./planCadCore";
 import type { PlanDisplayMode, PlanLevelNode } from "./planCadCore";
 import {
@@ -79,12 +88,18 @@ import {
 } from "../common/builderToolbar";
 import { Tooltip } from "../common/Tooltip";
 import {
+  containsPlanCadSelectionMetadata,
+  hasPlanCadSelectionMetadata,
+} from "@stem/editor-oss/utils/PlanCadSelectionMetadata";
+import {
+  getUnitsSettings,
   getSnappingSettings,
 } from "../RightPanel/panels/ProjectSettings/constants";
 import { isInputActive } from "../utils/isInputActive";
 import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
 import { getLogger } from "@stem/editor-oss/utils/Logger";
+import { traverseObjectDepthFirst } from "@stem/editor-oss/utils/SceneTraverser";
 
 interface PlanCadToolbarProps {
   pinnedCodeEditorWidth?: number;
@@ -122,6 +137,7 @@ type PlanCadRuntimeEditor = Partial<EngineRuntime["editor"]> & {
   orthCamera?: THREE.Camera | null;
   mouseAuxPosition?: PointerLike | null;
   gpuPickNum?: number;
+  selected?: THREE.Object3D | THREE.Object3D[] | null;
   computeIntersectPoint?: (
     pointer: PointerLike,
     sceneHelpers?: THREE.Object3D,
@@ -202,13 +218,6 @@ function isPlanPlanePlacementTool(tool: PlanCadToolId) {
   return isPlanStructureTool(tool) || tool === "part";
 }
 
-function requestStructureTopDownView(app: EngineRuntime | undefined, tool: PlanCadToolId) {
-  if (!app || !isPlanStructureTool(tool)) return;
-  const editor = asPlanCadRuntime(app).editor;
-  if (editor?.view === "top") return;
-  app.call?.("changeView", editor, "top");
-}
-
 const PLAN_CAD_PRIMARY_TOOLS = PLAN_CAD_TOOLS.filter(
   (tool) => tool.id === "select",
 );
@@ -245,7 +254,6 @@ const PLAN_CAD_SHORTCUTS: Record<string, PlanCadToolId> = {
   "6": "part",
 };
 
-const PLAN_CAD_HINT_STORAGE_KEY = "stem:planCadHintDismissed";
 const PLAN_DISPLAY_MODES: PlanDisplayMode[] = [
   "stacked",
   "exploded",
@@ -327,6 +335,17 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function consumePlanCadKeyboardEvent(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+}
+
+function preventPlanCadKeyboardDefault(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 function getQuickSnapIncrement(app: EngineRuntime | PlanCadRuntime): number {
   const grid = getSnappingSettings(asPlanCadRuntime(app).editor?.scene).grid;
   const increment = Number(grid?.enabled ? grid.increment : 0.25);
@@ -343,12 +362,7 @@ function toPlanPoint(point: THREE.Vector3, increment: number) {
 function isPlanCadDebugEnabled() {
   const app = getPlanCadRuntime();
   if (app?.editor?.scene?.userData?.planCadDebug === true) return true;
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage?.getItem("stem:bimCadDebug") === "1";
-  } catch {
-    return false;
-  }
+  return (globalThis as { __BIM_CAD_DEBUG__?: boolean }).__BIM_CAD_DEBUG__ === true;
 }
 
 function logPlanCad(
@@ -364,7 +378,7 @@ function logPlanCad(
 
 function disposePreview(object: THREE.Object3D | null) {
   if (!object) return;
-  object.traverse((child) => {
+  traverseObjectDepthFirst(object, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh && !(child as THREE.Line).isLine) return;
     (mesh.geometry as THREE.BufferGeometry | undefined)?.dispose?.();
@@ -552,7 +566,9 @@ function getPointerPlanCadHit(
   const pickableChildren = scene.children.filter(
     (child) =>
       child !== sceneHelpers &&
-      (!child.userData?.isRuntimeOnly || child.userData?.isPlanCadManaged) &&
+      (!child.userData?.isRuntimeOnly ||
+        hasPlanCadSelectionMetadata(child) ||
+        containsPlanCadSelectionMetadata(child)) &&
       !child.userData?.isPlanCadPreview,
   );
   scene.updateMatrixWorld(true);
@@ -596,17 +612,20 @@ export const PlanCadToolbar = ({
       (global.app as EngineRuntime | undefined)?.editor?.scene,
     ),
   );
-  const [partPresetId, setPartPresetId] = useState(
-    PLAN_CAD_PART_PRESETS[0]?.id ?? "",
+  const [measurement, setMeasurement] = useState<PlanCadMeasurement | null>(
+    null,
   );
-  const [showHint, setShowHint] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage?.getItem(PLAN_CAD_HINT_STORAGE_KEY) !== "1";
-    } catch {
-      return false;
-    }
-  });
+  const [partCatalogs, setPartCatalogs] = useState(() => [
+    ...getPlanCadPartCatalogs(),
+  ]);
+  const partPresets = useMemo(
+    () => partCatalogs.flatMap((category) => category.presets),
+    [partCatalogs],
+  );
+  const [partPresetId, setPartPresetId] = useState(
+    getPlanCadPartPresets()[0]?.id ?? "",
+  );
+  const [showHint, setShowHint] = useState(() => typeof window !== "undefined");
   const [interchangeStatus, setInterchangeStatus] =
     useState<PlanCadInterchangeStatus | null>(null);
   const activeToolRef = useRef(activeTool);
@@ -617,12 +636,13 @@ export const PlanCadToolbar = ({
   const polygonPointsRef = useRef(polygonPoints);
   const planDataRef = useRef(planData);
   const partPresetIdRef = useRef(partPresetId);
+  const partPresetsRef = useRef(partPresets);
   const previewRef = useRef<THREE.Object3D | null>(null);
   const previewKeyRef = useRef("");
   const previousDisableClickEvents = useRef<boolean | null>(null);
   const selectedPartPreset =
-    PLAN_CAD_PART_PRESETS.find((preset) => preset.id === partPresetId) ??
-    PLAN_CAD_PART_PRESETS[0]!;
+    partPresets.find((preset) => preset.id === partPresetId) ??
+    partPresets[0]!;
   const planLevels = Object.values(planData?.nodes ?? {})
     .filter((node): node is PlanLevelNode => node.type === "level")
     .sort((a, b) => a.index - b.index);
@@ -688,11 +708,13 @@ export const PlanCadToolbar = ({
       const tool = activeToolRef.current;
       if (!app || !helperScene || !point || tool === "select") {
         clearPreview();
+        setMeasurement(null);
         return;
       }
 
       const resolved = resolvePlanPoint(app, point);
       const current = resolved.point;
+      const unitsSettings = getUnitsSettings(app.editor?.scene);
       const openingPlacement =
         tool === "door" || tool === "window"
           ? getPlanCadOpeningPlacement(
@@ -702,6 +724,15 @@ export const PlanCadToolbar = ({
               Math.max(0.5, getQuickSnapIncrement(app) * 1.25),
             )
           : null;
+      const nextMeasurement = getPlanCadToolMeasurement({
+        tool,
+        anchorPoint: anchor,
+        polygonPoints: polygon,
+        currentPoint: current,
+        snap: resolved.snap,
+        openingPlacement,
+        unitsSettings,
+      });
 
       const previewKey = JSON.stringify({
         tool,
@@ -725,6 +756,7 @@ export const PlanCadToolbar = ({
       if (previewKeyRef.current === previewKey) return;
 
       clearPreview();
+      setMeasurement(nextMeasurement);
       previewKeyRef.current = previewKey;
       if (tool === "door" || tool === "window") {
         if (!openingPlacement) return;
@@ -741,9 +773,9 @@ export const PlanCadToolbar = ({
 
       if (tool === "part") {
         const preset =
-          PLAN_CAD_PART_PRESETS.find(
+          partPresetsRef.current.find(
             (item) => item.id === partPresetIdRef.current,
-          ) ?? PLAN_CAD_PART_PRESETS[0]!;
+          ) ?? partPresetsRef.current[0]!;
         const preview = createPartFootprintPreview(current, preset);
         if (preview) {
           helperScene.add(preview);
@@ -786,18 +818,26 @@ export const PlanCadToolbar = ({
   const commitMutation = useCallback(
     async (mutator: (data: PlanCadSceneData) => PlanCadSceneData) => {
       const app = global.app as EngineRuntime | undefined;
-      const scene = app?.editor?.scene;
-      if (!app || !scene) return false;
+      const editor = app?.editor;
+      const scene = editor?.scene;
+      if (!app || !editor || !scene) return false;
       const current = getOrCreatePlanCadSceneData(scene);
       const next = mutator(current);
       logPlanCad("Commit start", {
         nodeCount: Object.keys(next.nodes).length,
       });
-      const didCommit = await commitPlanCadSceneData(app.editor, next);
+      const didCommit = await commitPlanCadSceneData(editor, next);
       if (didCommit) {
+        const selectedObject = next.selectedNodeId
+          ? findPlanCadNodeObjectById(scene, next.selectedNodeId)
+          : null;
+        if (selectedObject) {
+          editor.select?.(selectedObject);
+        }
         planDataRef.current = next;
         setPlanData(next);
         clearPreview();
+        setMeasurement(null);
         logPlanCad("Commit complete", {
           nodeCount: Object.keys(next.nodes).length,
           sceneChildren: scene.children.length,
@@ -955,7 +995,6 @@ export const PlanCadToolbar = ({
 
   const activateTool = useCallback(
     (tool: PlanCadToolId) => {
-      requestStructureTopDownView(global.app as EngineRuntime | undefined, tool);
       const previousTool = activeToolRef.current;
       activeToolRef.current = tool;
       setOpenToolGroupId(null);
@@ -963,6 +1002,7 @@ export const PlanCadToolbar = ({
         setAnchorDraft(null);
         setPolygonDraft([]);
         clearPreview();
+        setMeasurement(null);
       }
       setActiveTool(tool);
     },
@@ -973,13 +1013,43 @@ export const PlanCadToolbar = ({
     setAnchorDraft(null);
     setPolygonDraft([]);
     clearPreview();
+    setMeasurement(null);
   }, [clearPreview, setAnchorDraft, setPolygonDraft]);
+
+  const clearCurrentSelection = useCallback(() => {
+    const app = getPlanCadRuntime();
+    const editor = app?.editor;
+    const scene = editor?.scene;
+    if (!editor || !scene) return false;
+
+    const hadEditorSelection = Array.isArray(editor.selected)
+      ? editor.selected.length > 0
+      : !!editor.selected;
+    const currentData = getPlanCadSceneData(scene);
+    const hadPlanSelection = !!currentData?.selectedNodeId;
+
+    if (!hadEditorSelection && !hadPlanSelection) return false;
+
+    if (typeof editor.select === "function" && hadEditorSelection) {
+      editor.select(null);
+    }
+
+    if (hadPlanSelection) {
+      setPlanCadSceneSelection(editor, null, { source: "PlanCadToolbar" });
+      const nextData = getPlanCadSceneData(scene);
+      planDataRef.current = nextData;
+      setPlanData(nextData);
+    }
+
+    return true;
+  }, []);
 
   const removeLastPolygonPoint = useCallback(() => {
     const points = polygonPointsRef.current;
     if (points.length === 0) return false;
     const nextPoints = points.slice(0, -1);
     setPolygonDraft(nextPoints);
+    setMeasurement(null);
     if (nextPoints.length === 0) {
       clearPreview();
     }
@@ -1028,6 +1098,34 @@ export const PlanCadToolbar = ({
   }, [partPresetId]);
 
   useEffect(() => {
+    partPresetsRef.current = partPresets;
+    if (!partPresets.some((preset) => preset.id === partPresetIdRef.current)) {
+      const nextPresetId = partPresets[0]?.id ?? "";
+      partPresetIdRef.current = nextPresetId;
+      setPartPresetId(nextPresetId);
+    }
+  }, [partPresets]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void refreshPascalPlanCadPartCatalogs()
+      .then((catalogs) => {
+        if (cancelled) return;
+        setPartCatalogs([...catalogs]);
+      })
+      .catch((error) => {
+        getLogger()?.warn?.("[BIMCAD] Pascal catalog load failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!openToolGroupId) return;
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -1070,18 +1168,25 @@ export const PlanCadToolbar = ({
     const app = global.app as EngineRuntime | undefined;
     if (!app) return;
 
-    if (previousDisableClickEvents.current === null) {
-      previousDisableClickEvents.current = app.disableClickEvents;
-    }
-    app.disableClickEvents = true;
-
-    return () => {
-      if (previousDisableClickEvents.current !== null) {
-        app.disableClickEvents = previousDisableClickEvents.current;
-        previousDisableClickEvents.current = null;
+    const shouldDisableEditorSelection = activeTool !== "select";
+    if (shouldDisableEditorSelection) {
+      if (previousDisableClickEvents.current === null) {
+        previousDisableClickEvents.current = app.disableClickEvents;
       }
-    };
-  }, []);
+      app.disableClickEvents = true;
+      return () => {
+        if (previousDisableClickEvents.current !== null) {
+          app.disableClickEvents = previousDisableClickEvents.current;
+          previousDisableClickEvents.current = null;
+        }
+      };
+    }
+
+    if (previousDisableClickEvents.current !== null) {
+      app.disableClickEvents = previousDisableClickEvents.current;
+      previousDisableClickEvents.current = null;
+    }
+  }, [activeTool]);
 
   useEffect(() => {
     const app = getPlanCadRuntime();
@@ -1136,14 +1241,13 @@ export const PlanCadToolbar = ({
         });
         if (planObject) {
           app.editor.select?.(planObject);
-        } else {
-          app.editor.select?.(null);
         }
         return;
       }
 
       if (!options.commit) {
-        updatePreview(rawPoint);
+        clearPreview();
+        setMeasurement(null);
         logPlanCad(
           "Raycast ignored without BIM commit marker",
           {
@@ -1212,6 +1316,14 @@ export const PlanCadToolbar = ({
           Math.max(0.5, increment * 1.25),
         );
         if (!openingPlacement) {
+          setMeasurement(
+            getPlanCadToolMeasurement({
+              tool,
+              currentPoint: point,
+              openingPlacement: null,
+              unitsSettings: getUnitsSettings(app.editor.scene),
+            }),
+          );
           clearPreview();
           return;
         }
@@ -1241,7 +1353,6 @@ export const PlanCadToolbar = ({
       resolvePlanPoint,
       setAnchorDraft,
       setPolygonDraft,
-      updatePreview,
     ],
   );
 
@@ -1291,6 +1402,7 @@ export const PlanCadToolbar = ({
     const activeTouchPointers = new Set<number>();
     let pendingPointerMove: PointerEvent | null = null;
     let pointerMoveFrame: number | null = null;
+    let selectPointerCapturedPlanCad = false;
 
     const isPlanCadUi = (target: EventTarget | null) =>
       target instanceof Element &&
@@ -1325,10 +1437,27 @@ export const PlanCadToolbar = ({
         planeY: getActivePlanLevelElevation(planDataRef.current),
       });
 
+    const isWithinViewport = (event: PointerEvent) => {
+      const rect = viewport.getBoundingClientRect();
+      return (
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      );
+    };
+
+    const isEditorUiTarget = (target: EventTarget | null) =>
+      target instanceof Element &&
+      !!target.closest(
+        "button, input, select, textarea, a, [role='button'], [data-plan-cad-ui='true'], [aria-label='Workspace panels'], [aria-label='Inspector'], [aria-label='Project hierarchy and library']",
+      );
+
     const handlePointerDown = (event: PointerEvent) => {
       if (event.pointerType === "touch") {
         activeTouchPointers.add(event.pointerId);
       }
+      const activeTool = activeToolRef.current;
       if (
         event.button !== 0 ||
         shouldIgnorePointer(event) ||
@@ -1338,9 +1467,20 @@ export const PlanCadToolbar = ({
       ) {
         return;
       }
+      if (activeTool === "select") {
+        const hit = getPointerHitForTool(event, activeTool);
+        selectPointerCapturedPlanCad = !!findPlanCadNodeObject(hit?.object);
+        if (!selectPointerCapturedPlanCad) return;
+      }
       downPoint = { x: event.clientX, y: event.clientY };
       activePointerId = event.pointerId;
-      viewport.setPointerCapture?.(event.pointerId);
+      try {
+        viewport.setPointerCapture?.(event.pointerId);
+      } catch {
+        // A covered toast/status surface owns the native pointer. The
+        // document capture path still tracks the gesture and commits it on
+        // pointerup without requiring pointer capture on the canvas.
+      }
       stopEditorClick(event);
     };
 
@@ -1376,6 +1516,7 @@ export const PlanCadToolbar = ({
 
     const handlePointerLeave = () => {
       cancelScheduledPointerMove();
+      selectPointerCapturedPlanCad = false;
       updatePreview(null);
     };
 
@@ -1386,11 +1527,18 @@ export const PlanCadToolbar = ({
       cancelScheduledPointerMove();
       if (!downPoint || activePointerId !== event.pointerId) return;
       const activeTool = activeToolRef.current;
+      const capturedPlanCad = selectPointerCapturedPlanCad;
+      selectPointerCapturedPlanCad = false;
       const distance = Math.hypot(
         event.clientX - downPoint.x,
         event.clientY - downPoint.y,
       );
-      viewport.releasePointerCapture?.(event.pointerId);
+      try {
+        viewport.releasePointerCapture?.(event.pointerId);
+      } catch {
+        // The pointer may have started on a covered surface and therefore was
+        // never captured by the renderer viewport.
+      }
       downPoint = null;
       activePointerId = null;
       if (
@@ -1403,16 +1551,8 @@ export const PlanCadToolbar = ({
       )
         return;
 
+      if (activeTool === "select" && !capturedPlanCad) return;
       stopEditorClick(event);
-      if (activeTool === "select") {
-        const hit = getPointerHitForTool(event, activeTool);
-        if (hit) {
-          handlePlanCadHit(hit, event, { commit: true, source: "viewport" });
-        } else {
-          app.editor.select?.(null);
-        }
-        return;
-      }
       if (
         isPlanStructureTool(activeTool) &&
         polygonPointsRef.current.length >= 3 &&
@@ -1446,11 +1586,39 @@ export const PlanCadToolbar = ({
       }
       cancelScheduledPointerMove();
       if (activePointerId === event.pointerId) {
-        viewport.releasePointerCapture?.(event.pointerId);
+        try {
+          viewport.releasePointerCapture?.(event.pointerId);
+        } catch {
+          // See pointerup: covered surfaces may own the pointer capture.
+        }
         activePointerId = null;
         downPoint = null;
       }
+      selectPointerCapturedPlanCad = false;
       updatePreview(null);
+    };
+
+    // Floating save/status toasts can sit over the canvas and become the
+    // pointer event target. Capture those events at document level when the
+    // coordinates are still inside the renderer viewport, while preserving
+    // the viewport listener for normal canvas events and existing consumers.
+    const handleCoveredViewportPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof HTMLCanvasElement ||
+        viewport.contains(event.target as Node) ||
+        isEditorUiTarget(event.target) ||
+        !isWithinViewport(event)
+      ) return;
+      handlePointerDown(event);
+    };
+    const handleCoveredViewportPointerMove = (event: PointerEvent) => {
+      if (
+        event.target instanceof HTMLCanvasElement ||
+        viewport.contains(event.target as Node) ||
+        isEditorUiTarget(event.target) ||
+        !isWithinViewport(event)
+      ) return;
+      schedulePointerMove(event);
     };
 
     viewport.addEventListener("pointerdown", handlePointerDown, true);
@@ -1458,6 +1626,8 @@ export const PlanCadToolbar = ({
     viewport.addEventListener("pointerleave", handlePointerLeave, true);
     viewport.addEventListener("pointercancel", handlePointerCancel, true);
     viewport.addEventListener("dblclick", handleDoubleClick, true);
+    document.addEventListener("pointerdown", handleCoveredViewportPointerDown, true);
+    document.addEventListener("pointermove", handleCoveredViewportPointerMove, true);
     document.addEventListener("pointerup", handlePointerUp, true);
 
     return () => {
@@ -1467,59 +1637,75 @@ export const PlanCadToolbar = ({
       viewport.removeEventListener("pointerleave", handlePointerLeave, true);
       viewport.removeEventListener("pointercancel", handlePointerCancel, true);
       viewport.removeEventListener("dblclick", handleDoubleClick, true);
+      document.removeEventListener("pointerdown", handleCoveredViewportPointerDown, true);
+      document.removeEventListener("pointermove", handleCoveredViewportPointerMove, true);
       document.removeEventListener("pointerup", handlePointerUp, true);
     };
   }, [finishPolygonDraft, handlePlanCadHit, updatePreview]);
 
   useEffect(() => {
+    const handleCapturedKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || isInputActive())
+        return;
+      const key = event.key.toLowerCase();
+      if (key !== "escape") return;
+
+      consumePlanCadKeyboardEvent(event);
+      if (
+        anchorPointRef.current ||
+        polygonPointsRef.current.length > 0 ||
+        activeToolRef.current !== "select"
+      ) {
+        cancelDraft();
+        activateTool("select");
+        return;
+      }
+      if (clearCurrentSelection()) {
+        return;
+      }
+      if (openToolGroupId) {
+        setOpenToolGroupId(null);
+        return;
+      }
+      if (previewRef.current) {
+        cancelDraft();
+        return;
+      }
+      onClose?.();
+    };
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isInputActive())
         return;
       const key = event.key.toLowerCase();
 
-      if (key === "escape") {
-        event.preventDefault();
-        if (
-          anchorPointRef.current ||
-          polygonPointsRef.current.length > 0 ||
-          activeToolRef.current !== "select"
-        ) {
-          cancelDraft();
-          activateTool("select");
-          return;
-        }
-        if (openToolGroupId) {
-          setOpenToolGroupId(null);
-          return;
-        }
-        if (previewRef.current) {
-          cancelDraft();
-          return;
-        }
-        onClose?.();
-        return;
-      }
+      if (key === "escape") return;
 
       if (key === "enter") {
-        if (finishPolygonDraft()) event.preventDefault();
+        if (finishPolygonDraft()) preventPlanCadKeyboardDefault(event);
         return;
       }
 
       if (key === "backspace") {
-        if (removeLastPolygonPoint()) event.preventDefault();
+        if (removeLastPolygonPoint()) preventPlanCadKeyboardDefault(event);
         return;
       }
 
       const next = PLAN_CAD_SHORTCUTS[key];
       if (!next) return;
-      event.preventDefault();
+      consumePlanCadKeyboardEvent(event);
       activateTool(next);
     };
+    window.addEventListener("keydown", handleCapturedKeyDown, true);
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleCapturedKeyDown, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [
     activateTool,
     cancelDraft,
+    clearCurrentSelection,
     finishPolygonDraft,
     onClose,
     openToolGroupId,
@@ -1533,7 +1719,6 @@ export const PlanCadToolbar = ({
   const handleCancelDraftAndSelect = () => {
     cancelDraft();
     activateTool("select");
-    onClose?.();
   };
 
   const handleClose = () => {
@@ -1544,11 +1729,6 @@ export const PlanCadToolbar = ({
 
   const dismissHint = () => {
     setShowHint(false);
-    try {
-      window.localStorage?.setItem(PLAN_CAD_HINT_STORAGE_KEY, "1");
-    } catch {
-      /* localStorage can be unavailable in private/embedded contexts */
-    }
   };
 
   const polygonDraftHint =
@@ -1557,15 +1737,22 @@ export const PlanCadToolbar = ({
     polygonPoints.length < 3 ? "Add at least 3 points to finish this polygon." : "";
   const finishPolygonTooltip =
     finishPolygonDisabledReason || "Finish polygon";
-  const hasStructureDraft = !!anchorPoint || polygonPoints.length > 0;
-  const polygonStatus = [
-    polygonPoints.length > 0
+  const measurementPrimary =
+    measurement?.primary ??
+    (polygonPoints.length > 0
       ? `${activeTool === "zone" ? "Zone" : "Room"} ${polygonPoints.length} pts`
-      : "",
+      : "");
+  const measurementSecondary = [
+    measurement?.secondary,
+    measurement?.snapLabel,
     polygonDraftHint,
   ]
     .filter(Boolean)
     .join(" / ");
+  const showMeasurementStrip = !!measurement || polygonPoints.length > 0;
+  const hasStructureDraft = !!anchorPoint || polygonPoints.length > 0;
+  const showCoachMark = showHint && !showMeasurementStrip && !hasStructureDraft;
+  const showDraftStatusRail = showMeasurementStrip || hasStructureDraft;
 
   return (
     <Toolbar
@@ -1591,7 +1778,7 @@ export const PlanCadToolbar = ({
           </UtilityButton>
         </Tooltip>
       )}
-      {showHint && (
+      {showCoachMark && (
         <CoachMark data-testid="plan-cad-hint">
           <CoachMarkText>
             Click twice to draw a wall. Double-click or Enter finishes a room.
@@ -1734,7 +1921,7 @@ export const PlanCadToolbar = ({
                 setPartPresetId(event.currentTarget.value);
               }}
             >
-              {PLAN_CAD_PART_CATALOGS.map((category) => (
+              {partCatalogs.map((category) => (
                 <optgroup key={category.id} label={category.label}>
                   {category.presets.map((preset: PlanCadPartPreset) => (
                     <option key={preset.id} value={preset.id}>
@@ -1891,53 +2078,65 @@ export const PlanCadToolbar = ({
           {interchangeStatus.message}
         </InterchangeStatusPill>
       )}
-      {anchorPoint && (
-        <AnchorPill>
-          Wall start
-        </AnchorPill>
-      )}
-      {polygonPoints.length > 0 && (
-        <AnchorPill>
-          {activeTool === "zone" ? "Zone" : "Room"} {polygonPoints.length} pts
-        </AnchorPill>
-      )}
-      {polygonStatus && (
-        <DraftStatusPill title={polygonStatus}>{polygonStatus}</DraftStatusPill>
-      )}
-      {hasStructureDraft && (
-        <UtilityGroup>
-          {polygonPoints.length > 0 && (
-            <Tooltip text={finishPolygonTooltip} height="auto">
-              <UtilityButton
-                type="button"
-                aria-label="Finish BIM polygon"
-                data-testid="plan-cad-finish-polygon"
-                disabled={polygonPoints.length < 3}
-                title={finishPolygonTooltip}
-                onClick={handleFinishPolygon}
-              >
-                <VscCheck size={16} />
-              </UtilityButton>
-            </Tooltip>
+      {showDraftStatusRail && (
+        <DraftStatusRail data-testid="plan-cad-draft-status">
+          {anchorPoint && (
+            <AnchorPill>
+              Wall start
+            </AnchorPill>
           )}
-          <Tooltip text="Cancel BIM build mode" height="auto">
-            <UtilityButton
-              type="button"
-              aria-label="Cancel BIM build mode"
-              data-testid="plan-cad-cancel-draft"
-              onClick={handleCancelDraftAndSelect}
+          {polygonPoints.length > 0 && (
+            <AnchorPill>
+              {activeTool === "zone" ? "Zone" : "Room"} {polygonPoints.length} pts
+            </AnchorPill>
+          )}
+          {showMeasurementStrip && (
+            <MeasurementStrip
+              data-testid="plan-cad-measurement"
+              aria-live="polite"
+              title={[measurementPrimary, measurementSecondary]
+                .filter(Boolean)
+                .join(" - ")}
             >
-              <VscClose size={16} />
-            </UtilityButton>
-          </Tooltip>
-        </UtilityGroup>
+              <MeasurementPrimary>{measurementPrimary}</MeasurementPrimary>
+              <MeasurementSecondary>{measurementSecondary}</MeasurementSecondary>
+            </MeasurementStrip>
+          )}
+          {hasStructureDraft && (
+            <UtilityGroup>
+              {polygonPoints.length > 0 && (
+                <Tooltip text={finishPolygonTooltip} height="auto">
+                  <UtilityButton
+                    type="button"
+                    aria-label="Finish BIM polygon"
+                    data-testid="plan-cad-finish-polygon"
+                    disabled={polygonPoints.length < 3}
+                    title={finishPolygonTooltip}
+                    onClick={handleFinishPolygon}
+                  >
+                    <VscCheck size={16} />
+                  </UtilityButton>
+                </Tooltip>
+              )}
+              <Tooltip text="Cancel structure draft" height="auto">
+                <UtilityButton
+                  type="button"
+                  aria-label="Cancel BIM structure draft"
+                  data-testid="plan-cad-cancel-polygon"
+                  onClick={handleCancelDraftAndSelect}
+                >
+                  <VscClose size={16} />
+                </UtilityButton>
+              </Tooltip>
+            </UtilityGroup>
+          )}
+        </DraftStatusRail>
       )}
     </Toolbar>
   );
 };
 
 const Toolbar = styled(BuilderToolbar).attrs({
-  $bottom: "18px",
   $maxWidth: "min(1120px, calc(100vw - 520px))",
   $mobileBreakpoint: "860px",
 })``;
@@ -2017,24 +2216,66 @@ const LevelSelect = styled(PartSelect)`
 
 const AnchorPill = styled(BuilderAnchorPill).attrs({ $width: "96px" })``;
 
-const DraftStatusPill = styled.div`
-  width: 128px;
-  height: 40px;
-  display: inline-flex;
+const DraftStatusRail = styled.div`
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  max-width: min(520px, 100%);
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  pointer-events: all;
+  overflow: hidden;
+
+  @media (max-width: 860px) {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+`;
+
+const MeasurementStrip = styled.div`
+  width: 144px;
+  height: 40px;
+  display: grid;
+  grid-template-rows: 20px 16px;
+  align-content: center;
+  gap: 1px;
   flex: 0 0 auto;
   border: 1px solid ${builderToolbarTokens.accentPlanBorderStrong};
   border-radius: 8px;
   background: ${builderToolbarTokens.measurementSurface};
   color: ${builderToolbarTokens.textPrimary};
-  padding: 0 8px;
+  padding: 2px 8px;
   box-shadow: inset 0 0 0 1px ${builderToolbarTokens.surfaceSubtle};
+  overflow: hidden;
+`;
+
+const MeasurementPrimary = styled.div`
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 900;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+`;
+
+const MeasurementSecondary = styled.div`
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: ${builderToolbarTokens.textMuted};
+  font-size: 12px;
+  font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 `;
@@ -2066,7 +2307,8 @@ const UtilityButton = styled.button`
 
 const UtilityGroup = styled.div`
   display: grid;
-  grid-template-columns: repeat(2, 34px);
+  grid-auto-flow: column;
+  grid-auto-columns: 34px;
   gap: 6px;
 `;
 
@@ -2116,6 +2358,10 @@ const InterchangeStatusPill = styled.div<{ $tone: "info" | "error" }>`
 `;
 
 const CoachMark = styled.div`
+  position: absolute;
+  left: 106px;
+  bottom: calc(100% + 8px);
+  width: 304px;
   min-height: 34px;
   max-width: 304px;
   display: grid;
@@ -2127,10 +2373,23 @@ const CoachMark = styled.div`
   background: ${builderToolbarTokens.accentPlanSurface};
   color: ${builderToolbarTokens.accentPlanText};
   padding: 6px 6px 6px 10px;
+  pointer-events: all;
+  overflow: hidden;
+
+  @media (max-width: 860px) {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+  }
 `;
 
 const CoachMarkText = styled.span`
   min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   font-size: 11px;
   font-weight: 700;
   line-height: 1.25;

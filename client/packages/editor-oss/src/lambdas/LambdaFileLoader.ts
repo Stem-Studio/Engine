@@ -6,6 +6,16 @@ interface LambdaModule {
     default: LambdaConstructor;
 }
 
+const yieldToPaint = (): Promise<void> =>
+    new Promise(resolve => {
+        const finish = () => setTimeout(() => resolve(), 0);
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => finish());
+        } else {
+            finish();
+        }
+    });
+
 export class LambdaFileLoader {
     private modules: Record<string, () => Promise<LambdaModule>>;
     private eagerConfigs: Record<string, LambdaConfig>;
@@ -91,6 +101,9 @@ export class LambdaFileLoader {
                 batch.map(({folder, main}) => this.loadFile(folder, main)),
             );
             results.push(...batchResults);
+            if (i + batchSize < lambdaPaths.length) {
+                await yieldToPaint();
+            }
         }
 
         return results;
@@ -134,6 +147,7 @@ export class LambdaFileLoader {
                 }
 
                 results.push({config, cls});
+                await yieldToPaint();
             } catch (error) {
                 console.error(`[LambdaFileLoader] Failed to load pack "${folder}":`, error);
             }

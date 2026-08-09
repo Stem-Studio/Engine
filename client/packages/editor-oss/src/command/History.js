@@ -63,7 +63,7 @@ class History extends Command {
         return result;
     }
 
-    undo() {
+    async undo() {
         var cmd = undefined;
 
         if (this.undos.length > 0) {
@@ -75,7 +75,7 @@ class History extends Command {
         }
 
         if (cmd !== undefined) {
-            cmd.undo();
+            await cmd.undo();
             this.redos.push(cmd);
             global.app.call("historyChanged", this, cmd);
         }

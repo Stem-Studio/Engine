@@ -5,7 +5,7 @@ Start here if you are new to StemStudio.
 ## Articles
 
 1. [What Is StemStudio?](01-what-is-stemstudio.md) — Product overview, what you can build, and the creation workflow
-2. [Dashboard and Project Flow](04-dashboard-and-projects.md) — Templates, project lists, sharing, archiving, and imports
+2. [Local Project Flow](04-dashboard-and-projects.md) — Local projects, storage, creation, and imports
 3. [Editor Tour](02-editor-tour.md) — Visual walkthrough of the editor panels, viewport, and toolbar
 
 ## Recommended Order
@@ -14,8 +14,8 @@ Read these articles in order. The overview explains what StemStudio is, the dash
 
 ## Learning Paths
 
-### Casual Creator
-Dashboard → Editor Tour → [Getting Started Tutorial](getting-started-tutorial.md) → [Built-in Behaviors](../scripting/05-built-in-behaviors.md) → [Publishing](../publishing/01-publishing-games.md)
+### Visual Creator
+Local Project Flow → Editor Tour → [Getting Started Tutorial](getting-started-tutorial.md) → [Built-in Behaviors](../scripting/05-built-in-behaviors.md) → [Saving and Sharing](../shipping.md)
 
 ### Developer
 [Editor Tour](02-editor-tour.md) → [Behaviors vs Lambdas](../scripting/01-behaviors-vs-lambdas.md) → [Writing Behaviors](../scripting/02-writing-behaviors.md) → [APIs](../apis/01-erth-interface.md)

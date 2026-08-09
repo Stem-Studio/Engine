@@ -6,7 +6,17 @@
 [![Three.js](https://img.shields.io/badge/three.js-r168+-black.svg)](https://threejs.org)
 [![Built with Bun](https://img.shields.io/badge/built%20with-bun-orange.svg)](https://bun.sh)
 
-StemStudio gives you a complete authoring environment — scene editor, behavior scripting in JavaScript, physics, multiplayer, an AI copilot — that runs entirely on your machine. Projects live in your browser (IndexedDB) or in a folder you pick (File System Access API). No accounts, no cloud, no lock-in.
+StemStudio is a local-first authoring environment: scene editing, JavaScript
+behaviors, physics, multiplayer tooling, and an optional AI copilot. Projects
+live in your browser (IndexedDB) or in a folder you pick (File System Access
+API). No account or hosted project service is required.
+
+> **Current deployment scope:** development and performance work target
+> **Playground mode**. Playground scenes load and save through the local
+> `ProjectStore`; the hosted/remote scene API mode is not deployed. Run the
+> playground locally at `http://localhost:5173/playground` (or enter its editor
+> shell directly at `/dashboard?mode=playground`). Remote gallery, publishing,
+> collaboration, and share-link UI should not be treated as available features.
 
 ## Sponsor this project
 
@@ -23,46 +33,66 @@ If StemStudio is useful to you or your organization, please consider sponsoring 
 - **Lambdas** — an entity-component system on top of behaviors when you need archetype-driven, batched work.
 - **In-editor code editor** — Monaco for behavior and script authoring with full TypeScript-style assist.
 - **Physics** — Ammo.js / Rapier integration with rigid bodies, joints, raycasting.
-- **Local multiplayer** — Colyseus sidecar auto-spawned on `bun run dev`. Two browser tabs on the same machine join a real room.
-- **AI copilot (BYOK)** — bring your own keys for Anthropic, OpenAI, Meshy / Tripo / Rodin (3D model gen), ElevenLabs (TTS), and AnythingWorld. Configure once, use everywhere.
-- **Local-first persistence** — IndexedDB for seamless auto-save, or open a real folder via File System Access API (Chromium) for git-friendly workflows.
-- **Export & share** — package any project as a standalone static site (Player-only build) you can host anywhere.
+- **Local multiplayer** — an optional Colyseus sidecar for local testing.
+- **AI copilot (BYOK)** — browser-direct providers in Playground mode, or the
+  optional local Go proxy for development.
+- **Local-first persistence** — debounced auto-save to IndexedDB, or
+  `.stemscript.json` project files in a user-selected folder on Chromium.
+- **Portable output** — download scene JSON from
+  **Export Scene Source (.json)**, keep complete local project files in folder
+  mode, or build the static application bundle.
 
 ## Quick start
 
-Prerequisites: [Bun](https://bun.sh) 1.0+, [Go](https://go.dev) 1.21+, [Node.js](https://nodejs.org) 20+. New machine? See [Setting up your dev environment](#setting-up-your-dev-environment) for per-OS install steps (macOS, Windows, Linux).
+For the Playground/editor workflow, install a current
+[Bun](https://bun.sh) release and [Node.js](https://nodejs.org) 20.19+ or
+22.12+ (the range required by Vite 8; the repository postinstall also uses
+`npm`). The all-services workflow requires the Go version declared in
+[`server/go.mod`](./server/go.mod). New machine? See
+[Setting up your dev environment](#setting-up-your-dev-environment).
 
 ```bash
-git clone https://github.com/your-org/stemstudio.git
-cd stemstudio
-git submodule update --init --recursive
+git clone https://github.com/Stem-Studio/Engine.git
+cd Engine
 bun install
-bun run dev
+bun run dev:editor
 ```
 
-That single command starts three processes:
+Open `http://localhost:5173/playground`. This is the current deployed product
+path: projects remain local and scene reads/writes do not call a remote scene
+service. Playground deliberately hides the first-run storage chooser and starts
+with IndexedDB.
 
-- **Vite** on `http://localhost:5173` — the editor.
-- **AI server** on `http://localhost:8081` — proxies AI calls to providers using your keys.
-- **Multiplayer sidecar** on `ws://localhost:2567` — Colyseus rooms for local multiplayer.
-
-Open `http://localhost:5173` and follow the first-time bootstrap modal to pick your project storage mode (IndexedDB or local folder).
-
-To use AI features, add a `.env` file (copy from `.env.example`) with whichever provider keys you want:
+Optional local services are available for contributors working on AI or
+multiplayer:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-MESHY_API_KEY=...
-ELEVENLABS_API_KEY=...
-ANYTHING_WORLD_API_KEY=...
+bun run dev       # Vite + local Go AI proxy + Colyseus sidecar
+bun run dev:ai    # local Go AI proxy only
+bun run dev:mp    # local Colyseus sidecar only
 ```
 
-Any key you omit makes that provider unavailable — the editor will prompt you for it when you first try a feature that needs it.
+Outside Playground mode, the local dashboard can offer IndexedDB or a
+user-selected folder. The folder option depends on Chromium's File System
+Access API.
+
+For the optional local AI proxy, start from the canonical environment template:
+
+```bash
+cp .env.example .env
+```
+
+Then set only the providers you intend to use. See
+[BYOK setup](./docs/byok.md) for supported providers and the difference between
+Playground's browser-direct path and the optional local proxy.
 
 ## Setting up your dev environment
 
-You need three tools on your `PATH`: **[Bun](https://bun.sh) 1.0+** (package manager + task runner), **[Go](https://go.dev) 1.21+** (the AI proxy server), and **[Node.js](https://nodejs.org) 20+** with `npm` (the multiplayer sidecar). Pick your OS below, then continue with [Quick start](#quick-start).
+The editor workflow needs **[Bun](https://bun.sh)** and
+**[Node.js](https://nodejs.org) 20.19+ or 22.12+** with `npm`, matching Vite
+8's engine range. Install **[Go](https://go.dev)** at the version declared in
+`server/go.mod` only when you need the local AI proxy. Pick your OS below,
+then continue with [Quick start](#quick-start).
 
 ### macOS
 
@@ -80,11 +110,11 @@ Or install each from its official site (links above). Apple Silicon and Intel ar
 # Bun
 curl -fsSL https://bun.sh/install | bash
 
-# Node.js 20+ — via nvm (recommended; distro packages are often older)
+# Node.js 20.19+ — via nvm (distro packages are often older)
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 nvm install 20
 
-# Go 1.21+ — prefer the official tarball; distro `golang-go` may lag
+# Go — match server/go.mod; distro `golang-go` may lag
 #   https://go.dev/doc/install   (or: sudo apt install golang-go / sudo dnf install golang)
 
 # Build essentials for any native dependency compilation
@@ -96,7 +126,7 @@ Open a new shell (or `source ~/.bashrc`) so the freshly installed tools land on 
 
 ### Windows
 
-**Use [WSL2](https://learn.microsoft.com/windows/wsl/install) (recommended).** Several `package.json` scripts use Unix-shell idioms — inline env vars like `BUILD_MODE=oss …` and `.sh` deploy scripts — that do not run under native `cmd`/PowerShell. WSL2 gives you a real Linux shell where everything works as documented.
+**Use [WSL2](https://learn.microsoft.com/windows/wsl/install) (recommended).** Several project scripts use Unix-shell idioms and `.sh` deploy scripts that do not run under native `cmd`/PowerShell. WSL2 gives you a real Linux shell where everything works as documented.
 
 ```powershell
 wsl --install            # installs Ubuntu; reboot if prompted
@@ -112,33 +142,37 @@ winget install OpenJS.NodeJS.LTS GoLang.Go Git.Git
 powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
-You will still need to work around the Unix-style scripts (e.g. run the editor, AI server, and MP sidecar separately and set `BUILD_MODE` via `$env:BUILD_MODE`). WSL2 is strongly preferred.
+You will still need to work around the Unix-style scripts, for example by running the editor, AI server, and multiplayer sidecar separately. WSL2 is strongly preferred.
 
 </details>
 
 ### Verify
 
 ```bash
-bun --version     # 1.0+
-go version        # go1.21+
-node --version    # v20+
+bun --version
+go version        # must satisfy server/go.mod when running the AI proxy
+node --version    # v20.19+ or v22.12+
 ```
 
-If all three print a version, you're ready for [Quick start](#quick-start).
+If Bun and Node print versions, you're ready for the Playground workflow. Go
+is required only for `bun run dev`, `bun run dev:ai`, and AI-server builds.
 
 ## What's in the box
 
-- Editor, player, runtime, behaviors, lambdas, physics, rendering, scheduler, asset loading.
+- Playground/editor shell, player route, runtime, behaviors, lambdas, physics,
+  rendering, scheduler, and asset loading.
 - Monaco-based script/behavior editor.
 - Local multiplayer Colyseus sidecar.
 - AI proxy server (Go) that forwards calls to your provider keys.
-- BYOK key management — keys stay in your browser's IndexedDB and are only sent to the provider you configured.
+- BYOK key management for Playground's browser-direct providers and the
+  optional local AI proxy.
 - Build tooling (Vite, TypeScript, ESLint, Bun test).
 - Engine docs alongside the code: behaviors, lambdas/ECS, physics, UI, art specs.
 
 ## Documentation
 
-- [Architecture overview](./docs/architecture.md) — how the editor, AI server, and multiplayer sidecar fit together.
+- [Architecture overview](./docs/architecture.md) — the local Playground,
+  editor/player entries, and optional development sidecars.
 - [Scheduler & editor settings](./docs/scheduler-and-editor-settings.md) — frame scheduler architecture, quality presets, performance controls, and profiling tools.
 - [Stem Script](./docs/stem-script.md) — the editor DSL, command-contract boundary, Script Tool mode, and `.stemscript` game imports.
 - [Built-in behaviors](./docs/built-in-behaviors.md) — the behavior model, the full catalog, and how to attach or author one.
@@ -149,7 +183,8 @@ If all three print a version, you're ready for [Quick start](#quick-start).
 - [Builder Studio release gate](./docs/builder-studio-release-gate.md) — launch configuration, beta exit criteria, and required checks.
 - [BYOK setup](./docs/byok.md) — connect your AI provider keys.
 - [Multiplayer guide](./docs/multiplayer.md) — local sidecar and self-hosted deployment.
-- [Exporting a game](./docs/exporting-a-game.md) — package a Player-only static site.
+- [Exporting a game](./docs/exporting-a-game.md) — current scene, project-file,
+  and static-build export contracts.
 - [Contributing](./CONTRIBUTING.md) — development workflow and PR guidelines.
 
 Existing games in Stem Script format live in
@@ -170,7 +205,7 @@ The Builder Studio smoke tests capture the primary surfaces:
 ![BIM Plan smoke capture](./docs/assets/builder-studio/02-plan-cad.png)
 
 Regenerate these captures with `bun run test:e2e:builder-tools` while
-`bun run dev` is serving on `http://localhost:5173`. See
+`bun run dev:editor` is serving on `http://localhost:5173`. See
 [Quick Build](./docs/quick-build.md), [BIM Plan](./docs/plan-cad.md), and the
 [Builder Studio release gate](./docs/builder-studio-release-gate.md) for the
 full production checklist.
@@ -180,8 +215,8 @@ full production checklist.
 This project uses Bun as its package manager and task runner.
 
 ```bash
-bun run dev            # All-in-one: Vite + AI server + MP sidecar
-bun run dev:editor     # Editor only (Vite)
+bun run dev:editor     # Current focus: Playground/editor on Vite
+bun run dev            # Optional all-in-one: Vite + AI server + MP sidecar
 bun run dev:ai         # AI server only
 bun run dev:mp         # MP sidecar only
 
@@ -191,15 +226,27 @@ bun run test           # Unit + integration tests
 bun run lint           # ESLint
 ```
 
-To export a single project as a Player-only static site, use the in-editor **File → Export game** action and follow the instructions in [docs/exporting-a-game.md](./docs/exporting-a-game.md).
+The in-editor **Export Scene Source (.json)** action downloads the current
+scene as JSON; it is not a one-click standalone-player packager. Folder mode
+writes complete local project files as `.stemscript.json`, while `bun run
+build` produces the static application bundle. See
+[Exporting a game](./docs/exporting-a-game.md).
 
 ## Browser support
 
-- **Chromium-based** (Chrome, Edge, Brave, Arc): full feature set including File System Access API for folder-based project storage.
-- **Firefox**: full feature set with IndexedDB storage only (no folder access).
-- **Safari**: full feature set with IndexedDB storage only (no folder access).
+- **Primary performance target:** current Chromium browsers with WebGPU.
+- **Compatibility path:** IndexedDB works without folder access, and projects
+  expose a **Force WebGL** rendering setting for browsers or effects that need
+  the fallback.
+- **Folder-backed projects:** require the File System Access API and are
+  therefore a Chromium-focused feature.
+- **Mobile authoring:** the editor is landscape-only on mobile and narrow
+  viewports. Portrait authoring is blocked by a rotate-device gate until the
+  viewport is landscape. Player orientation is configured per project and can
+  differ from the editor.
 
-WebGPU support is required. We do not support WebGL
+Firefox and Safari are not currently claimed as full-feature parity targets;
+verify the exact browser and renderer combination for release-critical work.
 
 ## Team
 
@@ -215,7 +262,7 @@ WebGPU support is required. We do not support WebGL
 
 We welcome contributions. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR.
 
-Bug reports, feature requests, and discussions: [GitHub Issues](https://github.com/your-org/stemstudio/issues).
+Bug reports, feature requests, and discussions: [GitHub Issues](https://github.com/Stem-Studio/Engine/issues).
 
 You can sponsor us via [GitHub Sponsors](https://github.com/sponsors/Stem-Studio). Every contribution, large or small, is appreciated.
 

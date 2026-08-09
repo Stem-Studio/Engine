@@ -375,9 +375,9 @@ describe("ScriptCommandParser.parse", () => {
         });
 
         it("parses physics engine bare type", () => {
-            const result = ScriptCommandParser.parse("physics engine jolt");
+            const result = ScriptCommandParser.parse("physics engine rapier");
             expect(result.command).toBe("set_physics_engine");
-            expect(result.params.type).toBe("jolt");
+            expect(result.params.type).toBe("rapier");
         });
 
         it("parses physics engine with gravity", () => {
@@ -385,12 +385,6 @@ describe("ScriptCommandParser.parse", () => {
             expect(result.command).toBe("set_physics_engine");
             expect(result.params.type).toBe("ammo");
             expect(result.params.gravity).toBe(-9.81);
-        });
-
-        it("parses physics engine physx", () => {
-            const result = ScriptCommandParser.parse("physics engine physx");
-            expect(result.command).toBe("set_physics_engine");
-            expect(result.params.type).toBe("physx");
         });
 
         it("parses scene compartments on", () => {

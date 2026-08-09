@@ -5,25 +5,36 @@ patchTextureLoaders();
 
 let ID = -1;
 
+type PackageRequire = (names: unknown) => Promise<any>;
+
 /**
  * BaseLoader
  *
  */
 class BaseLoader {
     id: string;
-    packageManager: PackageManager;
-    require: OmitThisParameter<((names: object) => Promise<any>) | any>;
+    private _packageManager: PackageManager | null = null;
+    require: PackageRequire;
 
     constructor() {
         this.id = `BaseLoader${ID--}`;
-        this.packageManager = new PackageManager();
-        this.require = this.packageManager.require.bind(this.packageManager);
+        this.require = names => this.packageManager.require(names);
     }
 
-    load(_url: string, _options?: unknown) {
-        return new Promise(resolve => {
-            resolve(null);
-        });
+    get packageManager(): PackageManager {
+        if (this._packageManager === null) {
+            this._packageManager = new PackageManager();
+        }
+
+        return this._packageManager;
+    }
+
+    set packageManager(packageManager: PackageManager) {
+        this._packageManager = packageManager;
+    }
+
+    load(_url: string, _options?: unknown): Promise<unknown | null> {
+        return Promise.resolve(null);
     }
 
     dispose() {

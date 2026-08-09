@@ -3,20 +3,18 @@
  * Purpose: Contains logic for volume directional light helper.
  */
 
-import * as THREE from "three";
-
-
-class VolumeDirectionalLightHelper extends THREE.DirectionalLightHelper {
+import {DirectionalLightHelper, Mesh, MeshBasicMaterial, SphereGeometry} from "three";
+class VolumeDirectionalLightHelper extends DirectionalLightHelper {
     constructor(light, size, color) {
         super(light, size, color);
 
-        var geometry = new THREE.SphereGeometry(2, 4, 2);
-        var material = new THREE.MeshBasicMaterial({
+        var geometry = new SphereGeometry(2, 4, 2);
+        var material = new MeshBasicMaterial({
             color: 0xff0000,
             visible: false,
         });
 
-        this.picker = new THREE.Mesh(geometry, material);
+        this.picker = new Mesh(geometry, material);
         this.picker.name = "picker";
         this.add(this.picker);
     }

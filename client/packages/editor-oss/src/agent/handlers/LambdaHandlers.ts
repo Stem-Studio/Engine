@@ -2,6 +2,7 @@ import {getScriptRevisionData} from "@stem/network/api/script";
 
 import EngineRuntime from "../../EngineRuntime";
 import type {LambdaComponentData, LambdaConfig, LambdaInstanceData} from "../../lambdas/Lambda";
+import {traverseObjectDepthFirst} from "../../utils/SceneTraverser";
 import {CommandResult} from "../types/ACPTypes";
 
 type LambdaRegistryLike = {
@@ -110,7 +111,11 @@ export class LambdaHandlers {
 
     private getObjectComponents(lambdaId: string): Array<{objectName: string; objectUuid: string; component: LambdaComponentData}> {
         const components: Array<{objectName: string; objectUuid: string; component: LambdaComponentData}> = [];
-        this.engine.scene?.traverse(object => {
+        if (!this.engine.scene) {
+            return components;
+        }
+
+        traverseObjectDepthFirst(this.engine.scene, object => {
             const lambdaComponents = object.userData?.lambdaComponents;
             if (!Array.isArray(lambdaComponents)) return;
             for (const component of lambdaComponents) {

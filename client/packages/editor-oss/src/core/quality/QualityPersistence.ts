@@ -7,7 +7,6 @@ import type { IDeviceCapabilities, IPerformanceHistoryEntry } from './types';
 export class QualityPersistence {
     private readonly STORAGE_KEY_SETTINGS = 'stemstudio_quality_settings';
     private readonly STORAGE_KEY_CUSTOM_PRESETS = 'stemstudio_quality_custom_presets';
-    private readonly STORAGE_KEY_DEVICE_PROFILE = 'stemstudio_device_profile';
     
     // IndexedDB for larger data
     private dbName = 'StemStudioQuality';

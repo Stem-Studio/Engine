@@ -68,7 +68,6 @@ export const StemVersionPicker = ({stem}: {stem: AssetStateType}) => {
 
         saveScene().catch(console.error);
         app.call("objectChanged");
-        app.call("currentRevisionUpdated");
     };
 
     return (

@@ -23,9 +23,10 @@ In this tutorial, you will build a simple collectible game from scratch. By the 
 
 ## Step 1: Create A New Scene
 
-1. Open StemStudio at [next.erth.ai](https://next.erth.ai).
-2. Click **Create New** to start a fresh scene.
-3. Give your scene a name like "My First Game".
+1. Open the Playground, or run the repository and open
+   `http://localhost:5173/dashboard?mode=playground`.
+2. Choose **Start from scratch**.
+3. Give the local project a name like "My First Game".
 
 ![ New scene creation dialog](images/new%20scene%20creation.PNG)
 

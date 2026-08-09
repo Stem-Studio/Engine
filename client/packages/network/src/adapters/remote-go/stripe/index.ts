@@ -1,10 +1,7 @@
-// OSS override written by scripts/export-oss.ts. Billing flows
-// (CreditsSummary, CreditsPurchaseModal, AdminPanel/Products) are
-// already gated at runtime by isStripeCreditsPurchasingEnabled() and
-// admin/dashboard visibility checks, so none of the functions below
-// are reachable in OSS. Replacing the module with this stub lets Vite
-// tree-shake the Stripe-coupled Ajax calls and the StemStudio billing
-// API surface out of OSS bundles entirely.
+// Open-source compatibility module. Billing flows are unavailable in this
+// repository and remain gated at runtime by
+// isStripeCreditsPurchasingEnabled(), so these functions should not execute.
+// The exported names are retained so existing imports continue to typecheck.
 
 export interface StripeProduct {
     productId: string;
@@ -54,14 +51,13 @@ export interface MigrateProductRequest {
 export type DeleteProductStrategy = "grandfather" | "discontinue_refund_prorated";
 
 const unreachable = (name: string): never => {
-    throw new Error(`${name} is not available in OSS builds`);
+    throw new Error(`${name} is not available in this open-source repository`);
 };
 
 // Function signatures accept arbitrary args so editor-side call sites that
 // pass real arguments still typecheck. Return shapes match the real module's
 // signatures verbatim so consumers reading properties on the result also
-// typecheck. None of these execute in OSS — runtime IS_OSS gates short-
-// circuit before reaching them.
+// typecheck. None of these execute in the open-source app.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export const getAdminProducts = async (..._args: any[]): Promise<AdminStripeProduct[]> => [];

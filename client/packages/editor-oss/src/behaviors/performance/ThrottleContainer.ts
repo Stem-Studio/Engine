@@ -2,10 +2,10 @@
  * Dependency injection container for behavior throttling
  * Industry-standard explicit priority-based throttling system
  */
-import * as THREE from 'three';
-
+import {Camera, Object3D, Vector3} from "three";
 import type { ISpatialGrid } from '../../scheduler/types';
 import { Behavior } from '../Behavior';
+import {FrameWorldMatrixCache} from "../../utils/FrameWorldMatrixCache";
 import { VisibilityChecker } from './implementations/VisibilityChecker';
 import {
     IBehaviorThrottler,
@@ -18,6 +18,10 @@ import {
     IPerformanceMetrics,
     BehaviorThrottlePriority,
 } from './interfaces/IThrottleStrategy';
+
+type ThrottledBehavior = Behavior & {
+    _throttleHash?: number;
+};
 
 export interface IThrottleContainer {
     createBehaviorThrottler(config?: Partial<IThrottleConfig>): IBehaviorThrottler;
@@ -90,18 +94,25 @@ class BehaviorThrottler implements IBehaviorThrottler {
     private avgFrameTime: number = 16.67;
     private lastFrameTime: number = 0;
     private readonly EMA_ALPHA = 0.1;
+    private performanceReportingEnabled: boolean;
     // External pressure signal from orchestrator (1 = no pressure, up to 4)
     private _externalPressureMultiplier: number = 1;
+    private frameModuloCacheFrames = new Int32Array(61);
+    private frameModuloCacheValues = new Int8Array(61);
+    private distanceFrameCamera: Camera | null = null;
+    private visibilityFrameCamera: Camera | null = null;
 
     constructor(
         private readonly visibilityChecker: IVisibilityChecker,
         private readonly distanceThrottler: IDistanceThrottler,
         private readonly performanceMonitor: IPerformanceMonitor,
         private config: IThrottleConfig,
-    ) {}
+    ) {
+        this.performanceReportingEnabled = config.enablePerformanceReporting;
+    }
 
     /** Call once per frame before processing behaviors to update adaptive throttle */
-    beginFrame(): void {
+    beginFrame(_camera?: Camera): void {
         const now = performance.now();
         if (this.lastFrameTime > 0) {
             const dt = now - this.lastFrameTime;
@@ -116,18 +127,33 @@ class BehaviorThrottler implements IBehaviorThrottler {
         this.lastFrameTime = now;
         // Merge external orchestrator pressure (take the higher of local vs external)
         this.adaptiveMultiplier = Math.max(this.adaptiveMultiplier, this._externalPressureMultiplier);
+        this.distanceFrameCamera = null;
+        this.visibilityFrameCamera = null;
+    }
+
+    endFrame(): void {
+        if (this.distanceFrameCamera) {
+            this.distanceThrottler.endFrame?.();
+            this.distanceFrameCamera = null;
+        }
+        if (this.visibilityFrameCamera) {
+            this.visibilityChecker.endFrame?.();
+            this.visibilityFrameCamera = null;
+        }
     }
 
     setPressureMultiplier(multiplier: number): void {
-        this._externalPressureMultiplier = Math.max(1, Math.min(4, multiplier));
+        this._externalPressureMultiplier = this.normalizeScheduleFactor(multiplier, 1, 4);
     }
 
     shouldUpdateBehavior(
         behavior: Behavior,
-        camera: THREE.Camera,
+        camera: Camera,
         frameCount: number,
     ): IThrottleDecision {
-        this.performanceMonitor.recordCheck();
+        if (this.performanceReportingEnabled) {
+            this.performanceMonitor.recordCheck();
+        }
 
         // STEP 0: Check if throttling is globally disabled
         if (!this.config.throttlingEnabled) {
@@ -156,7 +182,8 @@ class BehaviorThrottler implements IBehaviorThrottler {
         let combinedFactor = Math.max(priorityFactor, this.adaptiveMultiplier);
 
         if (this.config.enableDistanceThrottling && behavior.throttleConfig.enableDistanceThrottling) {
-            const distanceFactor = this.distanceThrottler.getDistanceFactor(behavior.target, camera);
+            this.prepareDistanceFrame(camera);
+            const distanceFactor = this.distanceThrottler.getDistanceFactor(behavior.target, camera, frameCount);
             combinedFactor = Math.min(priorityFactor * distanceFactor, 60);
             combinedFactor = Math.max(combinedFactor, this.adaptiveMultiplier);
         }
@@ -164,9 +191,12 @@ class BehaviorThrottler implements IBehaviorThrottler {
         // STEP 4: Frustum culling — boost throttle instead of hard-cull
         // Invisible behaviors still run at heavily reduced rate (e.g. AI behind camera)
         if (this.config.enableFrustumCulling && behavior.throttleConfig.enableFrustumCulling) {
+            this.prepareVisibilityFrame(camera);
             const isVisible = this.visibilityChecker.isVisible(behavior.target, camera);
             if (!isVisible) {
-                this.performanceMonitor.recordCull();
+                if (this.performanceReportingEnabled) {
+                    this.performanceMonitor.recordCull();
+                }
                 // Opt-in full skip for visual-only behaviors (not CRITICAL)
                 if (behavior.throttleConfig.skipWhenInvisible) {
                     return { shouldUpdate: false, reason: 'invisible-skip' };
@@ -178,23 +208,141 @@ class BehaviorThrottler implements IBehaviorThrottler {
         // STEP 5: Stable interleave using UUID hash (prevents frame spikes)
         // Without this, ALL behaviors with factor=3 skip the same frames.
         // Hash spreads them evenly so ~1/3 run each frame.
-        if (combinedFactor > 1) {
-            let hash = behavior.target?.userData?._behaviorHash as number | undefined;
-            if (hash === undefined) {
-                hash = this.stableHash(behavior.uuid);
-                if (behavior.target) behavior.target.userData._behaviorHash = hash;
-            }
-            if (hash % combinedFactor !== frameCount % combinedFactor) {
-                this.performanceMonitor.recordThrottle();
+        const scheduleFactor = this.normalizeScheduleFactor(combinedFactor);
+        if (scheduleFactor > 1) {
+            const hash = this.getThrottleHash(behavior);
+            if (hash % scheduleFactor !== this.getFrameModulo(frameCount, scheduleFactor)) {
+                if (this.performanceReportingEnabled) {
+                    this.performanceMonitor.recordThrottle();
+                }
                 return {
                     shouldUpdate: false,
-                    reason: `throttled-factor-${combinedFactor}`,
-                    priority: combinedFactor,
+                    reason: `throttled-factor-${scheduleFactor}`,
+                    priority: scheduleFactor,
                 };
             }
         }
 
         return { shouldUpdate: true, reason: 'passed-all-checks' };
+    }
+
+    shouldUpdateBehaviorFast(
+        behavior: Behavior,
+        camera: Camera,
+        frameCount: number,
+    ): boolean {
+        if (this.performanceReportingEnabled) {
+            this.performanceMonitor.recordCheck();
+        }
+
+        if (!this.config.throttlingEnabled) {
+            return true;
+        }
+
+        const priorityFactor = this.config.priorityThrottleFactors[behavior.throttleConfig.throttlePriority];
+
+        if (behavior.throttleConfig.throttlePriority === BehaviorThrottlePriority.CRITICAL) {
+            return true;
+        }
+
+        if (behavior.throttleConfig.requiresConsistentUpdates) {
+            return true;
+        }
+
+        if (!behavior.target) {
+            return true;
+        }
+
+        let combinedFactor = Math.max(priorityFactor, this.adaptiveMultiplier);
+
+        if (this.config.enableDistanceThrottling && behavior.throttleConfig.enableDistanceThrottling) {
+            this.prepareDistanceFrame(camera);
+            const distanceFactor = this.distanceThrottler.getDistanceFactor(behavior.target, camera, frameCount);
+            combinedFactor = Math.min(priorityFactor * distanceFactor, 60);
+            combinedFactor = Math.max(combinedFactor, this.adaptiveMultiplier);
+        }
+
+        if (this.config.enableFrustumCulling && behavior.throttleConfig.enableFrustumCulling) {
+            this.prepareVisibilityFrame(camera);
+            const isVisible = this.visibilityChecker.isVisible(behavior.target, camera);
+            if (!isVisible) {
+                if (this.performanceReportingEnabled) {
+                    this.performanceMonitor.recordCull();
+                }
+                if (behavior.throttleConfig.skipWhenInvisible) {
+                    return false;
+                }
+                combinedFactor = Math.max(combinedFactor, 20);
+            }
+        }
+
+        const scheduleFactor = this.normalizeScheduleFactor(combinedFactor);
+        if (scheduleFactor > 1) {
+            const hash = this.getThrottleHash(behavior);
+            if (hash % scheduleFactor !== this.getFrameModulo(frameCount, scheduleFactor)) {
+                if (this.performanceReportingEnabled) {
+                    this.performanceMonitor.recordThrottle();
+                }
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private prepareDistanceFrame(camera: Camera): void {
+        if (this.distanceFrameCamera === camera) {
+            return;
+        }
+        if (this.distanceFrameCamera) {
+            this.distanceThrottler.endFrame?.();
+        }
+        this.distanceThrottler.beginFrame?.(camera);
+        this.distanceFrameCamera = camera;
+    }
+
+    private prepareVisibilityFrame(camera: Camera): void {
+        if (this.visibilityFrameCamera === camera) {
+            return;
+        }
+        if (this.visibilityFrameCamera) {
+            this.visibilityChecker.endFrame?.();
+        }
+        this.visibilityChecker.beginFrame?.(camera);
+        this.visibilityFrameCamera = camera;
+    }
+
+    private getFrameModulo(frameCount: number, scheduleFactor: number): number {
+        if (scheduleFactor <= 1) {
+            return 0;
+        }
+
+        if (scheduleFactor < this.frameModuloCacheFrames.length) {
+            if (this.frameModuloCacheFrames[scheduleFactor] !== frameCount) {
+                this.frameModuloCacheFrames[scheduleFactor] = frameCount;
+                this.frameModuloCacheValues[scheduleFactor] = frameCount % scheduleFactor;
+            }
+            return this.frameModuloCacheValues[scheduleFactor]!;
+        }
+
+        return frameCount % scheduleFactor;
+    }
+
+    private getThrottleHash(behavior: Behavior): number {
+        const throttledBehavior = behavior as ThrottledBehavior;
+        let hash = throttledBehavior._throttleHash;
+        if (hash === undefined) {
+            hash = this.stableHash(behavior.uuid);
+            throttledBehavior._throttleHash = hash;
+        }
+        return hash;
+    }
+
+    private normalizeScheduleFactor(factor: number, min = 1, max = 60): number {
+        if (!Number.isFinite(factor)) {
+            return min;
+        }
+        return Math.max(min, Math.min(max, Math.ceil(factor)));
     }
 
     /**
@@ -212,6 +360,7 @@ class BehaviorThrottler implements IBehaviorThrottler {
     configure(config: Partial<IThrottleConfig>): void {
         const validator = new ConfigValidator();
         this.config = validator.validate({ ...this.config, ...config });
+        this.performanceReportingEnabled = this.config.enablePerformanceReporting;
         this.distanceThrottler.updateConfig(this.config);
     }
 
@@ -224,6 +373,7 @@ class BehaviorThrottler implements IBehaviorThrottler {
     }
 
     dispose(): void {
+        this.distanceThrottler.endFrame?.();
         this.visibilityChecker.dispose();
         this.performanceMonitor.dispose();
     }
@@ -231,38 +381,54 @@ class BehaviorThrottler implements IBehaviorThrottler {
 
 class DistanceThrottler implements IDistanceThrottler {
     private config: IThrottleConfig = DEFAULT_THROTTLE_CONFIG;
-    private objectWorldPosAux = new THREE.Vector3();
-    private cameraWorldPosAux = new THREE.Vector3();
+    private objectWorldPosAux = new Vector3();
+    private cameraWorldPosAux = new Vector3();
     private spatialGrid: ISpatialGrid | null = null;
+    private cameraCachedFrame = -1;
+    private cameraCachedUuid = "";
+    private preparedFrameCamera: Camera | null = null;
+    private readonly worldMatrixCache = new FrameWorldMatrixCache();
 
     setSpatialGrid(grid: ISpatialGrid | null): void {
         this.spatialGrid = grid;
     }
 
-    private getDistanceSq(object: THREE.Object3D, camera: THREE.Camera): number {
+    beginFrame(camera: Camera): void {
+        this.worldMatrixCache.beginFrame();
+        this.readWorldPosition(camera, this.cameraWorldPosAux);
+        this.cameraCachedFrame = -1;
+        this.cameraCachedUuid = camera.uuid;
+        this.preparedFrameCamera = camera;
+    }
+
+    endFrame(): void {
+        this.worldMatrixCache.endFrame();
+        this.preparedFrameCamera = null;
+    }
+
+    private getDistanceSq(object: Object3D, camera: Camera, frameCount?: number): number {
+        const cameraPosition = this.getCameraWorldPosition(camera, frameCount);
         // Use spatial grid for O(1) lookup when available
         if (this.spatialGrid) {
-            camera.getWorldPosition(this.cameraWorldPosAux);
-            const gridDist = this.spatialGrid.getDistanceSq(object.uuid, this.cameraWorldPosAux);
+            const gridDist = this.spatialGrid.getDistanceSq(object.uuid, cameraPosition);
             if (gridDist !== null && gridDist !== undefined) {
                 return gridDist;
             }
         }
         // Fallback: compute world positions (O(n) path)
-        object.getWorldPosition(this.objectWorldPosAux);
-        camera.getWorldPosition(this.cameraWorldPosAux);
-        return this.objectWorldPosAux.distanceToSquared(this.cameraWorldPosAux);
+        this.readWorldPosition(object, this.objectWorldPosAux);
+        return this.objectWorldPosAux.distanceToSquared(cameraPosition);
     }
 
-    getDistanceFactor(object: THREE.Object3D, camera: THREE.Camera): number {
-        const distanceSq = this.getDistanceSq(object, camera);
+    getDistanceFactor(object: Object3D, camera: Camera, frameCount?: number): number {
+        const distanceSq = this.getDistanceSq(object, camera, frameCount);
         if (distanceSq > this.config.veryFarDistanceSq) return this.config.veryFarThrottleFactor;
         if (distanceSq > this.config.farDistanceSq) return this.config.farThrottleFactor;
         return 1;
     }
 
-    shouldThrottle(object: THREE.Object3D, camera: THREE.Camera, frameCount: number): IThrottleDecision {
-        const distanceSq = this.getDistanceSq(object, camera);
+    shouldThrottle(object: Object3D, camera: Camera, frameCount: number): IThrottleDecision {
+        const distanceSq = this.getDistanceSq(object, camera, frameCount);
 
         if (distanceSq > this.config.veryFarDistanceSq) {
             const shouldUpdate = frameCount % this.config.veryFarThrottleFactor === 0;
@@ -285,6 +451,34 @@ class DistanceThrottler implements IDistanceThrottler {
 
     updateConfig(config: IThrottleConfig): void {
         this.config = config;
+    }
+
+    private getCameraWorldPosition(camera: Camera, frameCount?: number): Vector3 {
+        if (this.preparedFrameCamera === camera) {
+            return this.cameraWorldPosAux;
+        }
+
+        if (
+            frameCount !== undefined &&
+            this.cameraCachedFrame === frameCount &&
+            this.cameraCachedUuid === camera.uuid &&
+            this.worldMatrixCache.isCurrent(camera)
+        ) {
+            return this.cameraWorldPosAux;
+        }
+
+        this.readWorldPosition(camera, this.cameraWorldPosAux);
+        this.cameraCachedFrame = frameCount ?? -1;
+        this.cameraCachedUuid = camera.uuid;
+        return this.cameraWorldPosAux;
+    }
+
+    private readWorldPosition(object: Object3D, target: Vector3): void {
+        if (!this.worldMatrixCache.isCurrent(object)) {
+            object.updateWorldMatrix(true, false);
+            this.worldMatrixCache.markCurrent(object);
+        }
+        target.setFromMatrixPosition(object.matrixWorld);
     }
 }
 
@@ -335,23 +529,51 @@ class PerformanceMonitor implements IPerformanceMonitor {
 
 class ConfigValidator implements IConfigValidator {
     validate(config: Partial<IThrottleConfig>): IThrottleConfig {
+        const configuredPriorityFactors = config.priorityThrottleFactors as Partial<Record<BehaviorThrottlePriority, number>> | undefined;
+
         return {
             farDistanceSq: this.validateNumber(config.farDistanceSq, DEFAULT_THROTTLE_CONFIG.farDistanceSq, 100, 100000),
             veryFarDistanceSq: this.validateNumber(
-                config.veryFarDistanceSq, 
-                DEFAULT_THROTTLE_CONFIG.veryFarDistanceSq, 
-                config.farDistanceSq || DEFAULT_THROTTLE_CONFIG.farDistanceSq, 
+                config.veryFarDistanceSq,
+                DEFAULT_THROTTLE_CONFIG.veryFarDistanceSq,
+                config.farDistanceSq || DEFAULT_THROTTLE_CONFIG.farDistanceSq,
                 1000000,
             ),
-            farThrottleFactor: Math.max(1, Math.min(60, Math.floor(config.farThrottleFactor || DEFAULT_THROTTLE_CONFIG.farThrottleFactor))),
-            veryFarThrottleFactor: Math.max(1, Math.min(120, Math.floor(config.veryFarThrottleFactor || DEFAULT_THROTTLE_CONFIG.veryFarThrottleFactor))),
+            farThrottleFactor: this.validateScheduleFactor(
+                config.farThrottleFactor,
+                DEFAULT_THROTTLE_CONFIG.farThrottleFactor,
+                60,
+            ),
+            veryFarThrottleFactor: this.validateScheduleFactor(
+                config.veryFarThrottleFactor,
+                DEFAULT_THROTTLE_CONFIG.veryFarThrottleFactor,
+                120,
+            ),
             enableFrustumCulling: config.enableFrustumCulling ?? DEFAULT_THROTTLE_CONFIG.enableFrustumCulling,
             enableDistanceThrottling: config.enableDistanceThrottling ?? DEFAULT_THROTTLE_CONFIG.enableDistanceThrottling,
             enablePerformanceReporting: config.enablePerformanceReporting ?? DEFAULT_THROTTLE_CONFIG.enablePerformanceReporting,
             throttlingEnabled: config.throttlingEnabled ?? DEFAULT_THROTTLE_CONFIG.throttlingEnabled,
             priorityThrottleFactors: {
-                ...DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors,
-                ...config.priorityThrottleFactors || {},
+                [BehaviorThrottlePriority.CRITICAL]: this.validateScheduleFactor(
+                    configuredPriorityFactors?.[BehaviorThrottlePriority.CRITICAL],
+                    DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors[BehaviorThrottlePriority.CRITICAL],
+                ),
+                [BehaviorThrottlePriority.HIGH]: this.validateScheduleFactor(
+                    configuredPriorityFactors?.[BehaviorThrottlePriority.HIGH],
+                    DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors[BehaviorThrottlePriority.HIGH],
+                ),
+                [BehaviorThrottlePriority.MEDIUM]: this.validateScheduleFactor(
+                    configuredPriorityFactors?.[BehaviorThrottlePriority.MEDIUM],
+                    DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors[BehaviorThrottlePriority.MEDIUM],
+                ),
+                [BehaviorThrottlePriority.LOW]: this.validateScheduleFactor(
+                    configuredPriorityFactors?.[BehaviorThrottlePriority.LOW],
+                    DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors[BehaviorThrottlePriority.LOW],
+                ),
+                [BehaviorThrottlePriority.MINIMAL]: this.validateScheduleFactor(
+                    configuredPriorityFactors?.[BehaviorThrottlePriority.MINIMAL],
+                    DEFAULT_THROTTLE_CONFIG.priorityThrottleFactors[BehaviorThrottlePriority.MINIMAL],
+                ),
             },
         };
     }
@@ -361,5 +583,12 @@ class ConfigValidator implements IConfigValidator {
             return defaultValue;
         }
         return Math.max(min, Math.min(max, value));
+    }
+
+    private validateScheduleFactor(value: number | undefined, defaultValue: number, max = 60): number {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            return defaultValue;
+        }
+        return Math.max(1, Math.min(max, Math.floor(value)));
     }
 }

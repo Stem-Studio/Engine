@@ -15,7 +15,7 @@ class LineDashedMaterialSerializer extends BaseSerializer {
     }
 
     fromJSON(json, parent, options) {
-        var obj = parent === undefined ? this.defaultMaterial : parent;
+        var obj = parent === undefined ? this.defaultMaterial.clone() : parent;
 
         MaterialSerializer.prototype.fromJSON.call(this, json, obj, options);
 

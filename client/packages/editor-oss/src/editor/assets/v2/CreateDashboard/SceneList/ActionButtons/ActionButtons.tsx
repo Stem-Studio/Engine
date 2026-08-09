@@ -2,10 +2,9 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import React, {useEffect, useState} from "react";
 
-import {fetchRemixesOfScene} from "@stem/network/api/scene";
-import {forkScene} from "@stem/network/api/scene/v2";
+import {fetchRemixesOfScene} from "@stem/network/api/scene/list";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import global from "@stem/editor-oss/global";
 import {showToast} from "@stem/editor-oss/showToast";
 import {ItemMenuText, RightClickMenu} from "../../../../../../ui/common/RightClickMenu/RightClickMenu";
@@ -93,6 +92,7 @@ export const ActionButtons = ({
         }
         setShowLoading(true);
         try {
+            const {forkScene} = await import("@stem/network/api/scene/actions");
             const result = await forkScene(scene.ID);
             showToast({type: "success", title: "Starting a remix"});
             if (result?.newSceneId) {

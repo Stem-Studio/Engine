@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 export type QuickBuildStampKind =
     | "ground"
@@ -234,6 +235,50 @@ const MATERIALS = {
 
 function cloneSharedMaterial(material: THREE.Material): THREE.Material {
     return material.clone();
+}
+
+function isEmptyQuickBuildMaterial(material: THREE.Material | null | undefined): boolean {
+    if (!material || material.isMaterial !== true) return true;
+
+    const candidate = material as THREE.Material & {
+        color?: THREE.Color;
+        emissive?: THREE.Color;
+        roughness?: number;
+        metalness?: number;
+        opacity?: number;
+        transparent?: boolean;
+        name?: string;
+        map?: THREE.Texture | null;
+        normalMap?: THREE.Texture | null;
+        roughnessMap?: THREE.Texture | null;
+        metalnessMap?: THREE.Texture | null;
+        userData?: Record<string, unknown>;
+    };
+
+    // A material entry containing only serializer metadata can be restored by
+    // Three.js as either the default white MeshStandardMaterial or the
+    // MeshBasicMaterial fallback used when an older save contains
+    // `material: null`. Treat both shapes as empty for Quick Build so authored
+    // palette materials are restored instead of leaving a visually blank slot.
+    const hasNoAuthoredOverrides = candidate.opacity === 1
+        && candidate.transparent !== true
+        && !candidate.name
+        && !candidate.map
+        && !candidate.normalMap
+        && !candidate.roughnessMap
+        && !candidate.metalnessMap
+        && Object.keys(candidate.userData ?? {}).length === 0;
+    if (!hasNoAuthoredOverrides) return false;
+    if (candidate.type === "Material") return true;
+    if (candidate.color?.getHex() !== 0xffffff) return false;
+
+    if (candidate.type === "MeshStandardMaterial") {
+        return candidate.emissive?.getHex() === 0
+            && candidate.roughness === 1
+            && candidate.metalness === 0;
+    }
+
+    return candidate.type === "MeshBasicMaterial";
 }
 
 function createTopTexturableBoxMaterials(material: THREE.Material): THREE.Material[] {
@@ -478,7 +523,7 @@ function createFenceSegment() {
 
 function disposeQuickBuildObjectChildren(object: THREE.Object3D) {
     for (const child of [...object.children]) {
-        child.traverse(node => {
+        traverseObjectDepthFirst(child, node => {
             const mesh = node as THREE.Mesh;
             if (!mesh.isMesh) return;
             mesh.geometry?.dispose();
@@ -837,7 +882,7 @@ export function repairQuickBuildRenderableState(object: THREE.Object3D | null | 
         repaired = true;
     }
 
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         const mesh = child as THREE.Mesh;
         if (!mesh.isMesh) return;
 
@@ -847,7 +892,28 @@ export function repairQuickBuildRenderableState(object: THREE.Object3D | null | 
         }
 
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of materials) {
+        const invalidMaterialIndex = materials.findIndex(material =>
+            !material
+            || (material as THREE.Material).isMaterial !== true
+            || isEmptyQuickBuildMaterial(material as THREE.Material),
+        );
+        if (materials.length === 0 || invalidMaterialIndex >= 0) {
+            const fallback = getQuickBuildFallbackMaterial(metadata, mesh.userData?.quickBuildPart);
+            const groupCount = mesh.geometry?.groups?.length ?? 0;
+            const materialCount = Math.max(groupCount, materials.length, 1);
+            mesh.material = Array.from({length: materialCount}, (_, index) => {
+                const existing = materials[index];
+                return existing
+                    && (existing as THREE.Material).isMaterial === true
+                    && !isEmptyQuickBuildMaterial(existing as THREE.Material)
+                    ? existing
+                    : cloneSharedMaterial(fallback);
+            });
+            repaired = true;
+        }
+
+        const repairedMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of repairedMaterials) {
             if (material.visible !== true) {
                 material.visible = true;
                 repaired = true;
@@ -857,6 +923,42 @@ export function repairQuickBuildRenderableState(object: THREE.Object3D | null | 
     });
 
     return repaired;
+}
+
+function getQuickBuildFallbackMaterial(
+    metadata: QuickBuildMetadata,
+    part: unknown,
+): THREE.Material {
+    const partName = typeof part === "string" ? part : "";
+    if (metadata.kind === "farm" && partName.includes("crop")) return MATERIALS.crop;
+    if (metadata.kind === "tree") return partName.includes("trunk") ? MATERIALS.trunk : MATERIALS.canopy;
+    if (metadata.kind === "bush") {
+        if (metadata.variantId === "bush-hedge") return MATERIALS.hedge;
+        if (metadata.variantId === "bush-flowering") return MATERIALS.flower;
+        return MATERIALS.bush;
+    }
+    if (metadata.kind === "path") {
+        if (metadata.variantId === "path-street") return MATERIALS.street;
+        if (metadata.variantId === "path-cobble") return MATERIALS.cobble;
+        return MATERIALS.path;
+    }
+    if (metadata.kind === "bridge") return partName.includes("rail") ? MATERIALS.bridgeRail : MATERIALS.bridge;
+    if (metadata.kind === "house") {
+        if (metadata.variantId === "house-cabin") return partName.includes("roof") ? MATERIALS.cabinRoof : MATERIALS.cabinWall;
+        if (metadata.variantId === "house-townhouse") return partName.includes("roof") ? MATERIALS.townhouseRoof : MATERIALS.townhouseWall;
+        return partName.includes("roof") ? MATERIALS.houseRoof : MATERIALS.houseWall;
+    }
+    if (metadata.kind === "lamp") return partName.includes("glow") ? MATERIALS.lampGlow : MATERIALS.lampPost;
+    if (metadata.kind === "stone") return MATERIALS.stoneTile;
+    const fallbackByKind: Partial<Record<QuickBuildStampKind, THREE.Material>> = {
+        ground: MATERIALS.ground,
+        sand: MATERIALS.sand,
+        water: MATERIALS.water,
+        farm: MATERIALS.farm,
+        fence: MATERIALS.fence,
+        rock: MATERIALS.rock,
+    };
+    return fallbackByKind[metadata.kind] ?? MATERIALS.ground;
 }
 
 export function normalizeQuickBuildConnections(value: unknown): QuickBuildConnections {
@@ -961,7 +1063,7 @@ export function applyQuickBuildConnections(object: THREE.Object3D, connections: 
     if (metadata.kind !== "path" && metadata.kind !== "bridge") return;
 
     const hasConnections = QUICK_BUILD_DIRECTIONS.some(direction => connections[direction]);
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         const part = child.userData?.quickBuildPart;
         const prefix = `${metadata.kind}-`;
         if (typeof part !== "string" || !part.startsWith(prefix)) return;
@@ -987,7 +1089,7 @@ export function createQuickBuildPreviewObject(kind: QuickBuildStampKind, options
     object.userData.isSelectable = false;
     object.userData.editorVisibility = false;
     object.userData.gameVisibility = false;
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         child.userData.isQuickBuildPreview = true;
         child.userData.isQuickBuildObject = false;
         const mesh = child as THREE.Mesh;

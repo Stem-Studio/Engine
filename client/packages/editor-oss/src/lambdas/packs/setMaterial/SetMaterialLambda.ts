@@ -1,6 +1,7 @@
 import { Color, Material, Mesh, Object3D } from "three";
 
 import { LambdaBase } from "../../LambdaBase";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 type SetMaterialData = {
     color?: string;
@@ -52,7 +53,7 @@ export default class SetMaterialLambda extends LambdaBase {
 
             this.applyToObject(object, cfg);
             if (includeChildren) {
-                object.traverse(child => this.applyToObject(child, cfg));
+                traverseObjectDepthFirst(object, child => this.applyToObject(child, cfg), {includeRoot: false});
             }
         });
     }

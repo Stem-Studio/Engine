@@ -1,5 +1,4 @@
-import * as THREE from "three";
-
+import {BoxGeometry, Group, Mesh, MeshStandardMaterial, SphereGeometry} from "three";
 class XRHandPrimitiveModel {
     constructor(handModel, controller, path, handedness, options) {
         this.controller = controller;
@@ -7,24 +6,24 @@ class XRHandPrimitiveModel {
 
         this.envMap = null;
 
-        this.handMesh = new THREE.Group();
+        this.handMesh = new Group();
         this.handModel.add(this.handMesh);
 
         if (window.XRHand) {
             let geometry;
 
             if (!options || !options.primitive || options.primitive === "sphere") {
-                geometry = new THREE.SphereGeometry(1, 10, 10);
+                geometry = new SphereGeometry(1, 10, 10);
             } else if (options.primitive === "box") {
-                geometry = new THREE.BoxGeometry(1, 1, 1);
+                geometry = new BoxGeometry(1, 1, 1);
             }
 
-            const jointMaterial = new THREE.MeshStandardMaterial({
+            const jointMaterial = new MeshStandardMaterial({
                 color: 0xffffff,
                 roughness: 1,
                 metalness: 0,
             });
-            const tipMaterial = new THREE.MeshStandardMaterial({
+            const tipMaterial = new MeshStandardMaterial({
                 color: 0x999999,
                 roughness: 1,
                 metalness: 0,
@@ -59,7 +58,7 @@ class XRHandPrimitiveModel {
             ];
 
             for (const jointName of joints) {
-                var cube = new THREE.Mesh(geometry, jointName.indexOf("tip") !== -1 ? tipMaterial : jointMaterial);
+                var cube = new Mesh(geometry, jointName.indexOf("tip") !== -1 ? tipMaterial : jointMaterial);
                 cube.castShadow = true;
                 cube.receiveShadow = true;
                 cube.jointName = jointName;

@@ -8,6 +8,7 @@ import {
     getCurrentDeviceOrientation,
     getOrientationTarget,
     isOrientationRequired,
+    normalizeOrientationPolicy,
     type OrientationPolicy,
     requestOrientationLock,
     shouldApplyOrientationPolicy,
@@ -16,23 +17,44 @@ import {
 interface Props {
     policy?: OrientationPolicy;
     enabled?: boolean;
+    applyOnNarrowViewport?: boolean;
+    onBlockingChange?: (blocked: boolean) => void;
 }
+
+export const shouldBlockOrientation = (
+    policy: OrientationPolicy,
+    enabled: boolean,
+    currentOrientation: ReturnType<typeof getCurrentDeviceOrientation>,
+    applyOnNarrowViewport = false,
+): boolean => {
+    if (!enabled) return false;
+    const compactViewportApplies =
+        applyOnNarrowViewport &&
+        typeof window !== "undefined" &&
+        window.matchMedia("(max-width: 600px)").matches;
+    const policyApplies = shouldApplyOrientationPolicy(policy) || compactViewportApplies;
+    return policyApplies && !doesOrientationMatchPolicy(policy, currentOrientation);
+};
 
 export const MobileOrientationOverlay: React.FC<Props> = ({
     policy = DEFAULT_ORIENTATION_POLICY,
     enabled = true,
+    applyOnNarrowViewport = false,
+    onBlockingChange,
 }) => {
+    const effectivePolicy = normalizeOrientationPolicy(policy);
     const [currentOrientation, setCurrentOrientation] = useState(getCurrentDeviceOrientation);
+    const blocked = shouldBlockOrientation(effectivePolicy, enabled, currentOrientation, applyOnNarrowViewport);
 
     useEffect(() => {
-        if (!enabled || !shouldApplyOrientationPolicy(policy)) return;
+        if (!enabled || (!shouldApplyOrientationPolicy(effectivePolicy) && !applyOnNarrowViewport)) return;
 
         const updateOrientationState = () => {
             setCurrentOrientation(getCurrentDeviceOrientation());
         };
 
         const relockOrientation = () => {
-            void requestOrientationLock(policy).finally(updateOrientationState);
+            void requestOrientationLock(effectivePolicy).finally(updateOrientationState);
         };
 
         const orientationQuery = window.matchMedia("(orientation: portrait)");
@@ -63,26 +85,35 @@ export const MobileOrientationOverlay: React.FC<Props> = ({
             window.removeEventListener("resize", handleResize);
             document.removeEventListener("fullscreenchange", handleFullscreenChange);
         };
-    }, [enabled, policy]);
+    }, [applyOnNarrowViewport, enabled, effectivePolicy]);
 
-    if (!enabled || !shouldApplyOrientationPolicy(policy) || doesOrientationMatchPolicy(policy, currentOrientation)) {
-        return null;
-    }
+    useEffect(() => {
+        onBlockingChange?.(blocked);
+    }, [blocked, onBlockingChange]);
 
-    const target = getOrientationTarget(policy);
+    if (!blocked) return null;
+
+    const target = getOrientationTarget(effectivePolicy);
     const subtitle = target === "portrait"
-        ? isOrientationRequired(policy)
+        ? isOrientationRequired(effectivePolicy)
             ? t("This experience requires portrait mode.")
             : t("This experience works best in portrait mode.")
-        : isOrientationRequired(policy)
+        : isOrientationRequired(effectivePolicy)
             ? t("This experience requires landscape mode.")
             : t("This experience works best in landscape mode.");
 
     return (
-        <S.Overlay>
-            <RotateIcon />
-            <S.Title>{t("Please Rotate Your Device")}</S.Title>
-            <S.Subtitle>{subtitle}</S.Subtitle>
+        <S.Overlay
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="orientation-gate-title"
+            aria-describedby="orientation-gate-description"
+        >
+            <S.IconShell aria-hidden="true">
+                <RotateIcon />
+            </S.IconShell>
+            <S.Title id="orientation-gate-title">{t("Please Rotate Your Device")}</S.Title>
+            <S.Subtitle id="orientation-gate-description">{subtitle}</S.Subtitle>
         </S.Overlay>
     );
 };

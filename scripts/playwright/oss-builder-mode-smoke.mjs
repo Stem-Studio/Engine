@@ -18,6 +18,15 @@ const baseUrl = (
   process.env.PLAYWRIGHT_BASE_URL || "http://localhost:5173"
 ).replace(/\/$/, "");
 const headed = process.env.HEADED === "1";
+const viewport = (() => {
+  const [width, height] = (process.env.VIEWPORT || "1440x900")
+    .split("x")
+    .map(Number);
+  return Number.isFinite(width) && Number.isFinite(height)
+    ? { width, height }
+    : { width: 1440, height: 900 };
+})();
+const mobileViewport = viewport.width <= 900 && viewport.height <= 500;
 const report = {
   baseUrl,
   startedAt: new Date().toISOString(),
@@ -68,7 +77,7 @@ async function dismissTutorial(page) {
 async function verifyBuilderMode(path, label, screenshotName) {
   const browser = await chromium.launch({ headless: !headed });
   const page = await (
-    await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    await browser.newContext({ viewport, isMobile: mobileViewport, hasTouch: mobileViewport })
   ).newPage();
   page.on("pageerror", (e) =>
     report.pageErrors.push({
@@ -77,14 +86,19 @@ async function verifyBuilderMode(path, label, screenshotName) {
       stack: e.stack?.slice(0, 2000),
     }),
   );
-  page.on("requestfailed", (r) =>
+  page.on("requestfailed", (r) => {
+    const failure = r.failure()?.errorText;
+    // Route teardown and HMR commonly abort an in-flight local module fetch;
+    // it is not a product failure unless the browser reports a real network
+    // error.
+    if (failure === "net::ERR_ABORTED") return;
     report.failedRequests.push({
       label,
       url: r.url(),
       method: r.method(),
-      failure: r.failure()?.errorText,
-    }),
-  );
+      failure,
+    });
+  });
   page.on("response", (r) => {
     if (
       r.status() >= 400 &&
@@ -153,16 +167,16 @@ async function verifyBuilderMode(path, label, screenshotName) {
   }
 }
 
-await verifyBuilderMode(
-  "/create/project?builder=1",
-  "server editor",
-  "server-builder.png",
-);
-await verifyBuilderMode(
-  "/create/project?mode=playground&builder=1",
-  "playground editor",
-  "playground-builder.png",
-);
+const builderScenarios = (
+  process.env.BUILDER_PATHS ||
+  "/create/project?builder=1|server editor|server-builder.png,/create/project?mode=playground&builder=1|playground editor|playground-builder.png"
+)
+  .split(",")
+  .map((entry) => entry.split("|"))
+  .filter(([path, label, screenshot]) => path && label && screenshot);
+for (const [path, label, screenshot] of builderScenarios) {
+  await verifyBuilderMode(path, label, screenshot);
+}
 
 const localFailures = report.failedRequests.filter((item) =>
   item.url?.startsWith(baseUrl),

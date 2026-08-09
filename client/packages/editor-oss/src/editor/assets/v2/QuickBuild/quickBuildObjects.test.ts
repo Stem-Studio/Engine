@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
 import * as THREE from "three";
+import Converter from "@stem/editor-oss/serialization/Converter";
 
 import {
     createQuickBuildObject,
@@ -19,6 +20,22 @@ import {
 import type {QuickBuildStampKind} from "./quickBuildObjects";
 
 describe("quickBuildObjects", () => {
+    it("serializes authored material values for every generated mesh", () => {
+        const object = createQuickBuildObject("ground");
+
+        const parts = new Converter().traverse(object, [], [], {options: {}}, false) as any[];
+        const meshes = parts.filter(part => part?.metadata?.generator === "MeshSerializer");
+        expect(meshes.length).toBeGreaterThan(0);
+        expect(meshes.every(mesh => {
+            const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            return materials.length > 0 && materials.every((material: any) => material && Object.keys(material).length > 1);
+        })).toBe(true);
+        expect(meshes.some(mesh => {
+            const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            return materials.some((material: any) => material?.color === 0x4f8f3a);
+        })).toBe(true);
+    });
+
     it("creates tagged quick build stamps", () => {
         const house = createQuickBuildObject("house");
 
@@ -123,6 +140,46 @@ describe("quickBuildObjects", () => {
         expect(legacy.children.some(child => child.userData.quickBuildPart === "fence-east")).toBe(false);
         expect(legacy.children.some(child => child.userData.quickBuildPart === "fence-rail-low")).toBe(true);
         expect(legacy.children.every(child => Math.abs(child.position.z) < 0.001)).toBe(true);
+    });
+
+    it("repairs empty serialized material arrays after a scene reload", () => {
+        const ground = createQuickBuildObject("ground");
+        const mesh = ground.children.find(child => (child as THREE.Mesh).isMesh) as THREE.Mesh;
+        mesh.material = [];
+
+        expect(repairQuickBuildRenderableState(ground)).toBe(true);
+
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        expect(materials.length).toBeGreaterThanOrEqual(6);
+        expect(materials.every(material => material?.isMaterial === true)).toBe(true);
+        expect(materials.every(material => material.visible === true)).toBe(true);
+    });
+
+    it("repairs metadata-only material entries after a scene reload", () => {
+        const ground = createQuickBuildObject("ground");
+        const mesh = ground.children.find(child => (child as THREE.Mesh).isMesh) as THREE.Mesh;
+        mesh.material = [new THREE.MeshStandardMaterial()];
+
+        expect(repairQuickBuildRenderableState(ground)).toBe(true);
+
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const material = materials[0] as THREE.MeshStandardMaterial;
+        expect(material?.color.getHex()).toBe(0x4f8f3a);
+        expect(material?.roughness).toBe(0.9);
+    });
+
+    it("repairs null-slot MeshBasic fallbacks after a scene reload", () => {
+        const ground = createQuickBuildObject("ground");
+        const mesh = ground.children.find(child => (child as THREE.Mesh).isMesh) as THREE.Mesh;
+        mesh.material = [new THREE.MeshBasicMaterial()];
+
+        expect(repairQuickBuildRenderableState(ground)).toBe(true);
+
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const material = materials[0] as THREE.MeshStandardMaterial;
+        expect(material?.type).toBe("MeshStandardMaterial");
+        expect(material?.color.getHex()).toBe(0x4f8f3a);
+        expect(material?.roughness).toBe(0.9);
     });
 
     it("resolves a quick build root from a child mesh", () => {

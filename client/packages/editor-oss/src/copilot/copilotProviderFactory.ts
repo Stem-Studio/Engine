@@ -8,11 +8,9 @@ let factory: (() => ICopilotProvider) | undefined;
  * registered factory so unit tests can override via `setCopilotProvider()`
  * before any consumer pulls it in.
  *
- * Throws if neither a provider nor a factory is registered. The integrated
- * build calls `setCopilotProviderFactory(() => StudioACPClient.getInstance(app))`
- * from `bootstrap/integratedCopilot.ts`. OSS builds that ship a copilot
- * provider register theirs from their own bootstrap; OSS builds without
- * copilot leave the seam empty and the UI hides the panel.
+ * If no provider is registered, the seam stays empty and the UI hides the
+ * copilot panel. Forks that ship a copilot provider can register it from
+ * their own bootstrap.
  */
 export function getCopilotProvider(): ICopilotProvider | null {
     if (singleton) return singleton;

@@ -15,6 +15,9 @@ class TeleportBehavior extends BehaviorBase {
     private teleportData = {
         target: {} as Object3D,
     };
+    private readonly teleportPosition = new Vector3();
+    private readonly teleportQuaternion = new Quaternion();
+    private readonly teleportEuler = new Euler();
 
     init(game: GameManager) {
         this.game = game;
@@ -37,7 +40,7 @@ class TeleportBehavior extends BehaviorBase {
             return;
         }
 
-        const teleportTarget = this.game?.scene?.getObjectByProperty("uuid", this.attributes.teleportTargetUuid);
+        const teleportTarget = this.game?.getObjectByUUID(this.attributes.teleportTargetUuid);
         const object = context?.other ?? this.game?.player;
 
         if (!teleportTarget || !object) {
@@ -51,9 +54,9 @@ class TeleportBehavior extends BehaviorBase {
         }
         this.game?.cameraControl?.resetCamera();
 
-        const position = teleportTarget.getWorldPosition(new Vector3());
-        const quaternion = teleportTarget.getWorldQuaternion(new Quaternion());
-        const rotationEuler = new Euler();
+        const position = teleportTarget.getWorldPosition(this.teleportPosition);
+        const quaternion = teleportTarget.getWorldQuaternion(this.teleportQuaternion);
+        const rotationEuler = this.teleportEuler;
         rotationEuler.setFromQuaternion(quaternion);
 
         characterBehavior.setPosition(position);

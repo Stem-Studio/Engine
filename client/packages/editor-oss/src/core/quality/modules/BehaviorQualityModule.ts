@@ -9,7 +9,6 @@ export class BehaviorQualityModule implements IQualityModule {
     public readonly name = 'BehaviorQuality';
     
     private behaviorManager: BehaviorManager | null = null;
-    private settings: IQualitySettings | null = null;
     private pendingSettings: IQualitySettings | null = null;
     
     // Throttling configuration
@@ -36,7 +35,6 @@ export class BehaviorQualityModule implements IQualityModule {
     }
 
     public async initialize(settings: IQualitySettings): Promise<void> {
-        this.settings = settings;
         await this.applySettings(settings);
     }
 
@@ -45,8 +43,6 @@ export class BehaviorQualityModule implements IQualityModule {
         if (!settings) {
             throw new Error('BehaviorQualityModule: Settings cannot be null');
         }
-        
-        this.settings = settings;
         
         if (!this.behaviorManager) {
             // Store settings to apply later when behavior manager is available
@@ -68,7 +64,6 @@ export class BehaviorQualityModule implements IQualityModule {
 
     public dispose(): void {
         this.behaviorManager = null;
-        this.settings = null;
     }
 
     private applyUpdateRates(settings: IQualitySettings['behavior']): void {

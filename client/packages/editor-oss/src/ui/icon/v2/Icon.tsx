@@ -1,4 +1,3 @@
-import React from "react";
 import "./css/Icon.css";
 import classNames from "classnames";
 

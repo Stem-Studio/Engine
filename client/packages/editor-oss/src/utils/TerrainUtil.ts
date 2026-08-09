@@ -1,5 +1,4 @@
 import {Mesh, MeshPhongMaterial, PlaneGeometry, RepeatWrapping, TextureLoader} from "three";
-import type Ammo from "ammo";
 
 import { resolveAssetUrl } from "./AssetDownloadUtils";
 import {CollisionFlag, IPhysics, TerrainData} from "../physics/common/types";
@@ -70,6 +69,8 @@ class TerrainUtil {
                     terrainDepth: this.terrainDepth,
                     terrainMinHeight: this.terrainMinHeight,
                     terrainMaxHeight: this.terrainMaxHeight,
+                    terrainWidthExtents: this.terrainWidthExtents,
+                    terrainDepthExtents: this.terrainDepthExtents,
                     collision_flag: CollisionFlag.STATIC,
                     friction: friction,
                     restitution: restitution,
@@ -90,7 +91,7 @@ class TerrainUtil {
         return terrainMesh;
     }
 
-    private createMesh(terrainWidth: number, terrainDepth: number, heightData: Float32Array): Mesh {
+    private createMesh(_terrainWidth: number, _terrainDepth: number, heightData: Float32Array): Mesh {
         //store height data for physics
         this.heightData = heightData;
         //geometry
@@ -161,17 +162,14 @@ class TerrainUtil {
                 if (!ctx) {
                     return reject(new Error("Failed to create canvas context"));
                 }
-                ctx.drawImage(img, 0, 0, width, depth);
-                let pixels = ctx.getImageData(0, 0, width, depth).data;
-                let p = 0;
+                    ctx.drawImage(img, 0, 0, width, depth);
+                    let pixels = ctx.getImageData(0, 0, width, depth).data;
                 for (let i = 0; i < width * depth; i++) {
                     //let p = i * 3 + 1;
-                    p++;
                     let height = ((pixels[i * 4] ?? 0) / 256 + 1) * 0.5 * hRange + minHeight;
-                    data[p] = height;
-                    //console.log(`${p}->${height}`);
-                    resolve(data);
+                    data[i] = height;
                 }
+                resolve(data);
             };
             img.onabort = reject;
             img.onerror = reject;
@@ -179,115 +177,6 @@ class TerrainUtil {
         });
     }
 
-    //physics
-
-    private static createTerrainShapeForPhysics(
-        ammo: typeof Ammo,
-        terrainWidth: number,
-        terrainDepth: number,
-        terrainMinHeight: number,
-        terrainMaxHeight: number,
-        terrainWidthExtents: number,
-        terrainDepthExtents: number,
-        heightData: Float32Array,
-    ): Ammo.btHeightfieldTerrainShape {
-        // This parameter is not really used, since we are using PHY_FLOAT height data type and hence it is ignored
-        const heightScale = 1;
-        // Up axis = 0 for X, 1 for Y, 2 for Z. Normally 1 = Y is used.
-        const upAxis = 1;
-        // hdt, height data type. "PHY_FLOAT" is used. Possible values are "PHY_FLOAT", "PHY_UCHAR", "PHY_SHORT"
-        const hdt = "PHY_FLOAT";
-        // Set this to your needs (inverts the triangles)
-        const flipQuadEdges = false;
-
-        // Creates height data buffer in Ammo heap
-        let ammoHeightData = ammo._malloc(4 * terrainWidth * terrainDepth);
-
-        // Copy the javascript height data array to the Ammo one.
-        let p = 0;
-        let p2 = 0;
-
-        for (let j = 0; j < terrainDepth; j++) {
-            for (let i = 0; i < terrainWidth; i++) {
-                // write 32-bit float data to memory
-                ammo.HEAPF32[ammoHeightData + p2 >> 2] = heightData[p] as number;
-                p++;
-                // 4 bytes/float
-                p2 += 4;
-            }
-        }
-
-        // Creates the heightfield physics shape
-        const heightFieldShape = new ammo.btHeightfieldTerrainShape(
-            terrainWidth,
-            terrainDepth,
-            ammoHeightData,
-            heightScale,
-            terrainMinHeight,
-            terrainMaxHeight,
-            upAxis,
-            hdt,
-            flipQuadEdges,
-        );
-
-        // Set horizontal scale
-        const scaleX = terrainWidthExtents / (terrainWidth - 1);
-        const scaleZ = terrainDepthExtents / (terrainDepth - 1);
-        const scalingVector = new ammo.btVector3(scaleX, 1, scaleZ);
-        heightFieldShape.setLocalScaling(scalingVector);
-        ammo.destroy(scalingVector); // Clean up temporary vector
-
-        heightFieldShape.setMargin(0.05);
-
-        return heightFieldShape;
-    }
-
-    static createRigidBody(
-        ammo: typeof Ammo,
-        terrainWidth: number,
-        terrainDepth: number,
-        terrainMinHeight: number,
-        terrainMaxHeight: number,
-        terrainWidthExtents: number,
-        terrainDepthExtents: number,
-        heightData: Float32Array,
-    ): Ammo.btRigidBody {
-        // Create the terrain body
-        const groundShape = this.createTerrainShapeForPhysics(
-            ammo,
-            terrainWidth,
-            terrainDepth,
-            terrainMinHeight,
-            terrainMaxHeight,
-            terrainWidthExtents,
-            terrainDepthExtents,
-            heightData,
-        );
-        const groundTransform = new ammo.btTransform();
-        groundTransform.setIdentity();
-        // Shifts the terrain, since bullet re-centers it on its bounding box.
-        const originVector = new ammo.btVector3(0, (terrainMaxHeight + terrainMinHeight) / 2, 0);
-        groundTransform.setOrigin(originVector);
-        ammo.destroy(originVector); // Clean up temporary vector
-        
-        const groundMass = 0;
-        const groundLocalInertia = new ammo.btVector3(0, 0, 0);
-        const groundMotionState = new ammo.btDefaultMotionState(groundTransform);
-        const rbInfo = new ammo.btRigidBodyConstructionInfo(groundMass, groundMotionState, groundShape, groundLocalInertia);
-        const groundBody = new ammo.btRigidBody(rbInfo);
-        
-        // Clean up temporary objects
-        ammo.destroy(groundTransform);
-        ammo.destroy(groundLocalInertia);
-        ammo.destroy(rbInfo);
-
-        return groundBody;
-
-        //app.addPhysicsObject(terrainMesh, groundBody);
-
-        //physicsWorld.addRigidBody( groundBody );
-        //transformAux1 = new scene.userData.physics.Ammo.btTransform();
-    }
 }
 
 export default TerrainUtil;

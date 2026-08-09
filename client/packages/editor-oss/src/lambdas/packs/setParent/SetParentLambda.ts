@@ -9,6 +9,7 @@ type SetParentData = {
 
 export default class SetParentLambda extends LambdaBase {
     private worldMatrix = new Matrix4();
+    private parentInverseMatrix = new Matrix4();
 
     private resolveParent(parentUUID?: string): Object3D | null {
         if (!this._game?.scene) {
@@ -17,7 +18,7 @@ export default class SetParentLambda extends LambdaBase {
         if (!parentUUID) {
             return this._game.scene;
         }
-        return this._game.scene.getObjectByProperty("uuid", parentUUID) || null;
+        return this._game.getObjectByUUID(parentUUID);
     }
 
     update(deltaTime: number = 0.016): void {
@@ -36,8 +37,8 @@ export default class SetParentLambda extends LambdaBase {
             parent.add(object);
 
             if (keepWorld) {
-                const parentInverse = parent.matrixWorld.clone().invert();
-                object.matrix.copy(parentInverse.multiply(this.worldMatrix));
+                this.parentInverseMatrix.copy(parent.matrixWorld).invert();
+                object.matrix.copy(this.parentInverseMatrix.multiply(this.worldMatrix));
                 object.matrix.decompose(object.position, object.quaternion, object.scale);
             }
         });

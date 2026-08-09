@@ -16,7 +16,7 @@ const NUMBER_PRECISION = 6;
  * @param key
  * @param value
  */
-function parseNumber(key: string, value: unknown) {
+function parseNumber(_key: string, value: unknown) {
     return typeof value === "number" ? parseFloat(value.toFixed(NUMBER_PRECISION)) : value;
 }
 

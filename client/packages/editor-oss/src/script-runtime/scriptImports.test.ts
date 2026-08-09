@@ -5,6 +5,7 @@ import {
     buildScriptImportAliases,
     getScriptImportDependencies,
     loadScriptImportRevisionMap,
+    loadReferencedScriptImportRevisionMap,
     parseScriptImports,
     remapScriptImportSpecifiers,
 } from "./scriptImports";
@@ -160,6 +161,54 @@ describe("scriptImports", () => {
         );
     });
 
+    it("returns only revisions reachable from the source when an existing bundle map is provided", async () => {
+        const existing = {
+            "helperAsset:helperRev": {
+                assetId: "helperAsset",
+                revisionId: "helperRev",
+                code: '@import "nested" as nested\nfunction clamp(v) { return nested.scale(v); }',
+            },
+            "nestedAsset:nestedRev": {
+                assetId: "nestedAsset",
+                revisionId: "nestedRev",
+                code: "function scale(v) { return v * 2; }",
+            },
+            "unusedAsset:unusedRev": {
+                assetId: "unusedAsset",
+                revisionId: "unusedRev",
+                code: "function unused() { return true; }",
+            },
+        };
+
+        const revisionMap = await loadReferencedScriptImportRevisionMap('@import "helper" as math', context, existing);
+
+        expect(Object.keys(revisionMap).sort()).toEqual(["helperAsset:helperRev", "nestedAsset:nestedRev"]);
+        expect(mockGetImportRevisionData).not.toHaveBeenCalled();
+    });
+
+    it("fetches missing transitive revisions while still returning a compact reachable map", async () => {
+        mockGetImportRevisionData.mockResolvedValue({
+            code: "function scale(v) { return v * 2; }",
+        });
+        const existing = {
+            "helperAsset:helperRev": {
+                assetId: "helperAsset",
+                revisionId: "helperRev",
+                code: '@import "nested" as nested\nfunction clamp(v) { return nested.scale(v); }',
+            },
+            "unusedAsset:unusedRev": {
+                assetId: "unusedAsset",
+                revisionId: "unusedRev",
+                code: "function unused() { return true; }",
+            },
+        };
+
+        const revisionMap = await loadReferencedScriptImportRevisionMap('@import "helper" as math', context, existing);
+
+        expect(Object.keys(revisionMap).sort()).toEqual(["helperAsset:helperRev", "nestedAsset:nestedRev"]);
+        expect(mockGetImportRevisionData).toHaveBeenCalledWith("nestedAsset", "nestedRev");
+    });
+
     it("builds alias-scoped module objects without leaking non-function values", () => {
         const aliases = buildScriptImportAliases({
             source: '@import "helper" as math',
@@ -177,6 +226,31 @@ describe("scriptImports", () => {
         expect(Object.keys(aliases.math ?? {})).toEqual(["clamp"]);
         expect((aliases.math?.clamp as (value: number) => number)(-4)).toBe(0);
         expect((aliases.math as Record<string, unknown>).hidden).toBeUndefined();
+    });
+
+    it("keeps imported module state scoped to each alias build when factories are cached", () => {
+        const importRevisionMap = {
+            "helperAsset:helperRev": {
+                assetId: "helperAsset",
+                revisionId: "helperRev",
+                code: "let count = 0;\nfunction next() { count += 1; return count; }",
+            },
+        };
+
+        const first = buildScriptImportAliases({
+            source: '@import "helper" as helper',
+            context,
+            importRevisionMap,
+        });
+        const second = buildScriptImportAliases({
+            source: '@import "helper" as helper',
+            context,
+            importRevisionMap,
+        });
+
+        expect((first.helper?.next as () => number)()).toBe(1);
+        expect((first.helper?.next as () => number)()).toBe(2);
+        expect((second.helper?.next as () => number)()).toBe(1);
     });
 
     it("supports Compartment-backed import modules", () => {

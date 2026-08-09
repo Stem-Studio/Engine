@@ -40,6 +40,11 @@ const StyledComboboxInput = styled.input<{
     background-color: #3F3F46;
     color: #A1A1AA;
   `}
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        height: 44px;
+        padding-block: 8px;
+    }
 `;
 
 type ComboboxInputProps = React.InputHTMLAttributes<HTMLInputElement> & {
@@ -83,6 +88,12 @@ export const ComboboxButton = styled(Combobox.Button)<{$disabled?: boolean}>`
     display: flex;
     align-items: center;
     justify-content: center;
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        width: 44px;
+        height: 44px;
+        right: 0;
+    }
 `;
 
 export const ComboboxOptions = styled(Combobox.Options)<{$disabled?: boolean; $onTop?: boolean}>`
@@ -104,12 +115,16 @@ export const ComboboxOptions = styled(Combobox.Options)<{$disabled?: boolean; $o
     overflow-wrap: break-word;
     word-break: break-word;
 
-    ${({$onTop}) =>
+${({$onTop}) =>
         $onTop &&
         ` 
 bottom: 12px;
 top: unset;
 `}
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        top: 48px;
+    }
 `;
 
 export const ComboboxOption = styled(Combobox.Option)<{$disabled?: boolean}>`
@@ -137,4 +152,9 @@ export const ComboboxOption = styled(Combobox.Option)<{$disabled?: boolean}>`
 
     display: flex;
     align-items: center;
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        min-height: 44px;
+        padding: 8px;
+    }
 `;

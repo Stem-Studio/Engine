@@ -20,14 +20,10 @@ const unsupported = (op: string): never => {
 };
 
 /**
- * Default AuthProvider used when no integrated provider has been
- * registered. In OSS builds this surfaces a stable "local user" with
- * the dummy `stemstudio-token` so backend requests still authenticate
- * against the ai-server's OSS auth bypass. Sign-in / sign-up / OAuth
- * methods all reject — OSS has no identity system to delegate to.
- *
- * Integrated mode replaces this via `setAuthProvider(new FirebaseAuthProvider())`
- * during app bootstrap.
+ * Default AuthProvider. It surfaces a stable "local user" with the dummy
+ * `stemstudio-token` so backend requests still authenticate against the
+ * ai-server's local auth middleware. Sign-in / sign-up / OAuth methods all
+ * reject because this repository has no identity system to delegate to.
  */
 export class NullAuthProvider implements IAuthProvider {
     private user: IAuthUser | null = ossLocalUser;
@@ -50,7 +46,7 @@ export class NullAuthProvider implements IAuthProvider {
     }
 
     async signInAnonymously(): Promise<IAuthUser> {
-        // OSS treats every session as the same local user.
+        // The open-source app treats every session as the same local user.
         return ossLocalUser;
     }
 

@@ -1,34 +1,8 @@
-import * as THREE from "three";
+import UnsupportedLegacyLoader from "./UnsupportedLegacyLoader";
 
-import BaseLoader from "./BaseLoader";
-
-/**
- * BinaryLoader
- *
- */
-class BinaryLoader extends BaseLoader {
+class BinaryLoader extends UnsupportedLegacyLoader {
     constructor() {
-        super();
-    }
-
-    load(url) {
-        return new Promise(resolve => {
-            this.require("BinaryLoader").then(() => {
-                var loader = new THREE.BinaryLoader();
-
-                loader.load(
-                    url,
-                    (geometry, materials) => {
-                        var mesh = new THREE.Mesh(geometry, materials);
-                        resolve(mesh);
-                    },
-                    undefined,
-                    () => {
-                        resolve(null);
-                    },
-                );
-            });
-        });
+        super("BinaryLoader");
     }
 }
 

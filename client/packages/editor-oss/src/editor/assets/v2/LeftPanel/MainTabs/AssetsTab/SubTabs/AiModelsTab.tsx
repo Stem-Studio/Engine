@@ -20,6 +20,7 @@ import AiModelUtils from "@stem/editor-oss/utils/AiModelUtils";
 import Ajax from "@stem/editor-oss/utils/Ajax";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
 import {AiAssetsList} from "../../../../common/AiAsssetsList";
+import defaultModelThumbnail from "../../../../icons/assetsTab/prefabs/prefab-placeholder.svg";
 
 export const AiModelsTab = () => {
     const [search, setSearch] = useState("");
@@ -72,6 +73,54 @@ export const AiModelsTab = () => {
             });
     };
 
+    const getThumbnailExtension = (blob: Blob, sourceUrl?: string) => {
+        const mime = blob.type.split(";")[0];
+        if (mime === "image/jpeg") return "jpg";
+        if (mime === "image/png") return "png";
+        if (mime === "image/webp") return "webp";
+        if (mime === "image/svg+xml") return "svg";
+        const urlExtension = sourceUrl?.split("?")[0]?.split(".").pop();
+        return urlExtension || "png";
+    };
+
+    const downloadThumbnailBlob = async (thumbnailUrl?: string) => {
+        if (thumbnailUrl) {
+            try {
+                const modelThumbnailResponse = await Ajax.get({
+                    url: thumbnailUrl,
+                    needAuthorization: false,
+                });
+                if (modelThumbnailResponse?.data instanceof Blob) {
+                    return {blob: modelThumbnailResponse.data, sourceUrl: thumbnailUrl};
+                }
+            } catch (error) {
+                console.log(error);
+            }
+        }
+
+        try {
+            const fallbackResponse = await fetch(defaultModelThumbnail);
+            if (!fallbackResponse.ok) return null;
+            return {blob: await fallbackResponse.blob(), sourceUrl: defaultModelThumbnail};
+        } catch (error) {
+            console.log(error);
+            return null;
+        }
+    };
+
+    const uploadModelThumbnail = async (model: IAnythingModel, objData: any) => {
+        const thumbnailUrl = model.thumbnails?.aw_thumbnail || model.thumbnails?.aw_reference;
+        const thumbnail = await downloadThumbnailBlob(thumbnailUrl);
+        if (!thumbnail) return;
+
+        const file = new File(
+            [thumbnail.blob],
+            `${THREE.MathUtils.generateUUID()}.${getThumbnailExtension(thumbnail.blob, thumbnail.sourceUrl)}`,
+            {type: thumbnail.blob.type || "image/png"},
+        );
+        handleUploadThumbnail(file, objData);
+    };
+
     const onModelSelectedFromList = async (model: IAnythingModel) => {
         if (!model) {
             return;
@@ -94,43 +143,21 @@ export const AiModelsTab = () => {
 
             const zipper = new JSZip();
             zipper.file(file.name, file);
-            zipper.generateAsync({type: "blob"}).then(async zip => {
-                const zippedFile = new File([zip], `${modelName}.zip`);
-                try {
-                    const meshAddResponse = await Ajax.post({
-                        url: backendUrlFromPath(`/api/Mesh/Add`),
-                        data: {
-                            file: zippedFile,
-                            IsAIGenerated: true,
-                            SceneID: app.editor.sceneID,
-                        },
-                        msgBodyType: "multipart",
-                    });
-                    if (meshAddResponse?.data.Code === 200) {
-                        //download the thumbnail for the model
-                        const modelThumbnailResponse = await Ajax.get({
-                            url: (model.thumbnails.aw_thumbnail || model.thumbnails.aw_reference),
-                            needAuthorization: false,
-                        });
-                        const thumbnailBlob = await modelThumbnailResponse?.data;
-                        // eslint-disable-next-line eqeqeq
-                        if (thumbnailBlob == null) {
-                            //TODO replace with a default thumbnail here
-                            throw new Error("Thumbnail not found");
-                        }
-                        const file = new File(
-                            [thumbnailBlob],
-                            `${THREE.MathUtils.generateUUID()}.${thumbnailBlob.type.split("/")[1]}`,
-                            {type: thumbnailBlob.type},
-                        );
-
-                        handleUploadThumbnail(file, meshAddResponse.data.Data);
-                        loadModel(meshAddResponse.data.Data, model);
-                    }
-                } catch (error) {
-                    console.log(error);
-                }
+            const zip = await zipper.generateAsync({type: "blob"});
+            const zippedFile = new File([zip], `${modelName}.zip`);
+            const meshAddResponse = await Ajax.post({
+                url: backendUrlFromPath(`/api/Mesh/Add`),
+                data: {
+                    file: zippedFile,
+                    IsAIGenerated: true,
+                    SceneID: app.editor.sceneID,
+                },
+                msgBodyType: "multipart",
             });
+            if (meshAddResponse?.data.Code === 200) {
+                void uploadModelThumbnail(model, meshAddResponse.data.Data);
+                loadModel(meshAddResponse.data.Data, model);
+            }
         } catch (error) {
             console.log(error);
         }

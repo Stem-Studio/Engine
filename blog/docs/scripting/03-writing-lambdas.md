@@ -183,7 +183,7 @@ You can also set `userVisible: false` to hide a field in the editor while keepin
 | `update(deltaTime)` | Called by apply internally, or by Auto Apply | The actual per-object processing logic |
 | `onObjectRemoved(target)` | An object deregisters from this lambda | Cleaning up per-object state |
 | `onEvent(msg, data)` | An event is received from behaviors or engine systems | Reacting to gameplay events |
-| `fixedUpdate(fixedDeltaTime)` | Fixed timestep (e.g. 60Hz). **Requires scheduler behaviorUpdateMode = "fixed".** | Physics-dependent logic, deterministic simulation |
+| `fixedUpdate(fixedDeltaTime)` | Once per authoritative fixed simulation step, after fixed behaviors | Deterministic bulk gameplay and physics-coupled systems |
 | `dispose()` | Play mode stops | Releasing all resources |
 
 ### The registeredObjects Map

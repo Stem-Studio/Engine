@@ -1,9 +1,9 @@
 import React, {useEffect, useMemo, useRef} from "react";
 import {outline} from "three/addons/tsl/display/OutlineNode.js";
 import {bayer16} from "three/addons/tsl/math/Bayer.js";
-import {OrbitControls} from "three/examples/jsm/controls/OrbitControls.js";
-import {HDRLoader} from "three/examples/jsm/loaders/HDRLoader.js";
-import {gaussianBlur} from "three/examples/jsm/tsl/display/GaussianBlurNode.js";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {HDRLoader} from "three/addons/loaders/HDRLoader.js";
+import {gaussianBlur} from "three/addons/tsl/display/GaussianBlurNode.js";
 import {pass, screenUV, vec3, vec4, uniform, texture, depth, float, uv, screenCoordinate} from "three/tsl";
 import {
     Box3,
@@ -11,19 +11,18 @@ import {
     EquirectangularReflectionMapping,
     Group,
     Mesh,
-    MeshBasicNodeMaterial,
     Object3D,
     Object3DEventMap,
     OrthographicCamera,
     PCFShadowMap,
     PerspectiveCamera,
     PlaneGeometry,
-    RenderPipeline,
     RenderTarget,
     Scene,
+    Texture,
     Vector3,
-    WebGPURenderer,
-} from "three/webgpu";
+} from "three";
+import {MeshBasicNodeMaterial, RenderPipeline} from "three/webgpu";
 
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import {useAssetResolutionContext} from "@stem/editor-oss/context/AssetResolutionContext";
@@ -37,6 +36,15 @@ import {MaterialInfo} from "../../RightPanel/ModelEditorButtons/ModelEditorButto
 import {IMaterialSettings} from "../../RightPanel/sections/MaterialRenderingSection/types";
 
 let environmentPromise: Promise<any> | null = null;
+type ThreeWebGPUModule = typeof import("three/webgpu");
+let threeWebGPUModulePromise: Promise<ThreeWebGPUModule> | null = null;
+
+function loadThreeWebGPU(): Promise<ThreeWebGPUModule> {
+    if (!threeWebGPUModulePromise) {
+        threeWebGPUModulePromise = import("three/webgpu");
+    }
+    return threeWebGPUModulePromise;
+}
 
 interface Props {
     materialInfo?: MaterialInfo | null;
@@ -59,14 +67,19 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
 
     useEffect(() => {
         let isMounted = true;
+        let disposePreview: (() => void) | null = null;
         if (!viewer.current || !selected) return;
+
+        void (async () => {
+            const {WebGPURenderer} = await loadThreeWebGPU();
+            if (!isMounted || !viewer.current) return;
 
         const scene = new Scene();
         scene.name = "PrimitiveViewerScene";
 
         const camera = new PerspectiveCamera(75, 1, 0.1, 1000);
         const renderer = new WebGPURenderer({antialias: true, alpha: false});
-        void renderer.init();
+        const rendererInitPromise = renderer.init();
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setClearColor(new Color(0x282828));
         renderer.shadowMap.enabled = true;
@@ -85,6 +98,7 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
         }
         viewer.current.appendChild(renderer.domElement);
 
+        let sceneEnvironmentTexture: Texture | null = null;
         if (!environmentPromise) {
             environmentPromise = new Promise((resolve, reject) => {
                 new HDRLoader().load(
@@ -102,7 +116,9 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
         environmentPromise
             .then(texture => {
                 if (!isMounted) return;
-                scene.environment = texture.clone();
+                sceneEnvironmentTexture?.dispose();
+                sceneEnvironmentTexture = texture.clone();
+                scene.environment = sceneEnvironmentTexture;
                 scene.environmentIntensity = 1;
                 selectedClone.visible = true;
                 shadowGroup.visible = true;
@@ -256,7 +272,8 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
 
         void (async () => {
             try {
-                await renderer.init();
+                await rendererInitPromise;
+                if (!isMounted) return;
                 const scenePass = pass(scene, camera);
                 const colorTex = scenePass.getTextureNode("output");
                 const vignette = screenUV
@@ -369,16 +386,16 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
             }
         };
 
-        renderer
-            .init()
+        rendererInitPromise
             .then(() => {
+                if (!isMounted) return;
                 animate();
             })
             .catch((err: Error) => {
                 console.error("Failed to initialize renderer:", err);
             });
 
-        return () => {
+        disposePreview = () => {
             isMounted = false;
             clearTimeout(autoRotateTimeout);
             window.removeEventListener("mousedown", stopAutoRotate);
@@ -397,6 +414,20 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
                 // ignore error
             }
             try {
+                sceneEnvironmentTexture?.dispose();
+                sceneEnvironmentTexture = null;
+            } catch {
+                // ignore error
+            }
+            try {
+                depthMaterial.dispose();
+                shadowPlaneMaterial.dispose();
+                fillPlaneMaterial.dispose();
+                planeGeometry.dispose();
+            } catch {
+                // ignore error
+            }
+            try {
                 renderTarget.dispose();
             } catch {
                 // ignore error
@@ -406,6 +437,14 @@ export const PrimitiveViewer: React.FC<Props> = ({materialInfo, cloneRef: extern
                 viewer.current.removeChild(renderer.domElement);
             }
             externalCloneRef.current = null;
+        };
+        })().catch((error: unknown) => {
+            console.error("[PrimitiveViewer] Failed to load WebGPU renderer:", error);
+        });
+
+        return () => {
+            isMounted = false;
+            disposePreview?.();
         };
     }, [selected, materialInfo]);
 

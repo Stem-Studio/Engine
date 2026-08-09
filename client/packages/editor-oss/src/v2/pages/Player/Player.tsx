@@ -12,9 +12,13 @@ import {PlayerWatermark} from "@web-shared/player/component/PlayerWatermark";
 import { StemStudioLoader } from "../../../ui";
 import { AppUpdateManager } from "../../../update/AppUpdateManager";
 import { OfflineIndicator } from "../../../update/OfflineIndicator";
-import { DiscordController } from "../../../userManagement/playerProfile/game-service-controllers";
+import {isInDiscordEnvironment} from "../../../userManagement/playerProfile/discordEnvironment";
 import CSPMetaTag, { customCSPPolicies } from "../../../utils/CSPMetaTag";
-import {DEFAULT_ORIENTATION_POLICY, type OrientationPolicy} from "../../../utils/orientationPolicy";
+import {
+    DEFAULT_ORIENTATION_POLICY,
+    normalizeOrientationPolicy,
+    type OrientationPolicy,
+} from "../../../utils/orientationPolicy";
 import { getSceneLoadErrorDetails } from "../../../utils/SceneLoadErrorUtils";
 import { getGameUrl } from "../links";
 import { PlayerTopNav } from "./PlayerTopNav";
@@ -69,7 +73,7 @@ export const Player = () => {
 
             const isSandboxViewer = EngineRuntime.isSandboxViewer();
             let sceneID = isSandboxViewer ? splitPath[splitPath.length - 1] : projectID || getQueryString("sceneID");
-            if (DiscordController.isInDiscord()) {
+            if (isInDiscordEnvironment()) {
                 try {
                     const discordAppId = location.host.split(".")[0];
                     const mappingResponse = await fetch(`/.proxy/resolveSceneId/${discordAppId}`);
@@ -158,7 +162,9 @@ export const Player = () => {
                         app.editor.isSandbox = false;
                     }
 
-                    setOrientationPolicy(app.scene?.userData?.game?.orientationPolicy || DEFAULT_ORIENTATION_POLICY);
+                    setOrientationPolicy(normalizeOrientationPolicy(
+                        app.scene?.userData?.game?.orientationPolicy || DEFAULT_ORIENTATION_POLICY,
+                    ));
                     // Await so a throw in startPlayer propagates into our catch
                     // block. Previously this was fire-and-forget and any failure
                     // (e.g. an empty draft with no valid scene) left the loader

@@ -1,32 +1,14 @@
 import {FileSystemProjectStore} from "./FileSystemProjectStore";
-import {clearHandle, loadHandle, verifyPermission} from "./fsHandleStore";
+import {loadHandle, verifyPermission} from "./fsHandleStore";
 import {IndexedDBProjectStore} from "./IndexedDBProjectStore";
-import {getOSSPersistenceMode, setProjectStore} from "./projectStoreFactory";
+import {getOSSPersistenceMode} from "./mode";
+import {setProjectStore} from "./projectStoreFactory";
 
-const BOOTSTRAP_FLAG = "stemstudio.bootstrap.complete";
-
-export const isOSSBootstrapped = (): boolean => {
-    if (typeof localStorage === "undefined") return false;
-    return localStorage.getItem(BOOTSTRAP_FLAG) === "true";
-};
-
-export const markOSSBootstrapped = (): void => {
-    if (typeof localStorage !== "undefined") {
-        localStorage.setItem(BOOTSTRAP_FLAG, "true");
-    }
-};
-
-export const resetOSSBootstrap = (): void => {
-    if (typeof localStorage !== "undefined") {
-        localStorage.removeItem(BOOTSTRAP_FLAG);
-    }
-    void clearHandle();
-};
+export {isOSSBootstrapped, markOSSBootstrapped, resetOSSBootstrap} from "./bootstrapState";
 
 /**
- * Rehydrates the OSS persistence singleton on app boot. Called from the app
- * shell after `IS_OSS` is confirmed true and before the first project-store
- * consumer runs.
+ * Rehydrates the persistence singleton on app boot before the first
+ * project-store consumer runs.
  *
  * Logic:
  *   - If the user picked the filesystem mode and a directory handle is
@@ -40,10 +22,10 @@ export const resetOSSBootstrap = (): void => {
  * banner.
  */
 export async function rehydrateProjectStore(): Promise<"indexeddb" | "filesystem" | "fallback-indexeddb"> {
-    // The OSS save handler is installed automatically by setProjectStore()
+    // The save handler is installed automatically by setProjectStore()
     // whenever a local-only backend (IndexedDB / FS Access) is registered —
     // see projectStoreFactory.ts. So every code path that goes through
-    // setProjectStore (this function, the OSSBootstrapModal, tests) wires
+    // setProjectStore (this function, the bootstrap modal, tests) wires
     // saveScene() to the active store with no extra step.
     const mode = getOSSPersistenceMode();
 

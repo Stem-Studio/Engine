@@ -101,10 +101,11 @@ export function CodeShowcase() {
         ro.observe(canvas);
 
         let raf = 0;
-        const clock = new THREE.Clock();
+        const timer = new THREE.Timer();
         const tick = () => {
-            const t = clock.getElapsedTime();
-            const dt = clock.getDelta();
+            timer.update();
+            const t = timer.getElapsed();
+            const dt = timer.getDelta();
             box.rotation.y += dt * 1.4;
             box.position.y = Math.sin(t * 1.6) * 0.18;
             torus.position.x = Math.cos(t * 0.9) * 1.6;
@@ -126,6 +127,7 @@ export function CodeShowcase() {
                 if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
                 else if (mat) (mat as THREE.Material).dispose();
             });
+            timer.dispose();
             renderer.dispose();
         };
     }, []);

@@ -132,7 +132,6 @@ describe("ActionBar builder modes", () => {
     fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
 
     expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
-    expect(screen.getByTestId("actionbar-container")).toBeInTheDocument();
     expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("mesh-cad-close"));
@@ -151,11 +150,9 @@ describe("ActionBar builder modes", () => {
 
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
     expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
-    expect(screen.queryByTestId("actionbar-container")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("plan-cad-close"));
     expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
-    expect(screen.getByTestId("actionbar-container")).toBeInTheDocument();
   });
 
   it("exits active mesh edit mode when switching to BIM Plan or Quick Build", async () => {
@@ -169,7 +166,6 @@ describe("ActionBar builder modes", () => {
 
     expect(app.editor.exitCADMode).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByTestId("plan-cad-close"));
     app.editor.cadMode = true;
     fireEvent.click(screen.getByTestId("actionbar-quick-build"));
 
@@ -183,30 +179,24 @@ describe("ActionBar builder modes", () => {
 
     fireEvent.click(screen.getByTestId("actionbar-quick-build"));
     expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
-    expect(screen.queryByTestId("actionbar-container")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("quick-build-close"));
     fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
     fireEvent.click(await screen.findByTestId("actionbar-plan-cad"));
 
     expect(screen.queryByTestId("quick-build-toolbar")).not.toBeInTheDocument();
     expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
-    expect(screen.queryByTestId("actionbar-container")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("plan-cad-close"));
     fireEvent.click(screen.getByTestId("actionbar-cad-tools"));
     fireEvent.click(await screen.findByTestId("actionbar-mesh-cad"));
 
     expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
     expect(screen.getByTestId("mesh-cad-toolbar")).toBeInTheDocument();
-    expect(screen.getByTestId("actionbar-container")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("actionbar-quick-build"));
 
     expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
     expect(screen.queryByTestId("plan-cad-toolbar")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("actionbar-container")).not.toBeInTheDocument();
   });
 
   it("keeps CAD tools discoverable when disabled and routes users to project settings", async () => {
@@ -308,8 +298,22 @@ describe("ActionBar builder modes", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plan-cad-toolbar")).toBeInTheDocument();
     });
-    expect(screen.queryByTestId("actionbar-container")).not.toBeInTheDocument();
     expect(screen.queryByTestId("mesh-cad-toolbar")).not.toBeInTheDocument();
+  });
+
+  it("keeps an explicit Builder Studio URL mode through scene activation", async () => {
+    const app = installFakeApp();
+    window.history.pushState({}, "", "/?builder=1");
+
+    render(<ActionBar />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
+    });
+
+    app.emit("sceneLoaded.ActionBarBuilderMode");
+
+    expect(screen.getByTestId("quick-build-toolbar")).toBeInTheDocument();
   });
 
   it("does not restore a stale active builder mode for the current scene", async () => {

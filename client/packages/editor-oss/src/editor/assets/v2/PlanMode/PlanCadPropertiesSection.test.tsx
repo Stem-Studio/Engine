@@ -76,6 +76,76 @@ describe("PlanCadPropertiesSection", () => {
     expect(screen.getByText("Thickness")).toBeInTheDocument();
   });
 
+  it("shows BIM node properties when a selected wrapper contains one BIM node", () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+
+    const scene = new THREE.Scene();
+    const data = createPlanCadWall(null, { x: 0, z: 0 }, { x: 5, z: 0 });
+    const wallId = data.selectedNodeId!;
+    scene.userData[PLAN_CAD_SCENE_USER_DATA_KEY] = data;
+    scene.add(createPlanCadRootObject(data));
+
+    const wrapper = new THREE.Group();
+    wrapper.userData = {
+      isRuntimeOnly: true,
+      isSelectable: true,
+    };
+    const wallChild = new THREE.Group();
+    wallChild.userData = {
+      isPlanCadManaged: true,
+      planNodeId: wallId,
+      planNodeType: "wall",
+    };
+    wrapper.add(wallChild);
+
+    installTestApp(scene);
+
+    render(<PlanCadPropertiesSection selectedObject={wrapper} />);
+
+    expect(screen.getByText("Wall")).toBeInTheDocument();
+    expect(screen.getByText("Height")).toBeInTheDocument();
+    expect(screen.getByText("Thickness")).toBeInTheDocument();
+  });
+
+  it("shows BIM node properties when a generated render child carries owner metadata", () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+
+    const scene = new THREE.Scene();
+    const data = createPlanCadWall(null, { x: 0, z: 0 }, { x: 5, z: 0 });
+    const wallId = data.selectedNodeId!;
+    scene.userData[PLAN_CAD_SCENE_USER_DATA_KEY] = data;
+
+    const wallSegment = new THREE.Mesh();
+    wallSegment.userData = {
+      isRuntimeOnly: true,
+      isPlanCadGeneratedChild: true,
+      planCadOwnerNodeId: wallId,
+      planCadOwnerNodeType: "wall",
+    };
+
+    installTestApp(scene);
+
+    render(<PlanCadPropertiesSection selectedObject={wallSegment} />);
+
+    expect(screen.getByText("Wall")).toBeInTheDocument();
+    expect(screen.getByText("Height")).toBeInTheDocument();
+    expect(screen.getByText("Thickness")).toBeInTheDocument();
+  });
+
   it("shows the active BIM node when editor drill-down selects the site container", () => {
     vi.stubGlobal(
       "ResizeObserver",

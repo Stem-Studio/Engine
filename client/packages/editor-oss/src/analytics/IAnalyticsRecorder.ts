@@ -2,10 +2,8 @@ export type AnalyticsParams = Record<string, string | number | boolean>;
 
 /**
  * IAnalyticsRecorder is the seam between editor-side product analytics
- * (page views, button clicks, sign-in funnel) and any concrete
- * recording surface. Integrated mode wires Firebase Analytics; OSS
- * mode wires `NullAnalyticsRecorder` so events are silently dropped
- * (OSS doesn't ship telemetry).
+ * call sites and any concrete recording surface. This repository wires
+ * `NullAnalyticsRecorder`, so events are silently dropped.
  */
 export interface IAnalyticsRecorder {
     /** Record a named event with arbitrary string/number/boolean params. */
@@ -16,7 +14,7 @@ export interface IAnalyticsRecorder {
     setUserProperties(params: AnalyticsParams): void;
 }
 
-/** Default no-op implementation. Used by OSS builds and as a fallback. */
+/** Default no-op implementation. */
 export class NullAnalyticsRecorder implements IAnalyticsRecorder {
     logEvent(): void {/* no-op */}
     setUserId(): void {/* no-op */}

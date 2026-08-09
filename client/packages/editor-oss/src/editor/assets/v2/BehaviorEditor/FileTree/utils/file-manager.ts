@@ -1,4 +1,5 @@
 import {BehaviorConfig} from "../../../../../behaviors/BehaviorConfig";
+import {cloneJsonCompatible} from "../../../../../../utils/cloneJsonCompatible";
 
 export enum Type {
     FILE, // file
@@ -38,8 +39,8 @@ export interface Directory extends CommonProps {
  */
 export function buildFileTree(orgFiles: File[], orgDirs: Directory[]): Directory {
     const cache = new Map<string, Directory | File>(); // cache
-    const dirs = JSON.parse(JSON.stringify(orgDirs)) as Directory[]; // deep copy to avoid mutating original data
-    const files = JSON.parse(JSON.stringify(orgFiles)) as File[]; // deep copy to avoid mutating original data
+    const dirs = cloneJsonCompatible(orgDirs); // deep copy to avoid mutating original data
+    const files = cloneJsonCompatible(orgFiles); // deep copy to avoid mutating original data
     // root directory to be built
     let rootDir: Directory = {
         id: "0",

@@ -21,7 +21,7 @@ export interface ProviderCapability {
 }
 
 export interface AICapabilities {
-    buildMode: "integrated" | "oss";
+    buildMode: "oss";
     providers: Record<AIProvider, ProviderCapability>;
 }
 

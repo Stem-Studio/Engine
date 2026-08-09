@@ -9,6 +9,7 @@ import {markLocalPlayerAvatar} from "../../../core/budget/AvatarBudgetPolicy";
 import {PhysicsUtil} from "../../../physics/PhysicsUtil";
 import {CAMERA_TYPES, CharacterOptionsInterface} from "@stem/editor-oss/types/editor";
 import LoadSceneUIImages from "@stem/editor-oss/utils/LoadSceneUIImages";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import TagUtil from "@stem/editor-oss/utils/TagUtil";
 import {BehaviorBase} from "../../Behavior";
 import GameManager from "../../game/GameManager";
@@ -176,7 +177,7 @@ class CharacterBehavior extends BehaviorBase {
             this.setPlayerControls(this.controlType);
             this.game?.cameraControl?.start(this.target);
             //set the local player object in the game manager
-            this.game!.setPlayer(this.target);
+            this.game!.setPlayer(this.target, {controllerManaged: true});
             this.ensurePlayerTag();
         } else if (this.game?.isMultiplayer && this.isRemotePlayer()) {
             // In multiplayer, remote characters should never be active
@@ -186,11 +187,24 @@ class CharacterBehavior extends BehaviorBase {
         // be aware that onAdded could be called multiple times
         this.controlType = this.getCameraType();
 
-        //FIXME:  why this code is in CharacterBehavior ?
-        this.directionalLights = this.game!.scene.getObjectsByProperty(
-            "isDirectionalLight",
-            true,
-        ) as THREE.DirectionalLight[];
+        this.directionalLights = this.collectDirectionalLights();
+    }
+
+    private collectDirectionalLights(): THREE.DirectionalLight[] {
+        const directionalLights: THREE.DirectionalLight[] = [];
+        const scene = this.game?.scene;
+        if (!scene) {
+            return directionalLights;
+        }
+
+        traverseObjectDepthFirst(scene, object => {
+            const light = object as THREE.DirectionalLight & {isDirectionalLight?: boolean};
+            if (light.isDirectionalLight === true) {
+                directionalLights.push(light);
+            }
+        });
+
+        return directionalLights;
     }
 
     update(delta: number) {
@@ -209,14 +223,17 @@ class CharacterBehavior extends BehaviorBase {
 
         //FIXME: why this code is in CharacterBehavior ?
         if (this.directionalLights && this.directionalLights.length > 0) {
-            this.directionalLights.forEach(light => {
+            for (let i = 0; i < this.directionalLights.length; i += 1) {
+                const light = this.directionalLights[i];
+                if (!light) continue;
+
                 const targetPosition = light.target.position;
                 const characterPosition = vec3Tmp.copy(this.target.position);
                 targetPosition.subVectors(characterPosition, targetPosition);
                 light.position.add(targetPosition);
                 light.target.position.copy(characterPosition);
                 light.target.updateMatrixWorld();
-            });
+            }
         }
 
         this.characterControl?.update(delta);
@@ -398,7 +415,9 @@ class CharacterBehavior extends BehaviorBase {
             this.isActive = true;
             this.setPlayerControls(this.controlType);
             this.game?.cameraControl?.start(this.target);
-            this.game!.setPlayer(this.target);
+            // CharacterBehavior owns movement/physics through its controller;
+            // preserve that ownership when reactivating after a stop.
+            this.game!.setPlayer(this.target, {controllerManaged: true});
             this.ensurePlayerTag();
             this.characterSwap?.reset();
         } else if (msg === "character:deactivate" && this.isActive) {

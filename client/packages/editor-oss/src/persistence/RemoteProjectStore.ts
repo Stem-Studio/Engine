@@ -8,14 +8,12 @@ import type {
 } from "./types";
 
 /**
- * RemoteProjectStore wraps the existing cloud Scene API behind the ProjectStore
- * interface. Used by integrated mode so save/load paths can migrate onto the
- * abstraction one call site at a time without bypassing the cloud backend.
+ * RemoteProjectStore wraps a remote Scene API behind the ProjectStore
+ * interface. It is retained as an adapter point for forks that provide a
+ * server-backed project store.
  *
  * The implementation is intentionally injected via `RemoteProjectStoreDeps`
- * rather than importing the cloud Scene API directly. This keeps the OSS
- * package boundary clean (editor-oss must not import `@web/network/api/scene`),
- * and lets integrated bootstrap wire the dependency at app startup.
+ * rather than importing a concrete Scene API directly.
  */
 
 export interface RemoteSceneListItem {
@@ -105,10 +103,10 @@ export class RemoteProjectStore implements ProjectStore {
         return this.save(parsed);
     }
 
-    // Integrated mode persists assets through the cloud asset service, so
-    // the project store has nothing to store. These satisfy the interface.
+    // Remote asset services own their own asset persistence. These satisfy
+    // the ProjectStore interface for remote-backed implementations.
     async saveAssets(_projectId: string, _assets: StoredAsset[]): Promise<void> {
-        // no-op: cloud asset service owns asset persistence
+        // no-op: remote asset service owns asset persistence
     }
 
     async loadAssets(_projectId: string): Promise<StoredAsset[]> {

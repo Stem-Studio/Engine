@@ -28,7 +28,7 @@ import {
 import {extractKeywords} from "./templateMatching";
 import {getGamesByQuery} from "@stem/network/api/getGames";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {IBasicGameInterface} from "../../../../../v2/pages/types";
 import {useEscapeDismiss} from "../../common/hooks/useEscapeDismiss";
 import {FileData} from "../../types/file";

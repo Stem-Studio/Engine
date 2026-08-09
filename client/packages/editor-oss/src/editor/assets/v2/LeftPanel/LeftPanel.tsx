@@ -16,9 +16,12 @@ export enum TABS {
 
 type Props = {
     openAssetsLibrary: () => void;
+    drawerMode?: boolean;
+    isOpen?: boolean;
+    onRequestClose?: () => void;
 };
 
-export const LeftPanel = ({openAssetsLibrary}: Props) => {
+export const LeftPanel = ({openAssetsLibrary, drawerMode = false, isOpen = true, onRequestClose}: Props) => {
     const app = global.app as EngineRuntime;
     const [activeTab, setActiveTab] = useState(TABS.project);
 
@@ -42,12 +45,33 @@ export const LeftPanel = ({openAssetsLibrary}: Props) => {
     }, [app.editor]);
 
     return (
-        <Container>
+        <Container
+            $drawerMode={drawerMode}
+            $isOpen={isOpen}
+            aria-label="Project hierarchy and library"
+            aria-hidden={drawerMode && !isOpen}
+        >
             <BorderedWrapper height="48px">
+                {drawerMode && (
+                    <button className="panel-close"
+                        type="button"
+                        aria-label="Close hierarchy"
+                        onClick={onRequestClose}
+                    >
+                        ×
+                    </button>
+                )}
+                <div role="tablist"
+                    aria-label="Workspace browser"
+                    className="panel-tabs"
+                >
                 <TabButton
                     $isActive={activeTab === TABS.project}
                     onClick={() => setActiveTab(TABS.project)}
                     data-testid="leftpanel-tab-project"
+                    role="tab"
+                    aria-selected={activeTab === TABS.project}
+                    type="button"
                 >
                     Project
                 </TabButton>
@@ -55,9 +79,13 @@ export const LeftPanel = ({openAssetsLibrary}: Props) => {
                     $isActive={activeTab === TABS.assets}
                     onClick={() => setActiveTab(TABS.assets)}
                     data-testid="leftpanel-tab-library"
+                    role="tab"
+                    aria-selected={activeTab === TABS.assets}
+                    type="button"
                 >
                     Library & Tools
                 </TabButton>
+                </div>
             </BorderedWrapper>
 
             {activeTab === TABS.assets && (

@@ -7,4 +7,5 @@ export interface IHUDManager {
     playSound(id: string): void;
     stopSound(soundId: string): void;
     clearSounds(): void;
+    update?(delta: number): void;
 }

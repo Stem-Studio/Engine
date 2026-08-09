@@ -1,6 +1,6 @@
 # Local Backend Package
 
-Local Node.js backend used by standalone editor/player flows (for WebContainer/open-source mode).
+Local Node.js backend used by standalone editor/player flows, including WebContainer.
 
 ## Run
 

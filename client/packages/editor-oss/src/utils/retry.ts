@@ -1,4 +1,3 @@
-import { isAxiosError } from 'axios';
 import pRetry, { type RetryContext } from 'p-retry';
 
 const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
@@ -19,13 +18,13 @@ export interface RetryOptions {
 const shouldRetry = (context: RetryContext): boolean => {
     const error = context.error;
 
-    // Only retry Axios errors with retryable status codes
-    if (isAxiosError(error) && error.response?.status) {
+    // Retry axios-compatible request errors with retryable status codes.
+    if (isAxiosCompatibleError(error) && error.response?.status) {
         return RETRYABLE_STATUS_CODES.includes(error.response.status);
     }
 
     // Retry network errors (no response)
-    if (isAxiosError(error) && !error.response) {
+    if (isAxiosCompatibleError(error) && !error.response) {
         return true;
     }
 
@@ -41,6 +40,19 @@ const shouldRetry = (context: RetryContext): boolean => {
 interface StatusErrorLike {
     statusCode: number;
 }
+
+interface AxiosCompatibleErrorLike {
+    isAxiosError: true;
+    response?: {
+        status?: number;
+    };
+}
+
+const isAxiosCompatibleError = (error: unknown): error is AxiosCompatibleErrorLike => {
+    return !!error
+        && typeof error === "object"
+        && (error as AxiosCompatibleErrorLike).isAxiosError === true;
+};
 
 const isStatusError = (error: unknown): error is StatusErrorLike => {
     return (

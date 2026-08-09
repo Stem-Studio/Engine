@@ -2,13 +2,21 @@ import { MeshStandardMaterial, DataTexture, RGBAFormat, UnsignedByteType } from 
 import { describe, it, expect, vi } from "vitest";
 
 // Use vi.hoisted() to create mock variables that are hoisted along with vi.mock
-const { mockTextureNode, mockNormalLocalMul, mockPositionLocalAdd } = vi.hoisted(() => {
-    const mockMul = vi.fn().mockReturnValue({ add: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("displacementValue") }) });
+const { mockTextureNode, mockBaseColorNode, mockNormalLocalMul, mockPositionGeometryAdd } = vi.hoisted(() => {
+    const mockMul = vi.fn().mockReturnValue({
+        add: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("displacementValue") }),
+        setName: vi.fn().mockReturnValue("scalarMulNode"),
+    });
+    const mockBaseColorNode = {
+        setName: vi.fn().mockReturnThis(),
+        mul: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("colorNodeWithAO") }),
+    };
     const mockR = { mul: mockMul };
     return {
         mockTextureNode: { r: mockR, setName: vi.fn().mockReturnThis() },
+        mockBaseColorNode,
         mockNormalLocalMul: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("positionNodeResult") }),
-        mockPositionLocalAdd: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("positionNodeResult") }),
+        mockPositionGeometryAdd: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("positionNodeResult") }),
     };
 });
 
@@ -16,7 +24,7 @@ vi.mock("three/tsl", () => ({
     uv: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("uvNode") }),
     texture: vi.fn().mockReturnValue(mockTextureNode),
     float: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("floatNode") }),
-    color: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("colorNode"), mul: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("mulNode") }) }),
+    color: vi.fn().mockReturnValue(mockBaseColorNode),
     normalMap: vi.fn().mockReturnValue({ setName: vi.fn().mockReturnValue("normalMapNode") }),
     clamp: vi.fn(),
     uniform: vi.fn(),
@@ -31,11 +39,16 @@ vi.mock("three/tsl", () => ({
     varying: vi.fn(),
     mix: vi.fn(),
     normalLocal: { mul: mockNormalLocalMul },
-    positionLocal: { add: mockPositionLocalAdd },
+    positionGeometry: { add: mockPositionGeometryAdd },
 }));
 
 // Mock three/webgpu
 vi.mock("three/webgpu", () => ({
+    MeshPhysicalNodeMaterial: class MockMeshPhysicalNodeMaterial {
+        userData = { tslNodes: {} };
+        type = "MeshPhysicalNodeMaterial";
+        isMeshPhysicalNodeMaterial = true;
+    },
     MeshStandardNodeMaterial: class MockMeshStandardNodeMaterial {
         userData = { tslNodes: {} };
         name = "";
@@ -82,7 +95,7 @@ describe("MaterialUtils", () => {
 
             const result = convertMeshStandardToNodeMaterial(src);
 
-            expect(result.positionNode).toBeUndefined();
+            expect(result.positionNode ?? undefined).toBeUndefined();
         });
 
         it("should store displacement map in tslNodes userData", () => {
@@ -94,6 +107,23 @@ describe("MaterialUtils", () => {
 
             // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(result.userData.tslNodes.displacementMap).toBeDefined();
+        });
+
+        it("should fold AO maps into colorNode without assigning Three AO lighting slots", () => {
+            const src = new MeshStandardMaterial();
+            const aoMap = new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat, UnsignedByteType);
+            src.aoMap = aoMap;
+            src.aoMapIntensity = 0.5;
+
+            const result = convertMeshStandardToNodeMaterial(src);
+
+            expect(result.colorNode).toBe("colorNodeWithAO");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+            expect((result as any).aoNode ?? undefined).toBeUndefined();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+            expect((result as any).aoMap ?? undefined).toBeUndefined();
+            expect(result.userData.tslNodes.aoMap).toBe(aoMap);
+            expect(result.userData.tslNodes.aoMapIntensity).toBe(0.5);
         });
 
         it("should mark generated node materials as batch-manager generated", () => {

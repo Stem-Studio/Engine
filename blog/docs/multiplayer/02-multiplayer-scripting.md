@@ -437,8 +437,8 @@ Your behavior should work with 1 player or 4 players (or whatever the max is). D
 
 ### Method 1: Two Browser Tabs
 
-1. Press Play in the editor, or open your published game URL.
-2. Open the same URL in a second browser tab.
+1. Start the local Colyseus sidecar and press Play in the editor.
+2. Open the same local project in a second browser tab and press Play.
 3. Both tabs connect to the same Colyseus room.
 4. The first tab becomes the host; the second tab joins as a client.
 
@@ -446,7 +446,8 @@ Your behavior should work with 1 player or 4 players (or whatever the max is). D
 
 1. Open the game in a regular browser window.
 2. Open the same URL in an incognito/private window.
-3. This lets you use different accounts if needed.
+3. This provides an isolated browser context; Playground accounts are not
+   involved.
 
 ### What To Verify
 

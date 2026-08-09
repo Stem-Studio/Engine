@@ -30,7 +30,7 @@ AI Copilot is best used as a creator tool for:
 - Modifying an existing scene without hunting through every panel manually
 - Writing or revising custom behavior code
 - Configuring built-in behaviors for common gameplay patterns
-- Finding assets that match a game idea or theme
+- Inspecting assets already available in the current project
 - Explaining why a system is not behaving the way you expect
 
 It works best when you treat it like a fast collaborator. Let it handle setup and iteration, then use the editor to fine-tune the result.
@@ -112,15 +112,17 @@ Examples:
 - "Make this object collectible and play a sound when picked up."
 - "Add an enemy patrol route between these two points."
 
-### Asset Search
+### Existing Assets
 
-Copilot can help you find models, images, and other content that match the game you are building.
+The browser-direct Playground copilot can inspect assets that are already in
+the project. External search, file picking, import, export, and remote library
+commands are rejected in Playground mode.
 
 Examples:
 
-- "Find a stylized treasure chest."
-- "Search for a low-poly oak tree."
-- "I need a vehicle model that fits a desert racing game."
+- "List the models already in this project."
+- "Use the existing OakTree model to decorate the path."
+- "Explain the assets this scene already depends on."
 
 ## Prompting Tips
 
@@ -213,8 +215,9 @@ The regular editor is still better for:
 - Large requests are less reliable than staged requests.
 - Generated code should always be tested in **Play** mode.
 - Asset suggestions still need creator review for style, scale, and fit.
-- You must be signed in to use AI features.
-- Copilot usage depends on available AI credits.
+- Playground Copilot requires a configured browser-stored provider key.
+- Availability depends on provider quota/billing and browser-direct request
+  support.
 
 ## Practical Examples
 
@@ -224,7 +227,7 @@ Here are prompts that work well for creators:
 - `Add five coin pickups along the main path and keep them evenly spaced.`
 - `Write a behavior for this object that floats up and down and spins slowly.`
 - `Use built-in behaviors to make this door open when the player gets close.`
-- `Find a better tree model for a stylized fantasy forest.`
+- `List the tree models already available in this project.`
 - `Review this behavior and fix the collision logic without changing the rest of the system.`
 
 ## Next Steps

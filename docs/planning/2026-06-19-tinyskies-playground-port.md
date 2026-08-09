@@ -1,5 +1,19 @@
 # TinySkies → StemStudio playground port (run + extend fidelity)
 
+> **Status: Historical; partially superseded for the current release scope
+> (2026-07-30).**
+> Local Playground import and editor **Play** remain useful validation scenarios,
+> but they must be re-scoped under the
+> [AAA Web Engine Quality Program](./2026-07-30-aaa-engine-quality-program.md).
+> The current headed WebGPU Play/refresh gate is recorded in
+> [startup performance evidence](../../.omo/evidence/threejs-startup-performance-2026-08-02.md)
+> and [the current gate review](../../.omo/evidence/tinyskies-current-gate-review-2026-08-02.md).
+> The checked-in evidence set is indexed in the
+> [current AAA evidence inventory](../../.omo/evidence/aaa-current-evidence-inventory-2026-08-02.md).
+> The standalone `/play/<id>` target below is deferred and is not a current
+> acceptance path while remote scene/API deployment is unavailable. The
+> original two-target requirements remain below as historical evidence.
+
 Goal: make the existing tinyskies port (`/Users/n/erth/Games-StemScript/tinyskies`)
 import and run in playground mode (editor **Play** + standalone **/play/<id>**),
 then extend the deliberately-capped systems toward fuller source fidelity.
@@ -68,7 +82,7 @@ Break into per-system subtasks once the gap map is complete.
 
 - [ ] `bun run typecheck`, `bun run lint` (NOT eslint --fix)
 - [ ] `bun run test` (Vitest) — featureFlags / scriptImports tests still green
-- [ ] Playwright: `oss-all-games-playground.mjs` GAMES=tinyskies → PASS, Play renders globe+plane
+- [x] Current headed WebGPU Playground Play/refresh gate passes; see the current evidence above. The older `oss-all-games-playground.mjs` checklist remains historical.
 - [ ] `/play/<id>` loads the saved project and runs
 - [ ] Re-run the other 5 script-using games' smoke (the flag change affects them)
 - [ ] **Manual code review**

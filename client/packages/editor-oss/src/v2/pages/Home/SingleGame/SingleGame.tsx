@@ -7,7 +7,7 @@ import { EditedText, ListItem, SceneDetailsWrapper, SceneImage, SceneName } from
 import { flexCenter } from "../../../../assets/style";
 import { useAuthorizationContext } from "../../../../context";
 import { Avatar } from "../../../../editor/assets/v2/Avatar/Avatar";
-import { getThumbnail } from "../../../../services";
+import { getThumbnail } from "../../../../utils/thumbnailUrl";
 import gamePlaceholder from "../../../assets/game-controller.svg";
 import playIcon from "../../../assets/play-icon.svg";
 import { IBasicGameInterface, IEditorUser } from "../../types";

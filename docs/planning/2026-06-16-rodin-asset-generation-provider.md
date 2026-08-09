@@ -1,5 +1,10 @@
 # Rodin asset-generation provider support
 
+> **Status: Historical, unverified proposal.**
+> This is not an active release commitment. Any future provider work must be
+> revalidated independently and must not become a fallback for local Playground
+> scene loading. See the [planning index](./README.md).
+
 ## Goal
 
 Add Rodin/Hyper3D as a 3D asset generation provider alongside Meshy and

@@ -1,9 +1,8 @@
 // DirectCopilotProvider — a browser-only copilot for the playground.
 //
-// The integrated build talks to a hosted ACP agent. The OSS playground has no
-// such server, so this provider calls the visitor's chosen LLM provider
-// directly from the browser, asks for a constrained StemScript plan, then
-// applies that script through the same CommandsRegistry used by the terminal.
+// This provider calls the visitor's chosen LLM provider directly from the
+// browser, asks for a constrained StemScript plan, then applies that script
+// through the same CommandsRegistry used by the terminal.
 
 import type {RequestPermissionResponse} from "@agentclientprotocol/sdk";
 import {AssetType, type Asset} from "@stem/network/api/asset";
@@ -26,7 +25,7 @@ import {updateSceneLambdaRevision} from "../editor/lambdas/util";
 import {updateSceneScriptRevision} from "../editor/scripts/util";
 import global from "../global";
 import type {LambdaConfig} from "../lambdas/Lambda";
-import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../script-runtime/scriptImports";
+import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../script-runtime/scriptImportCore";
 import type {CopilotEventHandler, ICopilotProvider} from "./ICopilotProvider";
 import {
     resolveCopilotChatKeyChoice,

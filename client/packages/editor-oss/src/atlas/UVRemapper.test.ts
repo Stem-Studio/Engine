@@ -1,8 +1,8 @@
-import { BufferAttribute, BufferGeometry } from 'three';
-import { describe, it, expect } from 'vitest';
+import { BufferAttribute, BufferGeometry, Group, InterleavedBuffer, InterleavedBufferAttribute, Mesh, MeshBasicMaterial, Object3D } from 'three';
+import { describe, it, expect, vi } from 'vitest';
 
-import { AtlasRegion } from './types';
-import { calculateUVTransform, remapGeometryUVs, findRegionByName } from './UVRemapper';
+import { AtlasConfig, AtlasRegion } from './types';
+import { applyAtlasToObject, calculateUVTransform, remapGeometryUVs, findRegionByName } from './UVRemapper';
 
 describe('UVRemapper', () => {
     describe('calculateUVTransform', () => {
@@ -107,6 +107,25 @@ describe('UVRemapper', () => {
             expect(remapped[2]).toBeCloseTo(1.0);
             expect(remapped[3]).toBeCloseTo(0.5);
         });
+
+        it('supports interleaved UV attributes', () => {
+            const geometry = new BufferGeometry();
+            const data = new InterleavedBuffer(new Float32Array([9, 0, 0, 9, 1, 1]), 3);
+            geometry.setAttribute('uv', new InterleavedBufferAttribute(data, 2, 1));
+
+            remapGeometryUVs(
+                geometry,
+                {name: 'test', x: 512, y: 512, width: 512, height: 512},
+                1024,
+                1024,
+            );
+
+            const uv = geometry.getAttribute('uv');
+            expect(uv.getX(0)).toBeCloseTo(0.5);
+            expect(uv.getY(0)).toBeCloseTo(0);
+            expect(uv.getX(1)).toBeCloseTo(1);
+            expect(uv.getY(1)).toBeCloseTo(0.5);
+        });
     });
 
     describe('findRegionByName', () => {
@@ -149,6 +168,92 @@ describe('UVRemapper', () => {
             const region = findRegionByName('ceilingmaterial', regions);
             expect(region).not.toBeNull();
             expect(region?.name).toBe('CeilingMaterial');
+        });
+    });
+
+    describe('applyAtlasToObject', () => {
+        const config: AtlasConfig = {
+            image: 'atlas.png',
+            width: 100,
+            height: 100,
+            regions: {
+                left: {name: 'left', x: 0, y: 0, width: 50, height: 100},
+                right: {name: 'right', x: 50, y: 0, width: 50, height: 100},
+            },
+        };
+        const geometry = () => {
+            const value = new BufferGeometry();
+            value.setAttribute('uv', new BufferAttribute(new Float32Array([0, 0, 1, 1]), 2));
+            return value;
+        };
+        const mesh = (name: string, value: BufferGeometry) => {
+            const result = new Mesh(value, new MeshBasicMaterial());
+            result.name = name;
+            return result;
+        };
+
+        it('remaps shared geometry only once when users resolve to the same region', () => {
+            const shared = geometry();
+            const first = mesh('left', shared);
+            const second = mesh('left', shared);
+            const root = new Group();
+            root.add(first, second);
+
+            applyAtlasToObject(root, config);
+
+            expect(first.geometry).toBe(shared);
+            expect(second.geometry).toBe(shared);
+            expect(Array.from(shared.getAttribute('uv').array)).toEqual([0, 0, 0.5, 1]);
+        });
+
+        it('clones shared geometry for different regions without cross-remapping UVs', () => {
+            const shared = geometry();
+            const left = mesh('left', shared);
+            const right = mesh('right', shared);
+            const root = new Group();
+            root.add(left, right);
+
+            applyAtlasToObject(root, config);
+
+            expect(left.geometry).not.toBe(right.geometry);
+            expect(Array.from(left.geometry.getAttribute('uv').array)).toEqual([0, 0, 0.5, 1]);
+            expect(Array.from(right.geometry.getAttribute('uv').array)).toEqual([0.5, 0, 1, 1]);
+            expect(Array.from(shared.getAttribute('uv').array)).toEqual([0, 0, 1, 1]);
+        });
+
+        it('preserves original UVs for unmatched users of shared geometry', () => {
+            const shared = geometry();
+            const matched = mesh('left', shared);
+            const unmatched = mesh('unmatched', shared);
+            const root = new Group();
+            root.add(matched, unmatched);
+
+            applyAtlasToObject(root, config);
+
+            expect(matched.geometry).not.toBe(shared);
+            expect(unmatched.geometry).toBe(shared);
+            expect(Array.from(shared.getAttribute('uv').array)).toEqual([0, 0, 1, 1]);
+        });
+
+        it('handles deeply nested models without recursive Three traversal', () => {
+            const root = new Group();
+            let parent: Object3D = root;
+            for (let index = 0; index < 12_000; index++) {
+                const child = new Object3D();
+                parent.add(child);
+                parent = child;
+            }
+            parent.add(mesh('left', geometry()));
+            const traverseSpy = vi.spyOn(Object3D.prototype, 'traverse').mockImplementation(() => {
+                throw new Error('recursive traversal must not be used');
+            });
+
+            try {
+                applyAtlasToObject(root, config);
+                expect(traverseSpy).not.toHaveBeenCalled();
+            } finally {
+                traverseSpy.mockRestore();
+            }
         });
     });
 });

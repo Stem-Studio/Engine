@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { VTKLoader as ThreeVTKLoader } from "three/examples/jsm/loaders/VTKLoader.js";
+import { VTKLoader as ThreeVTKLoader } from "three/addons/loaders/VTKLoader.js";
 
 import BaseLoader from "./BaseLoader";
 

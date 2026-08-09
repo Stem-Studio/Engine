@@ -18,6 +18,7 @@ describe("TeleportBehavior", () => {
         };
         const game = {
             scene,
+            getObjectByUUID: (uuid: string) => scene.getObjectByProperty("uuid", uuid) ?? null,
             player: undefined,
             cameraControl: {resetCamera: vi.fn()},
             behaviorManager: {

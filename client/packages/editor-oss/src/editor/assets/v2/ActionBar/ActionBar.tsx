@@ -299,7 +299,6 @@ export const ActionBar = ({
   const showQuickBuild = builderMode === "quick";
   const showMeshCad = builderMode === "mesh-cad";
   const showPlanCad = builderMode === "bim-plan";
-  const showLauncherBar = !showQuickBuild && !showPlanCad;
 
   // Calculate error count from logs
   const errorCount = gameDebugLogsRef.current.filter(
@@ -475,6 +474,13 @@ export const ActionBar = ({
     };
 
     const closeBuilderModeOnSceneLoad = () => {
+      // An explicit Builder Studio route is an authoring intent, not stale
+      // scene state. Scene activation can happen after the ActionBar applies
+      // the URL mode (especially on mobile-sized Playground routes), so keep
+      // that requested mode alive through the scene-loaded notification.
+      // Without this guard the toolbar disappears immediately after the
+      // editor finishes loading and the route becomes non-functional.
+      if (getBuilderStudioMode()) return;
       didApplyBuilderModeRef.current = true;
       transitionBuilderMode("none", "scene-loaded");
     };
@@ -728,15 +734,14 @@ export const ActionBar = ({
 
   return (
     <>
-      {showLauncherBar && (
-        <Container
-          data-testid="actionbar-container"
-          style={
-            pinnedCodeEditorWidth > 0
-              ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
-              : undefined
-          }
-        >
+      <Container
+        data-testid="editor-action-bar"
+        style={
+          pinnedCodeEditorWidth > 0
+            ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
+            : undefined
+        }
+      >
         <CADActionBarControls
           forceVisible={showMeshCad}
           allowAutoVisible={showMeshCad}
@@ -1021,8 +1026,7 @@ export const ActionBar = ({
             </>,
             document.body,
           )}
-        </Container>
-      )}
+      </Container>
 
       {showQuickBuild && (
         <QuickBuildToolbar

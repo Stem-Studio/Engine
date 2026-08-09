@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import {AMFLoader as ThreeAMFLoader} from "three/addons/loaders/AMFLoader.js";
 
 import BaseLoader from "./BaseLoader";
 
@@ -13,19 +13,17 @@ class AMFLoader extends BaseLoader {
 
     load(url) {
         return new Promise(resolve => {
-            this.require("AMFLoader").then(() => {
-                var loader = new THREE.AMFLoader();
-                loader.load(
-                    url,
-                    group => {
-                        resolve(group);
-                    },
-                    undefined,
-                    () => {
-                        resolve(null);
-                    },
-                );
-            });
+            const loader = new ThreeAMFLoader();
+            loader.load(
+                url,
+                group => {
+                    resolve(group);
+                },
+                undefined,
+                () => {
+                    resolve(null);
+                },
+            );
         });
     }
 }

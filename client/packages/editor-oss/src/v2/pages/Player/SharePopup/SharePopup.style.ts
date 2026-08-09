@@ -3,7 +3,7 @@ import styled from "styled-components";
 import {absoluteCenter, flexCenter} from "../../../../assets/style";
 
 // Local copy of the AvatarCreator ActionButton so SharePopup doesn't depend
-// on the AvatarCreator module (which is excluded from the OSS build).
+// on the AvatarCreator module (which is a no-op compatibility shim here).
 export const ActionButton = styled.button<{
     $background: string;
     $color: string;

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {BoxGeometry, Group, Mesh, MeshStandardMaterial} from "three";
-import {beforeEach, describe, expect, it, vi} from "vitest";
+import {BoxGeometry, Group, Mesh, MeshStandardMaterial, Object3D} from "three";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 vi.mock("@stem/network/api/asset", () => ({
     getAsset: vi.fn(),
@@ -38,6 +38,10 @@ describe("composeUserAvatar", () => {
         mockedGetAsset.mockReset();
         mockedGetAssetRevision.mockReset();
         mockedLoad.mockReset();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
     });
 
     it("returns null when parts list is empty", async () => {
@@ -99,6 +103,9 @@ describe("composeUserAvatar", () => {
 
         const part = makePartObject("Body");
         mockedLoad.mockResolvedValueOnce(part);
+        const traverse = vi.spyOn(Object3D.prototype, "traverse").mockImplementation(() => {
+            throw new Error("recursive traversal should not be used");
+        });
 
         const result = await composeUserAvatar({
             parts: [{group: "Body", assetId: "body-asset"}],
@@ -106,15 +113,13 @@ describe("composeUserAvatar", () => {
         });
 
         expect(result).not.toBeNull();
-        // The "skin_mesh" lives inside the cloned part group; find it by name.
-        let skinMesh: any = null;
-        result!.traverse((node: any) => {
-            if (node?.name === "skin_mesh") skinMesh = node;
-        });
+        const skinMesh = (((result!.children[0] as Group).children[0] as Group).children[0] as Mesh);
+        const material = skinMesh.material as MeshStandardMaterial;
         expect(skinMesh).not.toBeNull();
-        expect(skinMesh.material.color.r).toBeCloseTo(1);
-        expect(skinMesh.material.color.g).toBeCloseTo(0);
-        expect(skinMesh.material.color.b).toBeCloseTo(0);
+        expect(material.color.r).toBeCloseTo(1);
+        expect(material.color.g).toBeCloseTo(0);
+        expect(material.color.b).toBeCloseTo(0);
+        expect(traverse).not.toHaveBeenCalled();
     });
 
     it("returns null when zero parts resolve", async () => {

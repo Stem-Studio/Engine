@@ -247,6 +247,77 @@ describe('PrefabSerializer', () => {
             expect(obj?.userData.behaviors.length).toBe(1);
             expect(obj?.userData.behaviors[0].attributesData).toEqual({ someAssetRef: { assetId: 'a2', revisionId: 'r2' } });
         });
+
+        it('should skip behavior overrides with mismatched behavior ids', async () => {
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            const prefabBehavior: BehaviorData = {
+                id: 'enemy',
+                uuid: 'uuid-b1',
+                prefabBehaviorUuid: 'pb1',
+                enabled: true,
+                priority: 0,
+                attributesData: { value: 1 },
+            };
+
+            const prefabInstance = new Object3D();
+            prefabInstance.userData.behaviors = [prefabBehavior];
+            (loadPrefab as any).mockResolvedValue(prefabInstance);
+
+            const json = {
+                metadata: {
+                    generator: 'PrefabSerializer',
+                },
+                prefabId: 'prefab-123',
+                userData: {
+                    behaviors: [{
+                        id: 'shop',
+                        uuid: 'uuid-b1',
+                        prefabBehaviorUuid: 'pb1',
+                        enabled: true,
+                        priority: 0,
+                        attributesData: { value: 99 },
+                    }],
+                },
+            };
+
+            const obj = await serializer.fromJSON(json, null, { assetResolutionContext: context });
+
+            expect(obj?.userData.behaviors[0].attributesData).toEqual({ value: 1 });
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining('because behavior id changed'),
+            );
+            warn.mockRestore();
+        });
+
+        it('should skip behavior overrides with invalid attributesData', async () => {
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            const prefabBehavior: BehaviorData = {
+                id: 'b1',
+                uuid: 'uuid-b1',
+                prefabBehaviorUuid: 'pb1',
+                enabled: true,
+                priority: 0,
+                attributesData: { value: 1 },
+            };
+
+            const prefabInstance = new Object3D();
+            prefabInstance.userData.behaviors = [prefabBehavior];
+
+            (serializer as any).applyBehaviorOverrides(prefabInstance, [{
+                id: 'b1',
+                uuid: 'uuid-b1',
+                prefabBehaviorUuid: 'pb1',
+                enabled: true,
+                priority: 0,
+                attributesData: [],
+            }], context);
+
+            expect(prefabInstance.userData.behaviors[0].attributesData).toEqual({ value: 1 });
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining('with invalid attributesData'),
+            );
+            warn.mockRestore();
+        });
     });
 
     describe('physics handling during deserialization', () => {

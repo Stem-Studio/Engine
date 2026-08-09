@@ -1,5 +1,5 @@
 import {AnimationClip} from "three";
-import {GLTFExporterPlugin, GLTFWriter} from "three/examples/jsm/exporters/GLTFExporter.js";
+import {GLTFExporterPlugin, GLTFWriter} from "three/addons/exporters/GLTFExporter.js";
 
 import {EARTHAnimationGraphExtension} from "./EARTH_animation_graph";
 import {AnimationGraph} from "../AnimationGraph";

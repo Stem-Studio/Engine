@@ -28,8 +28,6 @@ export interface IQualitySettings {
     rendering: {
         pixelRatio: number;
         shadowQuality: 'none' | 'low' | 'medium' | 'high' | 'ultra';
-        shadowMapSize: number;
-        shadowCascades: number;
         antialiasing: 'none' | 'fxaa' | 'smaa' | 'taa' | 'msaa';
         antialiasingQuality: 'low' | 'medium' | 'high';
         postProcessing: boolean;
@@ -53,11 +51,9 @@ export interface IQualitySettings {
     physics: {
         updateRate: number; // Hz
         substeps: number;
-        collisionQuality: 'low' | 'medium' | 'high';
-        maxActiveBodies: number;
-        sleepThreshold: number;
-        continuousCollisionDetection: boolean;
-        asyncComputation: boolean;
+        maxStepsPerFrame: number;
+        /** Constraint solver iterations per fixed substep (Ammo/Rapier). */
+        solverIterations?: number;
     };
 
     // Behavior Quality
@@ -79,7 +75,7 @@ export interface IQualitySettings {
         lodDistances: number[];
         /** @deprecated Preset data only; no runtime hard cap enforces this field */
         maxDrawCalls: number;
-        /** @deprecated Preset data only; no runtime hard cap enforces this field */
+        /** Runtime-only InstancedMesh density target for generated content. */
         maxTriangles: number;
         cullingAggressiveness: number;
         /** @deprecated No module or consumer reads this field */
@@ -110,13 +106,12 @@ export interface IQualitySettings {
         maxPlayers: number;
     };
 
-    // Scheduler (FrameOrchestrator pipeline)
+    // Retired frame-scheduler metadata retained for saved-scene/API compatibility.
     scheduler: {
         enabled: boolean;
         frameBudgetMs: number;
         fixedTimestepHz: number;
         maxFixedStepsPerFrame: number;
-        enableTimeSlicing: boolean;
         spatialGridCellSize: number;
         renderPressureThreshold: number;
         deltaTimePressureThreshold: number;
@@ -168,16 +163,8 @@ export interface IQualityManager {
     getPresets(): IQualityPreset[];
     createCustomPreset(name: string, settings: IQualitySettings): IQualityPreset;
 
-    // Auto quality
-    enableAutoQuality(targetFps: number): void;
-    disableAutoQuality(): void;
-    isAutoQualityEnabled(): boolean;
-    setTargetFrameRate(fps: number): void;
-
     // Performance monitoring
     getPerformanceMetrics(): IPerformanceMetrics;
-    startPerformanceMonitoring(): void;
-    stopPerformanceMonitoring(): void;
 
     // Module management
     registerModule(module: IQualityModule): void;

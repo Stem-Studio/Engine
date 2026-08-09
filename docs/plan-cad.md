@@ -77,7 +77,7 @@ Smokes rely on these stable selectors:
 
 ## Attribution
 
-The BIM Plan work was informed by `pascalorg/editor` (MIT licensed) as architectural/product inspiration. No Pascal source is bundled in the OSS build; keep this note if future work ports source-level implementation details.
+The BIM Plan work was informed by `pascalorg/editor` (MIT licensed) as architectural/product inspiration. No Pascal source is bundled in this repository; keep this note if future work ports source-level implementation details.
 
 ## Known Limitations
 

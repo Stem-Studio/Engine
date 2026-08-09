@@ -2,7 +2,7 @@ import {getAssetResolutionContext, setAssetRevision} from "@stem/editor-oss/asse
 import global from "@stem/editor-oss/global";
 import type {LambdaConfig} from "../../lambdas/Lambda";
 import {seedScriptDependencyEntry} from "../../script-runtime/scriptDependencyCache";
-import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../script-runtime/scriptImports";
+import {buildNameAwareScriptImportContext, getScriptImportDependencyMap} from "../../script-runtime/scriptImportCore";
 
 export interface UpdateLambdaRegistriesParams {
     lambdaId: string;

@@ -1,4 +1,4 @@
-import { PointsNodeMaterial } from "three/webgpu";
+import {PointsNodeMaterial} from "three/webgpu";
 
 import BaseSerializer from "../BaseSerializer";
 import MaterialSerializer from "./MaterialSerializer";
@@ -14,7 +14,7 @@ class PointsNodeMaterialSerializer extends BaseSerializer {
     }
 
     fromJSON(json, parent, options) {
-        var obj = parent === undefined ? this.defaultMaterial : parent;
+        var obj = parent === undefined ? this.defaultMaterial.clone() : parent;
 
         MaterialSerializer.prototype.fromJSON.call(this, json, obj, options);
 

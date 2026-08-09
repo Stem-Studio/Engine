@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from "react";
+import {useEffect, useState} from "react";
 import "../css/SearchField.css";
 import classNames from "classnames";
 

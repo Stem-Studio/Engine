@@ -1,20 +1,30 @@
 ---
 title: Quickstart
 slug: /quickstart
-description: One-page jump-in for StemStudio. Pick a path and start building.
+description: One-page jump-in for the local StemStudio Playground.
 ---
 
 # Quickstart
 
-StemStudio is a browser-based 3D editor. No install, no SDK — open the editor and start placing objects.
+StemStudio is a browser-based 3D editor. Open the local or hosted Playground
+and start placing objects. Projects remain in that browser unless you selected
+Chromium folder storage.
+
+> The current focus is Playground mode. Remote API-backed projects, accounts,
+> cloud collaboration, and one-click publishing are not deployed.
+>
+> On a phone, rotate to landscape before authoring. Portrait mode intentionally
+> shows a rotate-device gate; the supported minimum QA viewport is `844 × 390`
+> CSS pixels.
 
 Pick the path that matches you:
 
 ## Path 1 — No-code creator
 
-You want to drag objects in, attach built-in behaviors, and publish. Start here:
+You want to drag objects in, attach built-in behaviors, and test a playable
+scene. Start here:
 
-1. [What is StemStudio?](getting-started/01-what-is-stemstudio.md) — what you can build and ship.
+1. [What is StemStudio?](getting-started/01-what-is-stemstudio.md) — what the Playground supports today.
 2. [Editor Tour](getting-started/02-editor-tour.md) — the three panels you'll use every session.
 3. [Getting Started Tutorial](getting-started/getting-started-tutorial.md) — build a playable scene in one sitting.
 4. [Built-in Behaviors](scripting/05-built-in-behaviors.md) — character controllers, triggers, jump pads, AI NPCs — drag, configure, done.
@@ -29,13 +39,11 @@ You're comfortable in JS and want to write custom behaviors, hook into the engin
 4. [Erth Interface](apis/01-erth-interface.md) — runtime API reference.
 5. [Communication Patterns](scripting/04-communication-patterns.md) — EventBus, GameManager, GlobalStore.
 
-## Shipping your game
+## Saving or sharing your work
 
-When you have something playable:
-
-- [Publishing Games](publishing/01-publishing-games.md) — sharing, remixing, eligibility gates.
-- [Mobile Builds](publishing/03-mobile-builds.md) — iOS/Android via Capacitor.
-- [Platform Integrations](publishing/04-platform-integrations.md) — Steam, Discord, CrazyGames.
+When you have something playable, read [Saving and Sharing](shipping.md).
+A one-click hosted release, mobile package, and platform integrations are not
+current Playground features.
 
 ## Want a full tour?
 

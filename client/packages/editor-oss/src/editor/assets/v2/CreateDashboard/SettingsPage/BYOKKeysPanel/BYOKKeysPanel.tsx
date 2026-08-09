@@ -6,7 +6,7 @@ import {
     clearCopilotChatKeyHandoff,
     prepareCopilotChatKeyHandoff,
     refreshCopilotKeysMarker,
-} from "../../../../../../copilot";
+} from "../../../../../../copilot/playgroundCopilotKeys";
 
 import {
     ActionsRow,

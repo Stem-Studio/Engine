@@ -51,6 +51,7 @@ export abstract class BaseLightHelpers<HelperT extends Helper> extends BaseHelpe
         global.app?.on(`objectChanged.${this.id}`, null);
         global.app?.on(`objectUpdated.${this.id}`, null);
         global.app?.on(`appModeEntered.${this.id}`, null);
+        this.clearHelpers();
     }
 
     onObjectAdded(object: Object3D) {
@@ -147,5 +148,11 @@ export abstract class BaseLightHelpers<HelperT extends Helper> extends BaseHelpe
         global.app?.editor?.removeSelectionHelper(helper);
         helper.dispose();
         this.helperMap.delete(uuid);
+    }
+
+    private clearHelpers() {
+        for (const uuid of [...this.helperMap.keys()]) {
+            this.removeHelper(uuid);
+        }
     }
 }

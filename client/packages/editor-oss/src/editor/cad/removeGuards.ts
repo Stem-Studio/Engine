@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 import type {CADAxisConstraint, CADSelectionMode, CADSelectionShape, CADTool} from "./types";
+import {findObjectByUuidDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 export interface CADModeStateTarget {
     cadMode: boolean;
@@ -23,7 +24,7 @@ export function removedObjectContainsCADEditedObject(
         return false;
     }
 
-    return object.uuid === cadEditedObjectUuid || Boolean(object.getObjectByProperty("uuid", cadEditedObjectUuid));
+    return findObjectByUuidDepthFirst(object, cadEditedObjectUuid) !== null;
 }
 
 export function resetCADModeState(target: CADModeStateTarget) {

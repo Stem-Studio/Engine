@@ -17,17 +17,19 @@ export default class GravityLambda extends SoALambdaBase {
         const mass = store.getField("mass") as Float32Array;
         const dragArr = store.getField("drag") as Float32Array;
         const useGravity = store.getField("useGravity") as Uint8Array;
+        const objects = store.getObjectRefs();
+        const visibilityMask = this._visibilityMask;
 
         for (let i = 0; i < count; i++) {
             if (!useGravity[i]) continue;
 
-            const multiplier = this._visibilityMask?.[i] ?? 1;
+            const multiplier = visibilityMask ? visibilityMask[i]! : 1;
             if (multiplier === 0) continue;
 
             const force = gravity * mass[i]! * (deltaTime * multiplier);
             const dragFactor = 1 - dragArr[i]!;
 
-            const obj = store.getObject(i);
+            const obj = objects[i];
             if (obj) {
                 obj.position.y -= force * dragFactor;
                 obj.updateMatrix();

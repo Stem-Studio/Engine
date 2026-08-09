@@ -4,6 +4,9 @@
  */
 import {Box3, BufferGeometry, InstancedMesh, Material, Matrix4, Mesh, Object3D, Scene, Sphere} from "three";
 
+import {createProgressiveYieldController, type ProgressiveYieldOptions} from "./progressiveYield";
+import {traverseObjectDepthFirst} from "./SceneTraverser";
+
 type AssetKey = string;
 type PoolKey = string;
 
@@ -26,6 +29,10 @@ const TRANSPARENT_INSTANCE_THRESHOLD = 12;
 const MIN_POOL_CAPACITY = 16;
 const SHRINK_THRESHOLD_DIVISOR = 8;
 const SHRINK_COOLDOWN_MS = 5000;
+const INSTANCER_PROGRESS_DEFAULTS = {
+    batchSize: 32,
+    frameBudgetMs: 4,
+};
 
 class Instancer {
     private readonly pools: Map<PoolKey, PoolState> = new Map();
@@ -40,7 +47,7 @@ class Instancer {
         const candidatesByPool = new Map<PoolKey, MeshCandidate[]>();
         const roots: Object3D[] = [];
 
-        scene.traverse(object => {
+        traverseObjectDepthFirst(scene, object => {
             if (this.canBeInstancedRoot(object)) {
                 roots.push(object);
             }
@@ -76,10 +83,81 @@ class Instancer {
 
                 const placeholder = this.swapMeshToInstance(candidate.mesh, pool.instancedMesh, poolKey);
                 this.storedObjects.push(placeholder);
-                this.updateInstancePosition(placeholder);
+                this.writeInstanceMatrix(placeholder, false);
             }
 
             this.refreshInstancedMeshBounds(pool.instancedMesh);
+        }
+    }
+
+    public async convertMeshesToInstancedMeshesProgressive(
+        scene: Scene,
+        options: ProgressiveYieldOptions = {},
+    ): Promise<void> {
+        const maybeYield = createProgressiveYieldController(options, INSTANCER_PROGRESS_DEFAULTS);
+        const candidatesByPool = new Map<PoolKey, MeshCandidate[]>();
+        const roots: Object3D[] = [];
+        const stack: Object3D[] = [scene];
+
+        while (stack.length > 0) {
+            const object = stack.pop();
+            if (!object) {
+                continue;
+            }
+
+            if (this.canBeInstancedRoot(object)) {
+                roots.push(object);
+            }
+
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                const child = object.children[i];
+                if (child) stack.push(child);
+            }
+
+            await maybeYield();
+        }
+
+        for (let i = 0; i < roots.length; i++) {
+            const rootCandidates = await this.collectCandidatesForRootProgressive(roots[i]!, maybeYield);
+            for (let j = 0; j < rootCandidates.length; j++) {
+                const candidate = rootCandidates[j]!;
+                const poolKey = this.getPoolKey(candidate);
+                if (!candidatesByPool.has(poolKey)) {
+                    candidatesByPool.set(poolKey, []);
+                }
+                candidatesByPool.get(poolKey)?.push(candidate);
+            }
+
+            await maybeYield();
+        }
+
+        for (const [poolKey, candidates] of candidatesByPool) {
+            if (candidates.length < this.getThreshold(candidates[0])) {
+                continue;
+            }
+
+            let pool = this.pools.get(poolKey);
+            if (!pool) {
+                pool = this.createPool(poolKey, candidates[0]!, scene, candidates.length);
+                this.pools.set(poolKey, pool);
+            }
+
+            for (let i = 0; i < candidates.length; i++) {
+                const candidate = candidates[i]!;
+                if (pool.instancedMesh.count >= pool.capacity) {
+                    pool = this.resizePool(poolKey, pool, scene);
+                    this.pools.set(poolKey, pool);
+                }
+
+                const placeholder = this.swapMeshToInstance(candidate.mesh, pool.instancedMesh, poolKey);
+                this.storedObjects.push(placeholder);
+                this.writeInstanceMatrix(placeholder, false);
+
+                await maybeYield();
+            }
+
+            this.refreshInstancedMeshBounds(pool.instancedMesh);
+            await maybeYield(true);
         }
     }
 
@@ -155,6 +233,55 @@ class Instancer {
 
                 stack.push({object: child, path: childPath});
             }
+        }
+
+        return candidates;
+    }
+
+    private async collectCandidatesForRootProgressive(
+        root: Object3D,
+        maybeYield: (force?: boolean) => Promise<void>,
+    ): Promise<MeshCandidate[]> {
+        const assetKey = this.getAssetKey(root);
+        if (!assetKey) {
+            return [];
+        }
+
+        const candidates: MeshCandidate[] = [];
+        const stack: Array<{object: Object3D; path: string}> = [{object: root, path: "root"}];
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current) {
+                continue;
+            }
+
+            const {object, path} = current;
+            for (let i = 0; i < object.children.length; i++) {
+                const child = object.children[i];
+                if (!child) {
+                    continue;
+                }
+
+                const childPath = `${path}/${i}`;
+                if (child.type === "Bone") {
+                    return [];
+                }
+
+                if (child instanceof Mesh) {
+                    child.userData.parentUUID = object.uuid;
+                    candidates.push({
+                        assetKey,
+                        mesh: child,
+                        meshPath: childPath,
+                        transparent: this.isTransparentMesh(child),
+                    });
+                }
+
+                stack.push({object: child, path: childPath});
+            }
+
+            await maybeYield();
         }
 
         return candidates;
@@ -238,6 +365,10 @@ class Instancer {
     }
 
     public updateInstancePosition(object: Object3D) {
+        this.writeInstanceMatrix(object, true);
+    }
+
+    private writeInstanceMatrix(object: Object3D, refreshBounds: boolean): void {
         const instanceData = object.userData.instanceData as
             | {id: number; instancedMesh: InstancedMesh}
             | undefined;
@@ -248,7 +379,9 @@ class Instancer {
         object.updateWorldMatrix(true, true);
         instanceData.instancedMesh.setMatrixAt(instanceData.id, object.matrixWorld);
         instanceData.instancedMesh.instanceMatrix.needsUpdate = true;
-        this.refreshInstancedMeshBounds(instanceData.instancedMesh);
+        if (refreshBounds) {
+            this.refreshInstancedMeshBounds(instanceData.instancedMesh);
+        }
     }
 
     private createInstancedMesh(

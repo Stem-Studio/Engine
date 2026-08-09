@@ -3,6 +3,7 @@ import * as THREE from "three";
 import {Brush, Evaluator, SUBTRACTION, ADDITION, INTERSECTION, DIFFERENCE, HOLLOW_SUBTRACTION, HOLLOW_INTERSECTION} from "three-bvh-csg";
 
 import global from "../../global";
+import {cloneJsonCompatible} from "../../utils/cloneJsonCompatible";
 import {AddObjectCommand, RemoveObjectCommand} from "../Commands";
 import Command from "../Command";
 
@@ -198,7 +199,7 @@ class CSGCommand extends Command {
         mesh.receiveShadow = firstMesh.receiveShadow;
 
         // Copy userData from first object
-        mesh.userData = JSON.parse(JSON.stringify(firstMesh.userData));
+        mesh.userData = cloneJsonCompatible(firstMesh.userData);
         delete mesh.userData.meshData;
 
         console.log("CSG operation complete, result mesh:", mesh);

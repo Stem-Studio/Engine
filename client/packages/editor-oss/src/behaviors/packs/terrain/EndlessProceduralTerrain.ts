@@ -8,14 +8,14 @@ import {
     DoubleSide,
     FrontSide,
     Mesh,
-    MeshStandardNodeMaterial,
     Object3D,
     PlaneGeometry,
     RepeatWrapping,
     SRGBColorSpace,
     TextureLoader,
     Vector2,
-} from "three/webgpu";
+} from "three";
+import {MeshStandardNodeMaterial} from "three/webgpu";
 import {MeshBVH} from "three-mesh-bvh";
 
 import { DEFAULT_TERRAIN_TEXTURES, DEFAULT_TERRAIN_VALUES } from "./EndlessTerrainConstants";

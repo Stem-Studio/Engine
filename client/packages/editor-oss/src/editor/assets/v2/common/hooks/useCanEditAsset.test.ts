@@ -68,11 +68,11 @@ describe("useCanEditAsset", () => {
             expect(result.current.canEdit).toBe(true);
         });
 
-        // In OSS there is no cross-user ownership — assets created via the
+        // In the local app there is no cross-user ownership — assets created via the
         // network adapter are stamped `userId: "local"`, scenes are stamped
-        // with the AuthorizationContext dummy id. The integrated build
-        // gated `canEdit` on those matching and on the viewer being a
-        // contributor; OSS short-circuits both — owning the scene is
+        // with the AuthorizationContext dummy id. Remote deployments may gate
+        // `canEdit` on those matching and on the viewer being a contributor;
+        // this path short-circuits both — owning the scene is
         // sufficient, since "the scene" is the local file/IDB row the user
         // just opened.
         it("OSS: scene owner viewing an asset stamped with a different userId → true", () => {

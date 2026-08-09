@@ -1,13 +1,27 @@
-import {Object3D} from 'three';
+import type {Object3D} from 'three';
 
-import {AssetLoader} from './AssetLoader';
+import type {AssetLoader} from './AssetLoader';
 import {AssetRef, assetRefKey} from './AssetRef';
-import {loadModelWithLoader} from '../model/load-util';
-import {loadPrefabWithLoader} from '../prefab/util';
 import MeshUtils from '../utils/MeshUtils';
 import {cloneObject} from '../utils/ObjectUtils';
+import {retainObjectGpuResources} from '../core/resources/GpuResourceOwnership';
 
 type AssetKind = 'model' | 'prefab';
+type ModelLoadModule = typeof import('../model/load-util');
+type PrefabUtilModule = typeof import('../prefab/util');
+
+let modelLoadModulePromise: Promise<ModelLoadModule> | null = null;
+let prefabUtilModulePromise: Promise<PrefabUtilModule> | null = null;
+
+const loadModelLoadModule = (): Promise<ModelLoadModule> => {
+    modelLoadModulePromise ??= import('../model/load-util');
+    return modelLoadModulePromise;
+};
+
+const loadPrefabUtilModule = (): Promise<PrefabUtilModule> => {
+    prefabUtilModulePromise ??= import('../prefab/util');
+    return prefabUtilModulePromise;
+};
 
 /**
  * Manages loading and optional template caching for models and prefabs (stems).
@@ -93,7 +107,7 @@ export class AssetInstanceManager {
      */
     dispose(): void {
         for (const template of this.templateCache.values()) {
-            template.traverse((child) => MeshUtils.dispose(child));
+            this.disposeTemplate(template);
         }
         this.templateCache.clear();
         this.pendingLoads.clear();
@@ -150,14 +164,18 @@ export class AssetInstanceManager {
         // If a template is cached (from a prior preload), clone from it.
         const cached = this.templateCache.get(key);
         if (cached) {
-            return cloneObject(cached);
+            const instance = cloneObject(cached);
+            retainObjectGpuResources(instance);
+            return instance;
         }
 
         // If a preload is in progress, wait for it to finish and clone.
         const pending = this.pendingLoads.get(key);
         if (pending) {
             await pending;
-            return cloneObject(this.templateCache.get(key)!);
+            const instance = cloneObject(this.templateCache.get(key)!);
+            retainObjectGpuResources(instance);
+            return instance;
         }
 
         // No preload — load and return directly. No template is kept in memory.
@@ -173,9 +191,13 @@ export class AssetInstanceManager {
         const key = this.cacheKey(kind, ref);
         const template = this.templateCache.get(key);
         if (template) {
-            template.traverse((child) => MeshUtils.dispose(child));
+            this.disposeTemplate(template);
             this.templateCache.delete(key);
         }
+    }
+
+    private disposeTemplate(template: Object3D): void {
+        MeshUtils.dispose(template);
     }
 
     /**
@@ -187,8 +209,14 @@ export class AssetInstanceManager {
     private async loadTemplate(kind: AssetKind, ref: AssetRef): Promise<Object3D> {
         const context = {assetIdToRevisionId: {[ref.assetId]: ref.revisionId}};
         if (kind === 'model') {
-            return loadModelWithLoader(ref.assetId, context, this.assetLoader);
+            const {loadModelWithLoader} = await loadModelLoadModule();
+            const template = await loadModelWithLoader(ref.assetId, context, this.assetLoader);
+            retainObjectGpuResources(template);
+            return template;
         }
-        return loadPrefabWithLoader(ref.assetId, context, this.assetLoader);
+        const {loadPrefabWithLoader} = await loadPrefabUtilModule();
+        const template = await loadPrefabWithLoader(ref.assetId, context, this.assetLoader);
+        retainObjectGpuResources(template);
+        return template;
     }
 }

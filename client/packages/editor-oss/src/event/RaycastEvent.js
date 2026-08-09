@@ -15,11 +15,16 @@ class RaycastEvent extends BaseEvent {
         super();
         this.mouse = new Vector2();
         this.raycaster = new Raycaster();
+        this.intersections = [];
+        this.groundPoint = new Vector3();
+        this.groundPlane = new Plane().setFromNormalAndCoplanarPoint(new Vector3(0, 1, 0), new Vector3());
+        this.onMouseDown = this.onMouseDown.bind(this);
+        this.onMouseUp = this.onMouseUp.bind(this);
     }
 
     start() {
-        global.app.on(`mousedown.${this.id}`, this.onMouseDown.bind(this));
-        global.app.on(`mouseup.${this.id}`, this.onMouseUp.bind(this));
+        global.app.on(`mousedown.${this.id}`, this.onMouseDown);
+        global.app.on(`mouseup.${this.id}`, this.onMouseUp);
     }
 
     stop() {
@@ -43,39 +48,45 @@ class RaycastEvent extends BaseEvent {
     }
 
     onMouseUp(event) {
-        if (!global.app.editor) {
+        const app = global.app;
+        const editor = app.editor;
+        if (!editor) {
             return;
         }
-        if (event.target !== global.app.editor.renderer.domElement) {
+        if (event.target !== editor.renderer.domElement) {
+            this.isDown = false;
             return;
         }
 
         if (!this.isDown || this.x !== event.offsetX || this.y !== event.offsetY) {
+            this.isDown = false;
             return;
         }
+        this.isDown = false;
 
-        let domElement = global.app.editor.renderer.domElement;
+        let domElement = editor.renderer.domElement;
 
         this.mouse.x = event.offsetX / domElement.clientWidth * 2 - 1;
         this.mouse.y = -event.offsetY / domElement.clientHeight * 2 + 1;
 
         this.raycaster.setFromCamera(
             this.mouse,
-            global.app.editor.view === "perspective" ? global.app.editor.camera : global.app.editor.orthCamera,
+            editor.view === "perspective" ? editor.camera : editor.orthCamera,
         );
 
-        let intersects = this.raycaster.intersectObjects(global.app.editor.scene.children, true);
+        const intersects = this.intersections;
+        intersects.length = 0;
+        this.raycaster.intersectObjects(editor.scene.children, true, intersects);
 
         if (intersects.length > 0) {
-            global.app.call("raycast", this, intersects[0], event);
-            global.app.call("intersect", this, intersects[0], event, intersects);
+            app.call("raycast", this, intersects[0], event);
+            app.call("intersect", this, intersects[0], event, intersects);
         } else {
+            const target = this.groundPoint;
+            target.set(0, 0, 0);
+            this.raycaster.ray.intersectPlane(this.groundPlane, target);
 
-            let plane = new Plane().setFromNormalAndCoplanarPoint(new Vector3(0, 1, 0), new Vector3());
-            let target = new Vector3();
-            this.raycaster.ray.intersectPlane(plane, target);
-
-            global.app.call(
+            app.call(
                 "raycast",
                 this,
                 {

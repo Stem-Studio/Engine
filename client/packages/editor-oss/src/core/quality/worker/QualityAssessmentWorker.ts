@@ -107,9 +107,7 @@ export class QualityAssessmentStateMachine {
 
         // Prune old entries
         const cutoff = now - this.windowSizeMs;
-        this.alarmWindow = this.alarmWindow.filter(e => e.timestamp > cutoff);
-
-        const negativeCount = this.alarmWindow.filter(e => e.negative).length;
+        const negativeCount = this.pruneAlarmWindowAndCountNegatives(cutoff);
 
         // Downgrade check
         if (negativeCount >= this.downgradeThreshold) {
@@ -160,14 +158,44 @@ export class QualityAssessmentStateMachine {
 
     getDebugState(now: number): WorkerStateDebugMessage {
         const cutoff = now - this.windowSizeMs;
-        const windowAlarms = this.alarmWindow.filter(e => e.timestamp > cutoff);
         return {
             type: 'state_debug',
             state: this.state,
-            negativeCount: windowAlarms.filter(e => e.negative).length,
+            negativeCount: this.countActiveNegativeAlarms(cutoff),
             recoveryCount: this.recoveryCount,
             cooldownRemainingMs: Math.max(0, this.cooldownEndTime - now),
         };
+    }
+
+    private pruneAlarmWindowAndCountNegatives(cutoff: number): number {
+        let writeIndex = 0;
+        let negativeCount = 0;
+
+        for (let readIndex = 0; readIndex < this.alarmWindow.length; readIndex++) {
+            const entry = this.alarmWindow[readIndex]!;
+            if (entry.timestamp <= cutoff) {
+                continue;
+            }
+
+            this.alarmWindow[writeIndex++] = entry;
+            if (entry.negative) {
+                negativeCount++;
+            }
+        }
+
+        this.alarmWindow.length = writeIndex;
+        return negativeCount;
+    }
+
+    private countActiveNegativeAlarms(cutoff: number): number {
+        let negativeCount = 0;
+        for (let i = 0; i < this.alarmWindow.length; i++) {
+            const entry = this.alarmWindow[i]!;
+            if (entry.timestamp > cutoff && entry.negative) {
+                negativeCount++;
+            }
+        }
+        return negativeCount;
     }
 
     private enterCooldown(now: number): void {

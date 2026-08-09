@@ -1,8 +1,7 @@
 import { Box3, Object3D } from 'three';
 
-import { ModelFormat } from '@stem/network/api/asset';
-
 const GAUSSIAN_SPLAT_FLAG = '__isGaussianSplat';
+const GAUSSIAN_SPLAT_SPZ_FORMAT = 'spz';
 export const GAUSSIAN_SPLAT_PLY_METADATA_KEY = 'gaussianSplatPly';
 const MAX_PLY_HEADER_BYTES = 64 * 1024;
 const REQUIRED_GAUSSIAN_PLY_PROPERTIES = [
@@ -31,12 +30,9 @@ export const isGaussianSplatObject = (object: Object3D | null | undefined): bool
         return false;
     }
 
-    let gaussianSplatFound = false;
-    object.traverse((child) => {
-        if (gaussianSplatFound) {
-            return;
-        }
-
+    const stack: Object3D[] = [object];
+    while (stack.length > 0) {
+        const child = stack.pop()!;
         const candidate = child as BoundingBoxCapableObject;
         if (
             child.userData?.[GAUSSIAN_SPLAT_FLAG] === true ||
@@ -44,15 +40,22 @@ export const isGaussianSplatObject = (object: Object3D | null | undefined): bool
             child.type === 'SplatMesh' ||
             typeof candidate.getBoundingBox === 'function'
         ) {
-            gaussianSplatFound = true;
+            return true;
         }
-    });
 
-    return gaussianSplatFound;
+        for (let i = child.children.length - 1; i >= 0; i--) {
+            const descendant = child.children[i];
+            if (descendant) {
+                stack.push(descendant);
+            }
+        }
+    }
+
+    return false;
 };
 
 export const isGaussianSplatFormat = (format: string | null | undefined): boolean => {
-    return format?.toLowerCase() === ModelFormat.Spz;
+    return format?.toLowerCase() === GAUSSIAN_SPLAT_SPZ_FORMAT;
 };
 
 export const isGaussianSplatAsset = (

@@ -14,9 +14,6 @@ import {UploadSettings} from "../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/M
 import global from "../global";
 import Converter from "../utils/Converter";
 import {ModelUtils} from "../utils/ModelUtils";
-import {backendUrlFromPath} from "../utils/UrlUtils";
-import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {IS_OSS} from "../mode/buildMode";
 
 export type UploadModelFromUrlParams = {
     /** URL of the model to upload (e.g., from Meshy/Tripo CDN) */
@@ -60,32 +57,14 @@ export const uploadModelFromUrl = async (params: UploadModelFromUrlParams): Prom
 
     // 1. Fetch the model bytes.
     //
-    // The integrated build proxies external CDN downloads through the Go
-    // server's `/api/Proxy/Download` to dodge CORS. This OSS build ships no
-    // such proxy (the desktop ai-server only fronts provider APIs), so both
-    // playground and desktop fetch the provider CDN URL directly — relying on
-    // that CDN sending permissive CORS headers (Meshy/Tripo/Rodin CDNs).
-    let blob: Blob;
-    if (isPlaygroundMode() || IS_OSS) {
-        const direct = await fetch(url, {signal: abortSignal});
-        if (!direct.ok) {
-            throw new Error(`Failed to fetch model: ${direct.statusText}`);
-        }
-        blob = await direct.blob();
-    } else {
-        const proxyUrl = backendUrlFromPath("/api/Proxy/Download");
-        const response = await fetch(proxyUrl!, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({url}),
-        });
-        if (!response.ok) {
-            throw new Error(`Failed to fetch model: ${response.statusText}`);
-        }
-        blob = await response.blob();
+    // This repository ships no download proxy, so generated model imports fetch
+    // provider CDN URLs directly. Meshy/Tripo/Rodin CDN responses need
+    // permissive CORS headers for browser import to succeed.
+    const direct = await fetch(url, {signal: abortSignal});
+    if (!direct.ok) {
+        throw new Error(`Failed to fetch model: ${direct.statusText}`);
     }
+    const blob = await direct.blob();
     const file = new File([blob], `${name}.glb`, {type: "model/gltf-binary"});
 
     // 2. Load model

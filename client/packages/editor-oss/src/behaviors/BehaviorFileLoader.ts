@@ -6,6 +6,16 @@ interface BehaviorModule {
     default: BehaviorConstructor;
 }
 
+const yieldToPaint = (): Promise<void> =>
+    new Promise(resolve => {
+        const finish = () => setTimeout(() => resolve(), 0);
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => finish());
+        } else {
+            finish();
+        }
+    });
+
 export class BehaviorFileLoader {
     private modules: Record<string, () => Promise<BehaviorModule>>;
     private pathToModuleMap: Map<string, string> = new Map();
@@ -95,15 +105,29 @@ export class BehaviorFileLoader {
         behaviorPaths: Array<{folder: string; main: string}>,
         batchSize: number = 5,
     ): Promise<Array<BehaviorConstructor | null>> {
-        const results: Array<BehaviorConstructor | null> = [];
-
-        for (let i = 0; i < behaviorPaths.length; i += batchSize) {
-            const batch = behaviorPaths.slice(i, i + batchSize);
-            const batchResults = await Promise.all(batch.map(({folder, main}) => this.loadFile(folder, main)));
-            results.push(...batchResults);
+        if (behaviorPaths.length === 0) {
+            return [];
         }
 
-        console.log(`[BehaviorFileLoader] Loaded ${behaviorPaths.length} behaviors in batches of ${batchSize}`);
+        const results: Array<BehaviorConstructor | null> = new Array(behaviorPaths.length).fill(null);
+        const workerCount = Math.max(1, Math.min(Math.floor(batchSize), behaviorPaths.length));
+        let nextIndex = 0;
+
+        const runWorker = async () => {
+            while (nextIndex < behaviorPaths.length) {
+                const index = nextIndex++;
+                const {folder, main} = behaviorPaths[index]!;
+                results[index] = await this.loadFile(folder, main);
+
+                if (nextIndex < behaviorPaths.length) {
+                    await yieldToPaint();
+                }
+            }
+        };
+
+        await Promise.all(Array.from({length: workerCount}, runWorker));
+
+        console.log(`[BehaviorFileLoader] Loaded ${behaviorPaths.length} behaviors with concurrency ${workerCount}`);
         return results;
     }
 

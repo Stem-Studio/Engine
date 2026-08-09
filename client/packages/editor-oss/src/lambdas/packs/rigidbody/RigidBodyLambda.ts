@@ -2,6 +2,8 @@ import { RIGIDBODY_SCHEMA } from "../../data/PhysicsComponentSchemas";
 import type { LambdaOptions } from "../../Lambda";
 import { SoALambdaBase } from "../../SoALambdaBase";
 
+const RIGIDBODY_SYNC_FIELDS = ["vx", "vy", "vz", "avx", "avy", "avz"] as const;
+
 export default class RigidBodyLambda extends SoALambdaBase {
     constructor(id: string, options: LambdaOptions) {
         super(id, options, RIGIDBODY_SCHEMA);
@@ -31,11 +33,13 @@ export default class RigidBodyLambda extends SoALambdaBase {
         const freezeRX = store.getField("freezeRotationX") as Uint8Array;
         const freezeRY = store.getField("freezeRotationY") as Uint8Array;
         const freezeRZ = store.getField("freezeRotationZ") as Uint8Array;
+        const objects = store.getObjectRefs();
+        const visibilityMask = this._visibilityMask;
 
         for (let i = 0; i < count; i++) {
             if (isKinematic[i]) continue;
 
-            const multiplier = this._visibilityMask?.[i] ?? 1;
+            const multiplier = visibilityMask ? visibilityMask[i]! : 1;
             if (multiplier === 0) continue;
             const effectiveDt = deltaTime * multiplier;
 
@@ -63,7 +67,7 @@ export default class RigidBodyLambda extends SoALambdaBase {
             }
 
             // Integrate position + rotation (time-integrated)
-            const obj = store.getObject(i);
+            const obj = objects[i];
             if (obj) {
                 if (!freezePX[i]) obj.position.x += vx[i]! * effectiveDt;
                 if (!freezePY[i]) obj.position.y += vy[i]! * effectiveDt;
@@ -76,6 +80,6 @@ export default class RigidBodyLambda extends SoALambdaBase {
         }
 
         // Sync velocities back to Map records
-        this.syncSoAToMap(["vx", "vy", "vz", "avx", "avy", "avz"]);
+        this.syncSoAToMap(RIGIDBODY_SYNC_FIELDS);
     }
 }

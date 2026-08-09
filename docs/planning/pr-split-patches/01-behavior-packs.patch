@@ -1,0 +1,2786 @@
+# Behavior Pack Refactors
+# Generated from current worktree by scripts/build-builder-cad-pr-split-patches.mjs
+diff --git a/client/packages/editor-oss/src/behaviors/BehaviorData.ts b/client/packages/editor-oss/src/behaviors/BehaviorData.ts
+index 3350cc2..55e22f9 100644
+--- a/client/packages/editor-oss/src/behaviors/BehaviorData.ts
++++ b/client/packages/editor-oss/src/behaviors/BehaviorData.ts
+@@ -1,11 +1,12 @@
+-// TODO: version?
+-
+ import { Object3D } from "three";
+ 
+ import {BehaviorThrottleConfig} from "./Behavior";
+ 
++export const BEHAVIOR_DATA_SCHEMA_VERSION = 1;
++
+ // This data is saved and loaded from user data and scene file
+ interface BehaviorData {
++    schemaVersion?: number;
+     id: string;
+     uuid: string;
+     /** The uuid of the corresponding behavior in the prefab */
+diff --git a/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.ts b/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.ts
+index 2003bb1..f077af1 100644
+--- a/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.ts
++++ b/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.ts
+@@ -10,9 +10,17 @@ export interface CollisionListener {
+     type: COLLISION_TYPE;
+     useBoundingBoxes?: boolean;
+     distanceThreshold?: number;
+-    callback: () => void;
++    callback: (context: CollisionContext) => void;
+ }
+ 
++export type CollisionContext = {
++    target: THREE.Object3D;
++    other?: THREE.Object3D;
++    listener: CollisionListener;
++    source: "distance" | "physics";
++    collision?: CollisionData;
++};
++
+ /**
+  * This class does both physics and distance base collision detection.
+  */
+@@ -104,8 +112,8 @@ class CollisionDetector {
+             return isIntersecting;
+         }
+ 
+-        // TODO: use SAT for more accurate collision detection or leave only bounding boxes collision and use physics for more complex cases
+-        //try by distance by default
++        // Distance mode is intentionally a simple proximity trigger. Use
++        // bounding boxes or physics listeners for shape-accurate collision.
+         const distance = obj.position.distanceTo(target.position);
+         const collisionThreshold = distanceThreshold || obj.userData.collision_sensitivity;
+         if (debug) {
+@@ -124,21 +132,23 @@ class CollisionDetector {
+     }
+ 
+     private detectCollisionViaDistance() {
+-        [this.objectsWithoutPhysics, this.objectsWithPhysics].forEach(map => {
+-            map.forEach((listenerArr, obj) => {
+-                listenerArr.forEach(listener => {
+-                    //FIXME: can be further optimized
+-                    if (listener.type === COLLISION_TYPE.WITH_PLAYER) {
+-                        if (!this.player) return;
+-                        if (
+-                            this.isColliding(obj, this.player, !!listener.useBoundingBoxes, listener.distanceThreshold)
+-                        ) {
+-                            listener.callback();
+-                        }
+-                    } else {
+-                        console.warn("Unsupported collision type: "+listener.type);
++        this.objectsWithoutPhysics.forEach((listenerArr, obj) => {
++            listenerArr.forEach(listener => {
++                if (listener.type === COLLISION_TYPE.WITH_PLAYER) {
++                    if (!this.player) return;
++                    if (
++                        this.isColliding(obj, this.player, !!listener.useBoundingBoxes, listener.distanceThreshold)
++                    ) {
++                        listener.callback({
++                            target: obj,
++                            other: this.player,
++                            listener,
++                            source: "distance",
++                        });
+                     }
+-                });
++                } else {
++                    console.warn("Unsupported collision type: "+listener.type);
++                }
+             });
+         });
+     }
+@@ -151,7 +161,13 @@ class CollisionDetector {
+                 if (arr && arr.length > 0) {
+                     let listener = arr.find(l => l.id === collision.listenerId);
+                     if (listener) {
+-                        listener.callback();
++                        listener.callback({
++                            target,
++                            other: listener.type === COLLISION_TYPE.WITH_PLAYER ? this.player : undefined,
++                            listener,
++                            source: "physics",
++                            collision,
++                        });
+                     } else {
+                         console.warn("detectCollisionViaPhysics failed to get listener: " + collision.listenerId);
+                     }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.ts
+index c91871b..e703d9a 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.ts
+@@ -66,8 +66,7 @@ class ConsumableBehavior extends BehaviorBase {
+         EventBus.instance.send(IN_GAME_EVENTS.CONSUMABLE_COLLIDED, this.consumableData);
+         switch (this.attributes.consumableType) {
+             case CONSUMABLE_TYPES.PRESS_E:
+-                // if (this.game!.inputManager.getAction('use')) { // TODO: use this instead of hardcoded 'pressE'
+-                if (this.game?.player?.userData?.pressE) { // HACK: this is a temporary solution for mobile controls
++                if (this.isUseActionPressed()) {
+                     this.collectObject();
+                 }
+                 break;
+@@ -81,10 +80,15 @@ class ConsumableBehavior extends BehaviorBase {
+ 
+     }
+ 
++    private isUseActionPressed(): boolean {
++        return (
++            this.game?.inputManager?.getAction("use") === true ||
++            this.game?.scene?.userData?.pressE === true ||
++            this.game?.player?.userData?.pressE === true
++        );
++    }
++
+     collectObject() {
+-        //TODO work with Natalia on this
+-        //const invObj: IInventory = { Amount: 1, UUID: this.target!.uuid, Name: this.target!.name };
+-        //dispatchCustomInventoryEvent(EVENTS.INVENTORY_ADD, invObj);
+         if (this.collectedObject) return {};
+         EventBus.instance.send(IN_GAME_EVENTS.GAME_HEALTH_INC, this.attributes.healthAmount);
+         EventBus.instance.send(IN_GAME_EVENTS.CONSUMABLE_COLLECTED, this.consumableData);
+diff --git a/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.ts
+index bfa26ee..13084a6 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.ts
+@@ -16,6 +16,11 @@ enum EnemyState {
+     ATTACKING = "attacking",
+ }
+ 
++const DEFAULT_ENGAGE_DISTANCE = 10;
++const DEFAULT_STRIKE_DISTANCE = 3;
++const DEFAULT_IDLE_RETREAT_DELAY = 5;
++const DEFAULT_RETREAT_DURATION = 2;
++
+ class EnemyBehavior extends BehaviorBase {
+     // attributes
+     startOnTrigger: boolean = false;
+@@ -90,6 +95,27 @@ class EnemyBehavior extends BehaviorBase {
+         }
+     }
+ 
++    private getNumberAttribute(key: string, fallback: number): number {
++        const value = Number(this.attributes[key]);
++        return Number.isFinite(value) && value >= 0 ? value : fallback;
++    }
++
++    private getEngageDistance(): number {
++        return this.getNumberAttribute("engageDistance", DEFAULT_ENGAGE_DISTANCE);
++    }
++
++    private getStrikeDistance(): number {
++        return this.getNumberAttribute("strikeDistance", DEFAULT_STRIKE_DISTANCE);
++    }
++
++    private getIdleRetreatDelay(): number {
++        return this.getNumberAttribute("idleRetreatDelay", DEFAULT_IDLE_RETREAT_DELAY);
++    }
++
++    private getRetreatDuration(): number {
++        return this.getNumberAttribute("retreatDuration", DEFAULT_RETREAT_DURATION);
++    }
++
+     private initEnemies() {
+         if (!this.game || !this.game.player || !this.game.scene) return;
+         const sceneHelpers = this.game.engine.sceneHelpers;
+@@ -268,41 +294,45 @@ class EnemyBehavior extends BehaviorBase {
+ 
+             this.stateTimer += this.deltaTime;
+ 
+-            //FIXME: make distances and timers a part of behavior params
++            const engageDistance = this.getEngageDistance();
++            const strikeDistance = this.getStrikeDistance();
++            const idleRetreatDelay = this.getIdleRetreatDelay();
++            const retreatDuration = this.getRetreatDuration();
++
+             switch (this.state) {
+                 case EnemyState.STANDING:
+                     this.enemyStand();
+-                    if (distanceToPlayer < 10) {
++                    if (distanceToPlayer < engageDistance) {
+                         this.changeState(EnemyState.APPROACHING);
+                         this.stateTimer = 0;
+-                    } else if (this.stateTimer > 5) {
++                    } else if (this.stateTimer > idleRetreatDelay) {
+                         this.changeState(EnemyState.RETREATING);
+                         this.stateTimer = 0;
+                     }
+                     break;
+                 case EnemyState.APPROACHING:
+                     this.enemyApproach();
+-                    if (distanceToPlayer < 3) {
++                    if (distanceToPlayer < strikeDistance) {
+                         this.changeState(EnemyState.ATTACKING);
+                         this.stateTimer = 0;
+-                    } else if (distanceToPlayer > 10) {
++                    } else if (distanceToPlayer > engageDistance) {
+                         this.changeState(EnemyState.RETREATING);
+                         this.stateTimer = 0;
+                     }
+                     break;
+                 case EnemyState.RETREATING:
+                     this.enemyRetreat();
+-                    if (distanceToPlayer < 10) {
++                    if (distanceToPlayer < engageDistance) {
+                         this.changeState(EnemyState.APPROACHING);
+                         this.stateTimer = 0;
+-                    } else if (this.stateTimer > 2) {
++                    } else if (this.stateTimer > retreatDuration) {
+                         this.changeState(EnemyState.STANDING);
+                         this.stateTimer = 0;
+                     }
+                     break;
+                 case EnemyState.ATTACKING:
+                     this.enemyAttack();
+-                    if (distanceToPlayer > 3) {
++                    if (distanceToPlayer > strikeDistance) {
+                         this.changeState(EnemyState.APPROACHING);
+                         this.stateTimer = 0;
+                     }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/enemy/behavior.json b/client/packages/editor-oss/src/behaviors/packs/enemy/behavior.json
+index 5420d5b..7351465 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/enemy/behavior.json
++++ b/client/packages/editor-oss/src/behaviors/packs/enemy/behavior.json
+@@ -162,6 +162,34 @@
+             "default": 1,
+             "description": "How frequently the enemy attacks in seconds. Lower values result in faster, more aggressive attacks."
+         },
++        "engageDistance": {
++            "name": "Engage Distance",
++            "type": "number",
++            "min": 0,
++            "default": 10,
++            "description": "Distance at which the enemy switches from idle or retreating into pursuit. Larger values make the enemy chase players sooner."
++        },
++        "strikeDistance": {
++            "name": "Strike Distance",
++            "type": "number",
++            "min": 0,
++            "default": 3,
++            "description": "Distance at which the enemy switches from pursuit into its attack state."
++        },
++        "idleRetreatDelay": {
++            "name": "Idle Retreat Delay",
++            "type": "number",
++            "min": 0,
++            "default": 5,
++            "description": "Seconds the enemy waits while idle before backing away when no player is close enough to engage."
++        },
++        "retreatDuration": {
++            "name": "Retreat Duration",
++            "type": "number",
++            "min": 0,
++            "default": 2,
++            "description": "Seconds the enemy keeps retreating before returning to idle if the player remains outside engage distance."
++        },
+         "respawnAmount": {
+             "name": "Respawn",
+             "type": "number",
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.ts
+index fbd0aee..324c2fb 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.ts
+@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
+ class FixedJointBehavior extends BehaviorBase {
+ 
+     game: GameManager | null = null;
++    private jointObjectBUuid?: string;
+ 
+     init(game: GameManager) {
+         this.game = game;
+@@ -30,11 +31,16 @@ class FixedJointBehavior extends BehaviorBase {
+             frameInBPosition,
+             frameInBRotation,
+         );
++        this.jointObjectBUuid = objectB.uuid;
+     }
+ 
+     onStop(): void {
+-        //TODO: we don't support removing individual constraints
+-        //  and physics engine will destroy all constraints when stopped
++        if (!this.jointObjectBUuid) {
++            return;
++        }
++
++        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
++        this.jointObjectBUuid = undefined;
+     }
+ 
+ 
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.ts
+index ba328eb..4424567 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.ts
+@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
+ class HingeJointBehavior extends BehaviorBase {
+ 
+     game: GameManager | null = null;
++    private jointObjectBUuid?: string;
+ 
+     init(game: GameManager) {
+         this.game = game;
+@@ -41,11 +42,16 @@ class HingeJointBehavior extends BehaviorBase {
+             this.attributes.motorSpeed as number,
+             this.attributes.motorTorque as number,
+         );
++        this.jointObjectBUuid = objectB.uuid;
+     }
+ 
+     onStop(): void {
+-        //TODO: we don't support removing individual constraints
+-        //  and physics engine will destroy all constraints when stopped
++        if (!this.jointObjectBUuid) {
++            return;
++        }
++
++        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
++        this.jointObjectBUuid = undefined;
+     }
+ 
+     getRelativeRotation(meshA: Object3D, meshB: Object3D): Quaternion {
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.ts
+index 0b488f4..682cf4e 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.ts
+@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
+ class Point2PointJointBehavior extends BehaviorBase {
+ 
+     game: GameManager | null = null;
++    private jointObjectBUuid?: string;
+ 
+     init(game: GameManager) {
+         this.game = game;
+@@ -30,11 +31,16 @@ class Point2PointJointBehavior extends BehaviorBase {
+             objectB.uuid,
+             pivotB,
+         );
++        this.jointObjectBUuid = objectB.uuid;
+     }
+ 
+     onStop(): void {
+-        //TODO: we don't support removing individual constraints
+-        //  and physics engine will destroy all constraints when stopped
++        if (!this.jointObjectBUuid) {
++            return;
++        }
++
++        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
++        this.jointObjectBUuid = undefined;
+     }
+ }
+ 
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.ts
+index df187c0..655483e 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.ts
+@@ -6,7 +6,7 @@ import {IPhysics} from "../../../physics/common/types";
+ import MotionStateHelper from "../../../physics/MotionStateHelper";
+ import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
+ import {BehaviorBase} from "../../Behavior";
+-import CollisionDetector from "../../collisions/CollisionDetector";
++import CollisionDetector, {type CollisionContext} from "../../collisions/CollisionDetector";
+ import GameManager from "../../game/GameManager";
+ 
+ export enum CalculationMode {
+@@ -41,7 +41,7 @@ class JumppadBehavior extends BehaviorBase {
+ 
+     onReset() {}
+ 
+-    onCollision() {
++    onCollision(context?: CollisionContext) {
+         if (this.attributes.strength <= 0 || !this.target || this.isPaused) {
+             return;
+         }
+@@ -52,7 +52,7 @@ class JumppadBehavior extends BehaviorBase {
+             return;
+         }
+ 
+-        const object = this.game?.player; // TODO: get collision object instead of player
++        const object = context?.other ?? this.game?.player;
+ 
+         if (!object || !object.userData.physics?.enabled) {
+             return;
+@@ -76,8 +76,7 @@ class JumppadBehavior extends BehaviorBase {
+         const quaternion = this.target.quaternion.clone();
+         impulse.applyQuaternion(quaternion);
+ 
+-        //apply impulse to the player object
+-        //TODO: MP support is needed for multiple player instances
++        // Apply impulse to the object that actually triggered this collision.
+         this.physics?.applyImpulseToPlayer(object.uuid, impulse);
+         EventBus.instance.send(IN_GAME_EVENTS.JUMPPAD_ACTIVATED, {
+             target: this.target,
+diff --git a/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.ts
+index dee1df1..606a97c 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.ts
+@@ -7,6 +7,19 @@ import { BehaviorBase } from "../../Behavior";
+ import CollisionDetector from "../../collisions/CollisionDetector";
+ import GameManager from "../../game/GameManager";
+ 
++type ShopItem = {
++    itemId?: AssetRef;
++    itemDisplayName?: string;
++    paymentType?: AssetRef;
++    price?: number | string;
++};
++
++const NO_IMAGE_URL = "data:image/svg+xml;charset=UTF-8," +
++    encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#18181b" stroke="#3f3f46" stroke-width="2"/><text x="50" y="50" font-family="Arial" font-size="12" fill="#71717a" text-anchor="middle" dominant-baseline="middle">No Image</text></svg>`);
++
++const PAYMENT_IMAGE_URL = "data:image/svg+xml;charset=UTF-8," +
++    encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect width="15" height="15" fill="transparent" stroke="white" stroke-width="1"/></svg>`);
++
+ class ShopBehavior extends BehaviorBase {
+     teleportTargetUuid?: string;
+ 
+@@ -30,28 +43,18 @@ class ShopBehavior extends BehaviorBase {
+ 
+     onRemoved(): void {
+         this.removeCollisionListener();
++        this.closeShopMenu();
+     }
+ 
+     onReset() { }
+ 
+     preloadPrefabs(): void {
+-        if (!this.target?.userData?.behaviors || !this.prefabManager || !this.game?.scene) return;
+-
+-        const shopEntries = Object.values(this.target.userData.behaviors);
+-        const prefabRefs: AssetRef[] = [];
+-
+-        shopEntries.forEach((shop: any) => {
+-            if (shop.attributesData?.items) {
+-                shop.attributesData.items.forEach((item: any) => {
+-                    if (item?.itemId) {
+-                        prefabRefs.push(item.itemId);
+-                    }
+-                });
+-            }
+-        });
++        if (!this.prefabManager || !this.game?.scene) return;
+ 
+-        for (const prefabRef of prefabRefs) {
+-            void this.prefabManager.preloadPrefab(prefabRef);
++        for (const item of this.getShopItems()) {
++            if (item.itemId) {
++                void this.prefabManager.preloadPrefab(item.itemId);
++            }
+         }
+     }
+ 
+@@ -70,116 +73,245 @@ class ShopBehavior extends BehaviorBase {
+             }
+         } else {
+             if (this.isMenuOpen) {
+-                const menu = document.getElementById('shopMenu');
+-                if (menu) {
+-                    menu.remove();
+-                }
+-                this.isMenuOpen = false;
++                this.closeShopMenu();
+             }
+         }
+     }
+ 
+-    //TODO some ideas - in next version replace the html with 
+-    //template snippets for the user to select their own layout
+     createShopMenu() {
+         if (document.getElementById('shopMenu')) return;
+ 
+-        let shopDataHtml = "<p>No shop items available</p>";
+-        let introDialogHtml = "<p>No introduction available.</p>";
+-        let shopImageUrl = "data:image/svg+xml;charset=UTF-8," +
+-            encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#18181b" stroke="#3f3f46" stroke-width="2"/><text x="50" y="50" font-family="Arial" font-size="12" fill="#71717a" text-anchor="middle" dominant-baseline="middle">No Image</text></svg>`);
+-
+-        // FIXME: refactor this in more readable and maintainable way, less branching, functions and dont use userData, only attributes from behaviors
+-        if (this.target && this.target.userData?.behaviors) {
+-            const shopEntries = Object.values(this.target.userData.behaviors);
+-            let rowItems: string[] = [];
+-            let itemsHtml = "";
+-
+-            shopEntries.forEach((shop: any) => {
+-                if (shop.attributesData?.introDialog) {
+-                    introDialogHtml = `<p>${shop.attributesData.introDialog}</p>`;
+-                }
+-
+-                if (shop.attributesData?.shopImage) {
+-                    shopImageUrl = shop.attributesData.shopImage;
+-                }
+-
+-                if (shop.attributesData?.items) { 
+-                    shop.attributesData.items.forEach((item: any) => {
+-                        if (!item?.itemId) return;
+-
+-                        const displayName = item.itemDisplayName;
+-                        const imageUrl = "data:image/svg+xml;charset=UTF-8," +
+-                            encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#18181b" stroke="#3f3f46" stroke-width="2"/><text x="50" y="50" font-family="Arial" font-size="12" fill="#71717a" text-anchor="middle" dominant-baseline="middle">No Image</text></svg>`);
+-
+-                        const paymentImageUrl = "data:image/svg+xml;charset=UTF-8," +
+-                            encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect width="15" height="15" fill="transparent" stroke="white" stroke-width="1"/></svg>`);
+-
+-                        rowItems.push(`
+-                        <div style="width: 125px; display: flex; flex-direction: column; margin: 3px; text-align: left; padding: 0px; border-radius: 15px; border: 0px solid transparent; background: #27272a;">
+-                            <div style="width: 100%; height: 100px; overflow: hidden; background: transparent; border-radius: 15px 15px 0 0;">
+-                                <img src="${imageUrl}" alt="${displayName}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 15px 15px 0 0;">
+-                            </div>
+-                            <span style="margin-top: 10px; padding-left: 8px; padding-left: 8px">${displayName} </span>
+-                            <div style="display: flex; align-items: left; gap: 5px; margin-top: 10px; padding-left: 8px; padding-bottom: 8px">
+-                                <img src="${paymentImageUrl}" alt="Payment" style="width: 25px; height: 25px; border-radius: 0px; border: 0px;">
+-                                <span>${item.price ?? "N/A"}</span>
+-                            </div>
+-                        </div>`);
+-
+-                        if (rowItems.length === 6) { 
+-                            itemsHtml += `<div style="display: flex; justify-content: flex-start; gap: 10px; margin-bottom: 10px;">${rowItems.join("")}</div>`;
+-                            rowItems = [];
+-                        }
+-                    });
+-                }
+-            });
++        const menu = document.createElement('div');
++        menu.id = 'shopMenu';
++        menu.appendChild(this.createShopPanel());
+ 
+-            // Make sure to fill in empty items if the last row has fewer than 6 items
+-            if (rowItems.length > 0) {
+-                while (rowItems.length < 6) {
+-                    rowItems.push(`
+-                    <div style="width: 125px; display: flex; flex-direction: column; align-items: center; margin: 3px; text-align: center; padding: 10px; border-radius: 15px; border: 2px solid transparent; background: #27272a;">
+-                        <div style="width: 100px; height: 100px; overflow: hidden; background: transparent;"></div>
+-                    </div>
+-                `);
+-                }
+-                itemsHtml += `<div style="display: flex; justify-content: flex-start; gap: 10px; margin-bottom: 10px;">${rowItems.join("")}</div>`;
+-            }
++        document.body.appendChild(menu);
++    }
+ 
+-            if (itemsHtml) {
+-                shopDataHtml = `<div style="display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 10px; width: 100%;">${itemsHtml}</div>`;
+-            }
++    private closeShopMenu() {
++        document.getElementById("shopMenu")?.remove();
++        this.isMenuOpen = false;
++    }
++
++    private getShopItems(): ShopItem[] {
++        return Array.isArray(this.attributes.items)
++            ? this.attributes.items.filter((item: ShopItem | null | undefined): item is ShopItem => !!item?.itemId)
++            : [];
++    }
++
++    private getIntroDialog(): string {
++        return String(this.attributes.introDialog || "No introduction available.");
++    }
++
++    private getSafeImageUrl(value: unknown): string {
++        if (typeof value !== "string") {
++            return NO_IMAGE_URL;
+         }
+ 
+-        const menu = document.createElement('div');
+-        menu.id = 'shopMenu';
+-        menu.innerHTML = `
+-         <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #202020; color: white; padding: 10px; display: flex; flex-direction: column; border-radius: 10px; z-index: 1000; border: 2px solid #202020; box-sizing: border-box; max-height: 80vh; overflow-y: auto;">
+-
+-            <!-- Image and Intro Dialog Section -->
+-            <div style="display: flex; align-items: flex-start; gap: 10px; background: #27272a; padding: 10px; border-radius: 10px; margin-bottom: 10px; width: calc(3 * 130px + 2 * 10px);">
+-                <div style="display: flex; align-items: flex-start; gap: 10px;">
+-                    <img src="${shopImageUrl}" alt="Shop Image" style="width: 100px; height: 100px; object-fit: cover; border-radius: 10px; border: 0px solid white;">
+-                    <div style="flex-grow: 1; text-align: left; color: white; display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start;">
+-                        ${introDialogHtml}
+-                    </div>
+-                </div>
+-            </div>
+-
+-            <!-- Scrollable Shop Items Section (Vertical Scroll Only) -->
+-            <div style="flex-grow: 1; overflow-y: auto; overflow-x: hidden; margin-bottom: 10px;">
+-                ${shopDataHtml}
+-            </div>
+-
+-            <!-- Buttons -->
+-            <div style="display: flex; justify-content: flex-end; gap: 10px; padding: 10px 0 0;">
+-                <button style="background-color: blue; color: white; padding: 10px; border: none; border-radius: 5px; cursor: pointer;">REMAINING</button>
+-                <button style="background-color: #27272a; color: white; padding: 10px; border: none; border-radius: 5px; cursor: pointer;" onclick="document.getElementById('shopMenu')?.remove()">CANCEL</button>
+-            </div>
+-        </div>`;
++        const trimmed = value.trim();
++        if (
++            trimmed.startsWith("data:image/") ||
++            trimmed.startsWith("blob:") ||
++            trimmed.startsWith("https://") ||
++            trimmed.startsWith("http://") ||
++            trimmed.startsWith("/") ||
++            trimmed.startsWith("./") ||
++            trimmed.startsWith("../")
++        ) {
++            return trimmed;
++        }
+ 
+-        document.body.appendChild(menu);
++        return NO_IMAGE_URL;
++    }
++
++    private createShopPanel(): HTMLDivElement {
++        const panel = document.createElement("div");
++        Object.assign(panel.style, {
++            position: "fixed",
++            top: "50%",
++            left: "50%",
++            transform: "translate(-50%, -50%)",
++            background: "#202020",
++            color: "white",
++            padding: "10px",
++            display: "flex",
++            flexDirection: "column",
++            borderRadius: "10px",
++            zIndex: "1000",
++            border: "2px solid #202020",
++            boxSizing: "border-box",
++            maxHeight: "80vh",
++            overflowY: "auto",
++            width: "min(820px, calc(100vw - 32px))",
++        });
++
++        panel.appendChild(this.createShopHeader());
++        panel.appendChild(this.createItemsList());
++        panel.appendChild(this.createButtonRow());
++
++        return panel;
++    }
++
++    private createShopHeader(): HTMLDivElement {
++        const header = document.createElement("div");
++        Object.assign(header.style, {
++            display: "flex",
++            alignItems: "flex-start",
++            gap: "10px",
++            background: "#27272a",
++            padding: "10px",
++            borderRadius: "10px",
++            marginBottom: "10px",
++        });
++
++        const image = document.createElement("img");
++        image.src = this.getSafeImageUrl(this.attributes.shopImage);
++        image.alt = "Shop";
++        Object.assign(image.style, {
++            width: "100px",
++            height: "100px",
++            objectFit: "cover",
++            borderRadius: "10px",
++            flex: "0 0 auto",
++        });
++
++        const intro = document.createElement("p");
++        intro.textContent = this.getIntroDialog();
++        Object.assign(intro.style, {
++            margin: "0",
++            lineHeight: "1.35",
++            whiteSpace: "pre-wrap",
++        });
++
++        header.append(image, intro);
++        return header;
++    }
++
++    private createItemsList(): HTMLDivElement {
++        const itemsContainer = document.createElement("div");
++        Object.assign(itemsContainer.style, {
++            flexGrow: "1",
++            overflowY: "auto",
++            overflowX: "hidden",
++            marginBottom: "10px",
++            display: "grid",
++            gridTemplateColumns: "repeat(auto-fill, minmax(125px, 1fr))",
++            gap: "10px",
++        });
++
++        const items = this.getShopItems();
++        if (items.length === 0) {
++            const emptyState = document.createElement("p");
++            emptyState.textContent = "No shop items available";
++            Object.assign(emptyState.style, {
++                margin: "0",
++                color: "#d4d4d8",
++            });
++            itemsContainer.appendChild(emptyState);
++            return itemsContainer;
++        }
++
++        items.forEach(item => {
++            itemsContainer.appendChild(this.createItemCard(item));
++        });
++
++        return itemsContainer;
++    }
++
++    private createItemCard(item: ShopItem): HTMLDivElement {
++        const card = document.createElement("div");
++        Object.assign(card.style, {
++            display: "flex",
++            flexDirection: "column",
++            textAlign: "left",
++            borderRadius: "8px",
++            background: "#27272a",
++            overflow: "hidden",
++            minWidth: "0",
++        });
++
++        const image = document.createElement("img");
++        image.src = NO_IMAGE_URL;
++        image.alt = String(item.itemDisplayName || "Shop item");
++        Object.assign(image.style, {
++            width: "100%",
++            height: "100px",
++            objectFit: "cover",
++        });
++
++        const displayName = document.createElement("span");
++        displayName.textContent = String(item.itemDisplayName || "Shop item");
++        Object.assign(displayName.style, {
++            marginTop: "10px",
++            padding: "0 8px",
++            overflowWrap: "anywhere",
++        });
++
++        const priceRow = document.createElement("div");
++        Object.assign(priceRow.style, {
++            display: "flex",
++            alignItems: "center",
++            gap: "5px",
++            marginTop: "10px",
++            padding: "0 8px 8px",
++        });
++
++        const paymentImage = document.createElement("img");
++        paymentImage.src = PAYMENT_IMAGE_URL;
++        paymentImage.alt = "Payment";
++        Object.assign(paymentImage.style, {
++            width: "25px",
++            height: "25px",
++            flex: "0 0 auto",
++        });
++
++        const price = document.createElement("span");
++        price.textContent = String(item.price ?? "N/A");
++
++        priceRow.append(paymentImage, price);
++        card.append(image, displayName, priceRow);
++
++        return card;
++    }
++
++    private createButtonRow(): HTMLDivElement {
++        const buttonRow = document.createElement("div");
++        Object.assign(buttonRow.style, {
++            display: "flex",
++            justifyContent: "flex-end",
++            gap: "10px",
++            padding: "10px 0 0",
++        });
++
++        const remainingButton = document.createElement("button");
++        remainingButton.type = "button";
++        remainingButton.textContent = "REMAINING";
++        Object.assign(remainingButton.style, {
++            backgroundColor: "blue",
++            color: "white",
++            padding: "10px",
++            border: "none",
++            borderRadius: "5px",
++            cursor: "pointer",
++        });
++
++        const cancelButton = document.createElement("button");
++        cancelButton.type = "button";
++        cancelButton.textContent = "CANCEL";
++        Object.assign(cancelButton.style, {
++            backgroundColor: "#27272a",
++            color: "white",
++            padding: "10px",
++            border: "none",
++            borderRadius: "5px",
++            cursor: "pointer",
++        });
++        cancelButton.addEventListener("click", () => {
++            this.closeShopMenu();
++        });
++
++        buttonRow.append(remainingButton, cancelButton);
++        return buttonRow;
+     }
+ 
+     addCollisionListener() {
+diff --git a/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.ts
+index 1678434..ffa1fc1 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.ts
+@@ -1,17 +1,23 @@
+-import {Object3D, BoxGeometry, MeshBasicMaterial, Mesh} from "three";
++import {Object3D, BoxGeometry, MeshBasicMaterial, Mesh, Vector3, Quaternion} from "three";
+ 
+ import SpawnPointMarker from "./SpawnPointMarker";
+ import Editor from "@stem/editor-oss/editor/Editor";
+ import { BehaviorBase } from "../../Behavior";
+ import GameManager from "../../game/GameManager";
+ 
+-// no need to do anything here, player should check for spawn points
+-// TODO: add some structure to the spawn points, like a list of spawn points that can be used in the game
++type SpawnPointMetadata = {
++    slot: number;
++    type: "normal" | "team";
++};
++
+ class SpawnPointBehavior extends BehaviorBase {
+ 
+     private editorSelectObject?: Mesh;
+     private editorPreviewObject?: Object3D;
+     private editor?: Editor;
++    private lastPreviewPosition = new Vector3();
++    private lastPreviewQuaternion = new Quaternion();
++    private hasSyncedEditorPreview = false;
+ 
+     init(game: GameManager) {
+         this.game = game;
+@@ -19,14 +25,18 @@ class SpawnPointBehavior extends BehaviorBase {
+ 
+     update() {}
+ 
+-    onAdded(): void {}
++    onAdded(): void {
++        this.updateSpawnPointMetadata();
++    }
+ 
+-    onRemoved(): void {}
++    onRemoved(): void {
++        this.clearSpawnPointMetadata();
++    }
+ 
+     onReset() {}
+ 
+     onEditorAdded(editor: Editor): void {
+-        this.target.userData.isSpawnPoint = true;
++        this.updateSpawnPointMetadata();
+ 
+         const target = this.target;
+         this.editor = editor;
+@@ -39,23 +49,60 @@ class SpawnPointBehavior extends BehaviorBase {
+ 
+         target.add(this.editorSelectObject);
+         editor.sceneHelpers.add(this.editorPreviewObject);
++        this.syncEditorPreview(true);
+     }
+ 
+     onEditorRemoved(): void {
+-        delete this.target.userData.isSpawnPoint;
++        this.clearSpawnPointMetadata();
+         this.cleanupEditorObjects();
+     }
+ 
+     onEditorUpdate(): void {
+-        // TODO: optimize this, it should not be called every frame
+-        this.editorPreviewObject?.position.copy(this.target.position);
+-        this.editorPreviewObject?.rotation.copy(this.target.rotation);
++        this.syncEditorPreview();
++    }
++
++    onEditorAttributesUpdated(): void {
++        this.updateSpawnPointMetadata();
+     }
+ 
+     onEditorDispose(): void {
+         this.cleanupEditorObjects();
+     }
+ 
++    private updateSpawnPointMetadata(): void {
++        this.target.userData.isSpawnPoint = true;
++        this.target.userData.spawnPoint = {
++            slot: Number(this.attributes.slot ?? 0),
++            type: this.attributes.spawnType === "team" ? "team" : "normal",
++        } satisfies SpawnPointMetadata;
++    }
++
++    private clearSpawnPointMetadata(): void {
++        delete this.target.userData.isSpawnPoint;
++        delete this.target.userData.spawnPoint;
++    }
++
++    private syncEditorPreview(force = false): void {
++        if (!this.editorPreviewObject) {
++            return;
++        }
++
++        if (
++            !force &&
++            this.hasSyncedEditorPreview &&
++            this.lastPreviewPosition.equals(this.target.position) &&
++            this.lastPreviewQuaternion.equals(this.target.quaternion)
++        ) {
++            return;
++        }
++
++        this.editorPreviewObject.position.copy(this.target.position);
++        this.editorPreviewObject.quaternion.copy(this.target.quaternion);
++        this.lastPreviewPosition.copy(this.target.position);
++        this.lastPreviewQuaternion.copy(this.target.quaternion);
++        this.hasSyncedEditorPreview = true;
++    }
++
+     private cleanupEditorObjects(): void {
+         if (this.editorSelectObject) {
+             this.target.remove(this.editorSelectObject);
+@@ -67,6 +114,7 @@ class SpawnPointBehavior extends BehaviorBase {
+             this.editor!.sceneHelpers.remove(this.editorPreviewObject);
+             this.editorPreviewObject = undefined;
+         }
++        this.hasSyncedEditorPreview = false;
+     }
+ 
+ }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/spawnpoint/behavior.json b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/behavior.json
+index 0a22196..4c7465c 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/spawnpoint/behavior.json
++++ b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/behavior.json
+@@ -4,7 +4,9 @@
+     "isScript": false,
+     "description": "A spawn point marker system that defines player spawn locations in the game world. Marks objects as spawn points with visual editor representation showing position and forward direction. Supports multiple spawn slots and team-based spawning. Editor-only visualization with human-like marker and directional arrow. The actual spawn logic is handled by the player system which queries spawn points at game start.",
+     "author": "stemstudio",
+-    "tags": ["spawn"],
++    "tags": [
++        "spawn"
++    ],
+     "main": "SpawnPointBehavior.ts",
+     "version": "1.0.0",
+     "isHidden": true,
+@@ -48,5 +50,5 @@
+             "description": "Determines whether this spawn point is available to all players (Normal) or reserved for a specific team (Team)."
+         }
+     },
+-    "documentation": "## Spawn Point\n\nA spawn point marker system that defines player spawn locations in the game world. Marks objects as spawn points with visual editor representation showing position and forward direction. Supports multiple spawn slots and team-based spawning. Editor-only visualization with human-like marker and directional arrow. The actual spawn logic is handled by the player system which queries spawn points at game start.\n\n### Key Features\n- Visual spawn point marker in editor (human figure + arrow)\n- Configurable spawn slot numbers for ordered spawning\n- Team-based spawn type support\n- Forward direction indicator via blue arrow\n- Editor-only visualization (hidden at runtime)\n- Transparent selection box for easy editor picking\n- Position and rotation tracking\n- userData flag for spawn point identification\n- No runtime overhead (empty update loop)\n- Automatic cleanup on editor removal\n\n### How It Works\n1. Attach to empty object or mesh in scene\n2. Configure spawn slot number (0, 1, 2, etc.)\n3. Select spawn type: Normal or Team\n4. Position object at desired spawn location\n5. Rotate object to set player facing direction (forward = +Z)\n6. In editor:\n   - Sets target.userData.isSpawnPoint = true\n   - Creates SpawnPointMarker visual representation\n   - Marker shows white human figure (sphere head + cone body)\n   - Blue arrow indicates forward direction (3 units long)\n   - Adds transparent selection box for editor interaction\n   - Marker added to editor.sceneHelpers layer\n7. Marker structure:\n   - Head: white sphere (0.1 radius) at y=1.5\n   - Body: white inverted cone (0.2 radius, 1 height) at y=0.75\n   - Arrow: THREE.ArrowHelper pointing forward (+Z) in blue\n8. Editor updates:\n   - onEditorUpdate() syncs marker position/rotation with target\n   - Called every frame (TODO: optimize with change detection)\n9. Runtime behavior:\n   - Empty update() - no performance cost during gameplay\n   - Player system queries objects with userData.isSpawnPoint\n   - Spawn logic handled externally by character controller\n10. Cleanup:\n    - onEditorRemoved() clears userData flag\n    - Removes and disposes selection box geometry\n    - Removes marker from sceneHelpers\n\n### Common Use Cases\n- Player initial spawn location\n- Respawn points after death\n- Checkpoint spawn positions\n- Team-based spawn areas in multiplayer\n- Multiple spawn locations for variety\n- Teleport destination markers\n- Level start positions\n- Co-op player spawn points\n- Arena spawn slots for battle modes\n- Racing game starting grid positions\n\n### When Not To Use\n- For enemy spawn points (use different system)\n- When spawn should be dynamic/procedural\n- For continuous spawning (waves, etc.)\n- When spawn logic needs custom behavior\n- For object/item spawning (not player spawning)\n- When spawn should be invisible to player system\n- For complex spawn conditions or prerequisites\n- When spawn should have enter/exit animations\n- For networked multiplayer spawn (needs sync layer)\n- When spawn position should change at runtime\n\n### Technical Details\n- userData flag: target.userData.isSpawnPoint = true\n- Marker class: SpawnPointMarker extends THREE.Group\n- Head geometry: THREE.SphereGeometry(0.1, 32, 32)\n- Body geometry: THREE.ConeGeometry(0.2, 1, 32) rotated 180°\n- Arrow: THREE.ArrowHelper(dir, origin, length, color)\n- Arrow direction: Vector3(0, 0, 1) forward in local space\n- Arrow length: 3 units\n- Arrow color: 0x0000ff (blue)\n- Selection box: BoxGeometry(1, 1, 1) transparent\n- Material: MeshBasicMaterial {transparent: true, opacity: 0.0, depthWrite: false}\n- Editor layer: editor.sceneHelpers (not rendered in game)\n- Position sync: marker.position.copy(target.position)\n- Rotation sync: marker.rotation.copy(target.rotation)\n- Update frequency: every frame in editor (onEditorUpdate)\n- Cleanup: geometry.dispose() on selection box removal\n- Spawn slot attribute: number type, min: 0, no max\n- Spawn type attribute: enum [\"normal\", \"team\"] default: \"normal\"\n- Runtime methods: empty (init, update, onAdded, onRemoved, onReset)\n- Throttle config: MEDIUM priority, frustum culling enabled\n- isHidden: true (hidden from behavior picker by default)\n- Player integration: external system queries isSpawnPoint flag\n- TODO: Add spawn point list structure for game management\n- TODO: Optimize onEditorUpdate to only update on transform changes"
++    "documentation": "## Spawn Point\n\nA spawn point marker system that defines player spawn locations in the game world. It marks objects for runtime spawn lookup and adds an editor-only marker showing position and facing direction.\n\n### Key Features\n- Visual spawn point marker in editor\n- Configurable spawn slot numbers\n- Normal and team spawn metadata\n- Forward direction indicator\n- Transparent selection box for editor picking\n- Structured userData.spawnPoint metadata\n- Empty runtime update loop\n\n### How It Works\n1. Attach to an empty object or mesh in the scene.\n2. Configure the spawn number and spawn type.\n3. Position and rotate the object where the player should appear.\n4. The behavior sets target.userData.isSpawnPoint = true and target.userData.spawnPoint = {slot, type}.\n5. In editor mode it creates a SpawnPointMarker in sceneHelpers.\n6. The marker syncs only when the target transform changes.\n7. Runtime spawn systems can query userData.isSpawnPoint or userData.spawnPoint.\n\n### Technical Details\n- Marker: SpawnPointMarker extends THREE.Group\n- Selection box: transparent BoxGeometry attached to the target\n- Position sync: marker.position.copy(target.position) after changes\n- Rotation sync: marker.quaternion.copy(target.quaternion) after changes\n- Spawn slot attribute: number type, min 0\n- Spawn type attribute: enum [\"normal\", \"team\"]\n- Cleanup removes helper objects and clears spawn metadata when the behavior is removed"
+ }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.ts
+index e57fd84..8a107c6 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.ts
+@@ -3,7 +3,7 @@ import {Object3D, Quaternion, Vector3, Euler} from "three";
+ import EventBus, { IN_GAME_EVENTS } from "../../../behaviors/event/EventBus";
+ import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
+ import { BehaviorBase } from "../../Behavior";
+-import CollisionDetector from "../../collisions/CollisionDetector";
++import CollisionDetector, {type CollisionContext} from "../../collisions/CollisionDetector";
+ import GameManager from "../../game/GameManager";
+ import CharacterBehavior from "../character/CharacterBehavior";
+ 
+@@ -32,13 +32,13 @@ class TeleportBehavior extends BehaviorBase {
+ 
+     onReset() {}
+ 
+-    onCollision() {
++    onCollision(context?: CollisionContext) {
+         if (!this.attributes.teleportTargetUuid || this.isPaused) {
+             return;
+         }
+ 
+         const teleportTarget = this.game?.scene?.getObjectByProperty("uuid", this.attributes.teleportTargetUuid);
+-        const object = this.game?.player; // TODO: get collision object instead of player
++        const object = context?.other ?? this.game?.player;
+ 
+         if (!teleportTarget || !object) {
+             return;
+diff --git a/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.ts
+index 5cca633..d0faf51 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.ts
+@@ -12,10 +12,10 @@ enum ANIMATION_TYPES {
+ 
+ interface TweenAnimationConfig {
+     startPosition: THREE.Vector3;
+-    startRotation: THREE.Euler;
++    startQuaternion: THREE.Quaternion;
+     startScale: THREE.Vector3;
+     endPosition: THREE.Vector3;
+-    endRotation: THREE.Euler;
++    endQuaternion: THREE.Quaternion;
+     endScale: THREE.Vector3;
+     hasPositionAnimation: boolean;
+     hasRotationAnimation: boolean;
+@@ -85,6 +85,7 @@ class TweenAnimationBehavior extends BehaviorBase {
+         // Store initial values
+         const startPosition = target.position.clone();
+         const startRotation = target.rotation.clone();
++        const startQuaternion = target.quaternion.clone();
+         const startScale = target.scale.clone();
+ 
+         const moveX = this.attributes.move?.x ?? 0;
+@@ -106,7 +107,7 @@ class TweenAnimationBehavior extends BehaviorBase {
+ 
+         // Calculate target values
+         let endPosition = startPosition.clone();
+-        let endRotation = startRotation.clone();
++        let endQuaternion = startQuaternion.clone();
+         let endScale = startScale.clone();
+ 
+         if (hasPositionAnimation) {
+@@ -119,11 +120,13 @@ class TweenAnimationBehavior extends BehaviorBase {
+         }
+ 
+         if (hasRotationAnimation) {
++            const endRotation = startRotation.clone();
+             endRotation.set(
+                 startRotation.x + THREE.MathUtils.degToRad(rotateX),
+                 startRotation.y + THREE.MathUtils.degToRad(rotateY),
+                 startRotation.z + THREE.MathUtils.degToRad(rotateZ),
+             );
++            endQuaternion = new THREE.Quaternion().setFromEuler(endRotation);
+         }
+ 
+         if (hasScaleAnimation) {
+@@ -136,10 +139,10 @@ class TweenAnimationBehavior extends BehaviorBase {
+ 
+         return {
+             startPosition,
+-            startRotation,
++            startQuaternion,
+             startScale,
+             endPosition,
+-            endRotation,
++            endQuaternion,
+             endScale,
+             hasPositionAnimation,
+             hasRotationAnimation,
+@@ -156,10 +159,7 @@ class TweenAnimationBehavior extends BehaviorBase {
+             }
+ 
+             if (config.hasRotationAnimation) {
+-                // TODO: avoid gimbal roll issues
+-                target.rotation.x = THREE.MathUtils.lerp(config.startRotation.x, config.endRotation.x, progress);
+-                target.rotation.y = THREE.MathUtils.lerp(config.startRotation.y, config.endRotation.y, progress);
+-                target.rotation.z = THREE.MathUtils.lerp(config.startRotation.z, config.endRotation.z, progress);
++                target.quaternion.copy(config.startQuaternion).slerp(config.endQuaternion, progress);
+             }
+ 
+             if (config.hasScaleAnimation) {
+diff --git a/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoBillboardBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoBillboardBehavior.ts
+index 1dc1e23..5ddd553 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoBillboardBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoBillboardBehavior.ts
+@@ -308,15 +308,7 @@ class VideoBillboardBehavior extends BehaviorBase {
+             this.target.material = this.originalMaterial;
+         }
+ 
+-        // TODO: find correct way to release video resources
+-        // if (this.videoSource) {
+-        //     if (this.videoSource.isReady()) {
+-        //         this.videoSource.release();
+-        //     } else {
+-        //         this.videoElem?.addEventListener("loadeddata", () => this.videoSource?.release(), {once: true});
+-        //     }
+-        // }
+-
++        this.videoSource?.release();
+         this.videoElem = undefined;
+         this.videoSource = undefined;
+     }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoSource.ts b/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoSource.ts
+index 2e2e788..0e11919 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoSource.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/video_billboard/VideoSource.ts
+@@ -18,13 +18,17 @@ class VideoSource {
+ 
+     //private state
+     private elem: HTMLVideoElement | null = null;
++    private pendingElem: HTMLVideoElement | null = null;
+     private texture: THREE.VideoTexture | null = null;
++    private hls: Hls | null = null;
++    private released = false;
+     private width: number = 0;
+     private height: number = 0;
+ 
+     //audio
+     private audioCtx?: AudioContext;
+     private gainNode?: GainNode;
++    private mediaSource?: MediaElementAudioSourceNode;
+ 
+     constructor(renderer: RendererWithCapabilities | null | undefined, container: HTMLElement, muted: boolean, url: string) {
+         this.container = container;
+@@ -41,7 +45,9 @@ class VideoSource {
+         if (this.elem) {
+             return Promise.reject("Video BB: video source is already created");
+         }
++        this.released = false;
+         const elem = document.createElement("video");
++        this.pendingElem = elem;
+         elem.crossOrigin = "anonymous";
+         elem.playsInline = true;
+         elem.loop = false;
+@@ -55,15 +61,15 @@ class VideoSource {
+         elem.style.overflow = "hidden";
+         const needsPolyfill = this.isHLS && !elem.canPlayType("application/vnd.apple.mpegurl") && Hls.isSupported();
+         if (needsPolyfill) {
+-            const hls = new Hls();
+-            hls.loadSource(this.url);
+-            hls.attachMedia(elem);
++            this.hls = new Hls();
++            this.hls.loadSource(this.url);
++            this.hls.attachMedia(elem);
+         } else {
+             elem.src = this.url;
+         }
+         //connect audio graph
+-        const track = this.audioCtx!.createMediaElementSource(elem);
+-        track.connect(this.gainNode!).connect(this.audioCtx!.destination);
++        this.mediaSource = this.audioCtx!.createMediaElementSource(elem);
++        this.mediaSource.connect(this.gainNode!).connect(this.audioCtx!.destination);
+         //create video texture
+         this.texture = new THREE.VideoTexture(elem);
+         this.texture.colorSpace = THREE.SRGBColorSpace;
+@@ -85,6 +91,10 @@ class VideoSource {
+             elem.addEventListener(
+                 "loadeddata",
+                 async () => {
++                    if (this.released) {
++                        reject(new Error(`Video source was released before load completed: ${this.url}`));
++                        return;
++                    }
+                     // if we needed to hit play to fetch data then revert back to paused
+                     //console.log('[video] loadeddata', { playing })
+                     if (playing) elem.pause();
+@@ -93,6 +103,7 @@ class VideoSource {
+                     this.width = elem.videoWidth;
+                     this.height = elem.videoHeight;
+                     this.elem = elem;
++                    this.pendingElem = null;
+                     this.container.appendChild(this.elem);
+                     resolve(elem);
+                 },
+@@ -177,21 +188,32 @@ class VideoSource {
+     }
+ 
+     release() {
+-        if (!this.elem) {
+-            console.warn("Video BB: release is requested while video is not ready");
+-            return;
+-        }
+-        this.stop();
++        this.released = true;
++        const elem = this.elem ?? this.pendingElem;
+ 
+-        this.texture!.dispose();
+-        if (this.elem.parentElement) {
+-            this.container.removeChild(this.elem);
++        if (elem) {
++            elem.pause();
++            elem.muted = true;
++            elem.removeAttribute("src");
++            elem.load();
++            elem.remove();
+         }
+-        // delete this.sources;
+-        // help to prevent chrome memory leaks
+-        // see: https://github.com/facebook/react/issues/15583#issuecomment-490912533
+-        this.elem.src = "";
+-        this.elem.load();
++
++        this.texture?.dispose();
++        this.hls?.destroy();
++        this.mediaSource?.disconnect();
++        this.gainNode?.disconnect();
++        void this.audioCtx?.close().catch(() => undefined);
++
++        this.elem = null;
++        this.pendingElem = null;
++        this.texture = null;
++        this.hls = null;
++        this.mediaSource = undefined;
++        this.gainNode = undefined;
++        this.audioCtx = undefined;
++        this.width = 0;
++        this.height = 0;
+     }
+ 
+     getWidth() {
+diff --git a/client/packages/editor-oss/src/behaviors/packs/video_billboard/behavior.json b/client/packages/editor-oss/src/behaviors/packs/video_billboard/behavior.json
+index 08a59cf..c81e641 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/video_billboard/behavior.json
++++ b/client/packages/editor-oss/src/behaviors/packs/video_billboard/behavior.json
+@@ -4,7 +4,9 @@
+     "isScript": false,
+     "isHidden": true,
+     "description": "A video playback system that displays videos or images on mesh surfaces using VideoTexture. Supports both external URLs and internal library assets with automatic fallback. Features proximity-based volume control, aspect ratio preservation, autoplay, looping, and rotation. Ideal for in-game screens, billboards, and environmental video elements.",
+-    "tags": ["billboard"],
++    "tags": [
++        "billboard"
++    ],
+     "main": "VideoBillboardBehavior.ts",
+     "version": "1.0.0",
+     "dependencies": {},
+@@ -117,5 +119,5 @@
+             "description": "When enabled, the video plays without audio. Also helps bypass browser autoplay restrictions."
+         }
+     },
+-    "documentation": "## Video Billboard\n\nA video playback system that displays videos or images on mesh surfaces using VideoTexture. Supports both external URLs and internal library assets with automatic fallback. Features proximity-based volume control, aspect ratio preservation, autoplay, looping, and rotation. Ideal for in-game screens, billboards, and environmental video elements.\n\n### Key Features\n- Video playback from URL or local library\n- Automatic fallback: tries alternative source on load failure\n- Aspect ratio preservation with cover/contain modes\n- Configurable video rotation (degrees)\n- Proximity-based volume control (distance-based fade)\n- Autoplay, loop, and muted options\n- Trigger-based play/stop control\n- Muted autoplay fallback for browser restrictions\n- VideoTexture with needsUpdate management\n- ScalingImageMaterial for proper aspect ratio fitting\n- Original material restoration on cleanup\n- WebGL texture optimization\n- Editor live preview with attribute updates\n\n### How It Works\n1. Attach to mesh object (or parent with mesh child)\n2. Configure video source:\n   - external_url: HTTP/HTTPS video URL\n   - internal_url: video from project library (enum)\n   - useLocalFile: prioritizes internal over external\n3. Set playback options:\n   - autoplay: starts immediately on load\n   - loop: repeats video endlessly\n   - muted: disables audio (helps with autoplay restrictions)\n   - volume: initial volume level (0.0-1.0)\n4. Configure display:\n   - aspect: geometry aspect ratio for fitting\n   - fit: 'cover' (fill) or 'contain' (letterbox)\n   - rotate: rotation angle in degrees (-360 to 360)\n5. Set proximity (optional):\n   - Distance threshold for proximity-based playback\n   - Volume fades based on distance to player\n6. On add:\n   - Stores original material for restoration\n   - Constructs video URL (prioritizes based on useLocalFile)\n   - Validates URL format (http/https protocols)\n   - Creates VideoSource instance\n7. VideoSource initialization:\n   - Creates HTMLVideoElement\n   - Loads video metadata (width, height)\n   - Creates THREE.VideoTexture from element\n8. Material creation:\n   - Calculates aspect ratio: video / geometry\n   - ScalingImageMaterial.createMaterial(texture, aspect, rotation)\n   - Replaces mesh material with video material\n9. Playback control:\n   - Autoplay: calls play() after video ready\n   - Trigger: responds to 'activate'/'deactivate' messages\n10. Update loop:\n    - Sets texture.needsUpdate = true when playing\n    - Proximity check: distance to player\n    - Volume calculation: distanceRatio * initialVolume\n    - Auto play/pause based on proximity threshold\n11. Fallback handling:\n    - On load error, tries alternative source\n    - Shows toast notifications for errors\n    - Attempts muted autoplay on NotAllowedError\n    - Falls back to gray placeholder material on total failure\n12. Cleanup/dispose:\n    - Pauses or stops video\n    - Restores original material\n    - Releases video resources (commented out - TODO)\n\n### Common Use Cases\n- In-game TV screens or monitors\n- Billboard advertisements in cities\n- Tutorial videos on surfaces\n- Security camera feeds\n- Cinematic screens in theaters\n- Video textures for environmental storytelling\n- Interactive kiosks with video content\n- Holographic displays\n- News screens in sci-fi environments\n- Music videos in nightclub scenes\n\n### When Not To Use\n- For skybox videos (use different approach)\n- When video should be 2D UI overlay (use HTML video element)\n- For 360-degree videos (needs a different material path)\n- When video needs transparency/alpha channel\n- For procedural video effects (use shaders)\n- When multiple videos should sync precisely\n- For streaming live video feeds (needs media server)\n- When video needs custom material effects\n- For VR stereo video (needs special format)\n- When video should be interactive/clickable (needs raycast)\n\n### Technical Details\n- VideoSource class: manages HTMLVideoElement and VideoTexture\n- Video loading: async createVideoSource() returns promise\n- Width/height: videoSource.getWidth()/getHeight() from video element\n- Aspect ratio: (videoWidth / videoHeight) vs (geometryAspect)\n- Fit modes: cover (imgAspect/geoAspect), contain (geoAspect/imgAspect)\n- Rotation: converted to radians (degrees * PI / 180)\n- ScalingImageMaterial: custom node material for aspect-aware scaling\n- Texture update: texture.needsUpdate = true on playing frames\n- Proximity distance: distanceTo(playerPosition) each frame\n- Distance ratio: max(0, min(1, 1 - distance / proximityDistance))\n- Volume calculation: distanceRatio * initialVolume\n- URL validation: new URL(string) with protocol check\n- Fallback logic: catch block tries opposite source (external->internal)\n- Toast notifications: showToast() for user feedback\n- Play restrictions: NotAllowedError triggers muted autoplay attempt\n- Browser autoplay policy: muted videos more likely to autoplay\n- Video element: injected into document.body\n- Renderer: passed to VideoSource for texture creation\n- Material replacement: mesh.material = videoMaterial\n- Original material: stored in originalMaterial property\n- Cleanup flag: wasPlayingBeforeDispose for editor attribute updates\n- State tracking: isPlaying boolean\n- Editor updates: full dispose and reinit on URL change\n- Partial update: only material recreation if URL unchanged\n- Trigger support: startOnTrigger flag + onEvent() handler\n- Throttle: MEDIUM priority, frustum/distance culling enabled\n- TODO: Proper video resource release (commented out)"
++    "documentation": "## Video Billboard\n\nA video playback system that displays videos or images on mesh surfaces using VideoTexture. Supports both external URLs and internal library assets with automatic fallback. Features proximity-based volume control, aspect ratio preservation, autoplay, looping, and rotation. Ideal for in-game screens, billboards, and environmental video elements.\n\n### Key Features\n- Video playback from URL or local library\n- Automatic fallback: tries alternative source on load failure\n- Aspect ratio preservation with cover/contain modes\n- Configurable video rotation (degrees)\n- Proximity-based volume control (distance-based fade)\n- Autoplay, loop, and muted options\n- Trigger-based play/stop control\n- Muted autoplay fallback for browser restrictions\n- VideoTexture with needsUpdate management\n- ScalingImageMaterial for proper aspect ratio fitting\n- Original material restoration on cleanup\n- WebGL texture optimization\n- Editor live preview with attribute updates\n\n### How It Works\n1. Attach to mesh object (or parent with mesh child)\n2. Configure video source:\n   - external_url: HTTP/HTTPS video URL\n   - internal_url: video from project library (enum)\n   - useLocalFile: prioritizes internal over external\n3. Set playback options:\n   - autoplay: starts immediately on load\n   - loop: repeats video endlessly\n   - muted: disables audio (helps with autoplay restrictions)\n   - volume: initial volume level (0.0-1.0)\n4. Configure display:\n   - aspect: geometry aspect ratio for fitting\n   - fit: 'cover' (fill) or 'contain' (letterbox)\n   - rotate: rotation angle in degrees (-360 to 360)\n5. Set proximity (optional):\n   - Distance threshold for proximity-based playback\n   - Volume fades based on distance to player\n6. On add:\n   - Stores original material for restoration\n   - Constructs video URL (prioritizes based on useLocalFile)\n   - Validates URL format (http/https protocols)\n   - Creates VideoSource instance\n7. VideoSource initialization:\n   - Creates HTMLVideoElement\n   - Loads video metadata (width, height)\n   - Creates THREE.VideoTexture from element\n8. Material creation:\n   - Calculates aspect ratio: video / geometry\n   - ScalingImageMaterial.createMaterial(texture, aspect, rotation)\n   - Replaces mesh material with video material\n9. Playback control:\n   - Autoplay: calls play() after video ready\n   - Trigger: responds to 'activate'/'deactivate' messages\n10. Update loop:\n    - Sets texture.needsUpdate = true when playing\n    - Proximity check: distance to player\n    - Volume calculation: distanceRatio * initialVolume\n    - Auto play/pause based on proximity threshold\n11. Fallback handling:\n    - On load error, tries alternative source\n    - Shows toast notifications for errors\n    - Attempts muted autoplay on NotAllowedError\n    - Falls back to gray placeholder material on total failure\n12. Cleanup/dispose:\n    - Pauses or stops video\n    - Restores original material\n    - Releases video, texture, HLS, and audio resources\n\n### Common Use Cases\n- In-game TV screens or monitors\n- Billboard advertisements in cities\n- Tutorial videos on surfaces\n- Security camera feeds\n- Cinematic screens in theaters\n- Video textures for environmental storytelling\n- Interactive kiosks with video content\n- Holographic displays\n- News screens in sci-fi environments\n- Music videos in nightclub scenes\n\n### When Not To Use\n- For skybox videos (use different approach)\n- When video should be 2D UI overlay (use HTML video element)\n- For 360-degree videos (needs a different material path)\n- When video needs transparency/alpha channel\n- For procedural video effects (use shaders)\n- When multiple videos should sync precisely\n- For streaming live video feeds (needs media server)\n- When video needs custom material effects\n- For VR stereo video (needs special format)\n- When video should be interactive/clickable (needs raycast)\n\n### Technical Details\n- VideoSource class: manages HTMLVideoElement and VideoTexture\n- Video loading: async createVideoSource() returns promise\n- Width/height: videoSource.getWidth()/getHeight() from video element\n- Aspect ratio: (videoWidth / videoHeight) vs (geometryAspect)\n- Fit modes: cover (imgAspect/geoAspect), contain (geoAspect/imgAspect)\n- Rotation: converted to radians (degrees * PI / 180)\n- ScalingImageMaterial: custom node material for aspect-aware scaling\n- Texture update: texture.needsUpdate = true on playing frames\n- Proximity distance: distanceTo(playerPosition) each frame\n- Distance ratio: max(0, min(1, 1 - distance / proximityDistance))\n- Volume calculation: distanceRatio * initialVolume\n- URL validation: new URL(string) with protocol check\n- Fallback logic: catch block tries opposite source (external->internal)\n- Toast notifications: showToast() for user feedback\n- Play restrictions: NotAllowedError triggers muted autoplay attempt\n- Browser autoplay policy: muted videos more likely to autoplay\n- Video element: injected into document.body\n- Renderer: passed to VideoSource for texture creation\n- Material replacement: mesh.material = videoMaterial\n- Original material: stored in originalMaterial property\n- Cleanup flag: wasPlayingBeforeDispose for editor attribute updates\n- State tracking: isPlaying boolean\n- Editor updates: full dispose and reinit on URL change\n- Partial update: only material recreation if URL unchanged\n- Trigger support: startOnTrigger flag + onEvent() handler\n- Throttle: MEDIUM priority, frustum/distance culling enabled\n- Cleanup releases hidden video elements, VideoTexture, HLS, and audio graph resources"
+ }
+diff --git a/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.ts b/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.ts
+index fad1d76..1b0194f 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.ts
++++ b/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.ts
+@@ -3,6 +3,8 @@ import {toast} from "toastywave";
+ 
+ import EventBus, {IN_GAME_EVENTS} from "../../../behaviors/event/EventBus";
+ import {PhysicsUtil} from "../../../physics/PhysicsUtil";
++import {CollisionType, type PhysicsConfig} from "../../../physics/common/physicsConfig";
++import {getPhysics} from "../../../physics/common/getPhysics";
+ import {showToast} from "@stem/editor-oss/showToast";
+ import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
+ import {BehaviorBase} from "../../Behavior";
+@@ -28,6 +30,8 @@ class VolumeBehavior extends BehaviorBase {
+     private collisionPauseTime: number = 1500;
+     private physicsRemoved: boolean = false;
+     private lastCollisionTime: number = 0;
++    private autoAppliedBlockingPhysics = false;
++    private originalPhysicsConfig?: PhysicsConfig;
+     private volumeData = {
+         target: {} as Object3D,
+     };
+@@ -41,24 +45,68 @@ class VolumeBehavior extends BehaviorBase {
+     onStart(): void {
+         this.volumeData.target = this.target;
+         this.physicsEnabled = PhysicsUtil.isPhysicsEnabled(this.target);
+-        if (this.attributes.volumeOptions.volumeType !== VOLUME_TYPES.BLOCKING) {
+-            this.addCollisionListener();
++
++        if (this.getVolumeType() === VOLUME_TYPES.BLOCKING) {
++            this.ensureBlockingPhysics();
++            return;
+         }
+ 
+-        // TODO: implement this
+-        // if (behavior.volumeType === VOLUME_TYPES.BLOCKING && !physics.enabled) {
+-        //     physics.enabled = true;
+-        //     physics.ctype = "Kinematic";
+-        //     physics.mass = 0;
+-        // }
++        this.addCollisionListener();
++    }
++
++    onStop(): void {
++        this.removeCollisionListener();
++        this.restoreAutoBlockingPhysics();
++    }
++
++    private getVolumeType(): VOLUME_TYPES {
++        return this.attributes.volumeOptions?.volumeType ?? VOLUME_TYPES.BLOCKING;
+     }
+ 
+-    onStop(): void {}
++    private ensureBlockingPhysics(): void {
++        if (this.physicsEnabled) {
++            return;
++        }
++
++        this.originalPhysicsConfig = PhysicsUtil.getPhysicsConfig(this.target);
++        const physicsConfig = getPhysics(this.originalPhysicsConfig || null, this.target);
++        physicsConfig.enabled = true;
++        physicsConfig.ctype = CollisionType.Kinematic;
++        physicsConfig.mass = 0;
++
++        PhysicsUtil.setPhysicsConfig(this.target, physicsConfig);
++        PhysicsUtil.updateShapeOffsetAndScale(this.target);
++        this.game?.engine.addPhysicsObject(this.target);
++        this.physicsEnabled = true;
++        this.physicsRemoved = false;
++        this.autoAppliedBlockingPhysics = true;
++    }
++
++    private restoreAutoBlockingPhysics(): void {
++        if (!this.autoAppliedBlockingPhysics) {
++            return;
++        }
++
++        this.removePhysicsObject();
++
++        if (this.originalPhysicsConfig) {
++            PhysicsUtil.setPhysicsConfig(this.target, this.originalPhysicsConfig);
++        } else {
++            delete this.target.userData.physics;
++        }
++
++        this.physicsEnabled = PhysicsUtil.isPhysicsEnabled(this.target);
++        this.physicsRemoved = false;
++        this.autoAppliedBlockingPhysics = false;
++        this.originalPhysicsConfig = undefined;
++    }
+ 
+     onReset() {
+         if (this.removed) {
+             this.addPhysicsObject();
+-            this.addCollisionListener();
++            if (this.getVolumeType() !== VOLUME_TYPES.BLOCKING) {
++                this.addCollisionListener();
++            }
+             this.removed = false;
+         }
+     }
+@@ -70,7 +118,7 @@ class VolumeBehavior extends BehaviorBase {
+     private onCollision() {
+         if (!this.game || !this.game.player || !this.game.scene || this.isPaused) return;
+ 
+-        const volumeType = this.attributes.volumeOptions.volumeType;
++        const volumeType = this.getVolumeType();
+ 
+         const now = performance.now();
+         if (now - this.lastCollisionTime < this.collisionPauseTime) return;
+diff --git a/client/packages/editor-oss/src/behaviors/packs/volume/behavior.json b/client/packages/editor-oss/src/behaviors/packs/volume/behavior.json
+index 3bb7d5c..71545da 100644
+--- a/client/packages/editor-oss/src/behaviors/packs/volume/behavior.json
++++ b/client/packages/editor-oss/src/behaviors/packs/volume/behavior.json
+@@ -42,7 +42,6 @@
+                         "looseTime": 0
+                     },
+                     "objectOptions": {
+-                        "TODO": "implement this",
+                         "physics": {
+                             "enabled": true,
+                             "type": "kinematic",
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/BehaviorCreator/AttributesSection/SingleAttribute.tsx b/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/BehaviorCreator/AttributesSection/SingleAttribute.tsx
+index 5e92f17..f6e85a8 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/BehaviorCreator/AttributesSection/SingleAttribute.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/BehaviorCreator/AttributesSection/SingleAttribute.tsx
+@@ -13,9 +13,10 @@ import dragIcon from "../icons/drag.svg";
+ import trashIcon from "../icons/trash.svg";
+ import {IAttribute} from "../types";
+ 
+-// This is essentially an Enum with autoFill value
+-// TODO: probably should be replaced with proper ResourceAttributeType
+-const RESOURCE_ATTRIBUTE_TYPE = "resource";
++type ResourceAttributeType = "resource";
++type AttributeTypeOptionKey = BehaviorAttributeType | ResourceAttributeType;
++
++const RESOURCE_ATTRIBUTE_TYPE: ResourceAttributeType = "resource";
+ 
+ const allTypeOptions: Item[] = [
+     {key: BehaviorAttributeType.Boolean, value: "Boolean"},
+@@ -87,11 +88,11 @@ export const SingleAttribute = ({
+         setTitle(attribute.key);
+     }, [attribute]);
+ 
+-    const getDisplayType = (attribute: IAttribute) => {
++    const getDisplayType = (attribute: IAttribute): AttributeTypeOptionKey => {
+         if (attribute.type === BehaviorAttributeType.Enum && attribute.autoFill) {
+             return RESOURCE_ATTRIBUTE_TYPE;
+         }
+-        return attribute.type;
++        return attribute.type as BehaviorAttributeType;
+     };
+ 
+     const deleteAttribute = () => {
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/RevisionSection/RevisionList.tsx b/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/RevisionSection/RevisionList.tsx
+index 06eda29..8418892 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/RevisionSection/RevisionList.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/AssetsLibrary/RevisionSection/RevisionList.tsx
+@@ -1,11 +1,10 @@
+-import {useEffect, useRef, useState} from "react";
++import {useState} from "react";
+ 
+ import {RevisionAction, RevisionItem} from "./RevisionItem";
+ import {AssetRevision, getAssetRevisionData} from "@stem/network/api/asset";
+ import {resolveAssetRevisionId} from "@stem/editor-oss/asset-management/AssetResolutionContext";
+ import {useAuthorizationContext} from "@stem/editor-oss/context";
+ import {useAssetResolutionContext} from "@stem/editor-oss/context/AssetResolutionContext";
+-import global from "@stem/editor-oss/global";
+ import {ElementsUtils} from "@stem/editor-oss/utils/ElementsUtils";
+ import {useAsset, useAssetRevisions} from "../../../../asset-management/hooks/assets";
+ import {PublishPopup} from "../PublishSection/PublishPopup";
+@@ -98,7 +97,6 @@ export const RevisionList = ({
+     getLoadActions,
+     showDiffOption,
+ }: RevisionListProps) => {
+-    const app = global.app;
+     const [isTextDiffOpen, setIsTextDiffOpen] = useState(false);
+     const [oldText, setOldText] = useState("");
+     const [newText, setNewText] = useState("");
+@@ -117,37 +115,7 @@ export const RevisionList = ({
+     });
+ 
+     const {context: assetResolutionContext} = useAssetResolutionContext();
+-    const [actualCurrentRevisionId, setActualCurrentRevisionId] = useState(
+-        currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext),
+-    );
+-    const assetResolutionContextRef = useRef(assetResolutionContext);
+-    const currentRevisionIdRef = useRef(currentRevisionId);
+-
+-    useEffect(() => {
+-        assetResolutionContextRef.current = assetResolutionContext;
+-    }, [assetResolutionContext]);
+-
+-    useEffect(() => {
+-        currentRevisionIdRef.current = currentRevisionId;
+-    }, [currentRevisionId]);
+-
+-    useEffect(() => {
+-        setActualCurrentRevisionId(currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext));
+-    }, [assetId, assetResolutionContext, currentRevisionId]);
+-
+-    useEffect(() => {
+-        const update = () => {
+-            const newRevisionId = resolveAssetRevisionId(assetId, assetResolutionContextRef.current);
+-            setActualCurrentRevisionId(newRevisionId);
+-        };
+-
+-        // TODO: We should move away from relying on engine events for our React
+-        // UI wherever possible
+-        app?.on("currentRevisionUpdated.RevisionsSection", update);
+-        return () => {
+-            app?.on("currentRevisionUpdated.RevisionsSection", null);
+-        };
+-    }, []);
++    const actualCurrentRevisionId = currentRevisionId || resolveAssetRevisionId(assetId, assetResolutionContext);
+ 
+     const handleDiffClick = (event: React.MouseEvent, otherRevisionId: string) => {
+         event.stopPropagation();
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/BehaviorEditor/KeybindingsPanel.tsx b/client/packages/editor-oss/src/editor/assets/v2/BehaviorEditor/KeybindingsPanel.tsx
+index 05c40f9..3991840 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/BehaviorEditor/KeybindingsPanel.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/BehaviorEditor/KeybindingsPanel.tsx
+@@ -69,6 +69,13 @@ export const EDITOR_KEYBINDINGS: Binding[] = [
+     {label: "Group", keys: `${mod}+G`, section: "Objects"},
+     {label: "Ungroup", keys: `${mod}+${shift}+G`, section: "Objects"},
+     {label: "Toggle UI Panels", keys: `${mod}+.`, section: "View"},
++    {label: "Quick Build tool shortcuts", keys: "0-9, B/E/L/U/V", section: "Build Tools"},
++    {label: "Rotate Quick Build stamp", keys: "R", section: "Build Tools"},
++    {label: "Reverse Quick Build rotation", keys: `${shift}+R`, section: "Build Tools"},
++    {label: "Quick Build brush radius", keys: "[/]", section: "Build Tools"},
++    {label: "Finish BIM polygon", keys: "Enter", section: "Build Tools"},
++    {label: "Remove last BIM polygon point", keys: "Backspace", section: "Build Tools"},
++    {label: "Cancel or close active builder mode", keys: "Esc", section: "Build Tools"},
+ ];
+ 
+ // ── Styles ──────────────────────────────────────────────────────────────────
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/behaviors/helpers/AiAssistantTest.tsx b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/behaviors/helpers/AiAssistantTest.tsx
+deleted file mode 100644
+index 96f334c..0000000
+--- a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/behaviors/helpers/AiAssistantTest.tsx
++++ /dev/null
+@@ -1,175 +0,0 @@
+-import {useState} from "react";
+-
+-import global from "@stem/editor-oss/global";
+-import {DefaultWrapper} from "../../styles/Behaviors.style";
+-
+-interface Props {
+-    autoDetectAnimations: () => void;
+-}
+-
+-export const AiAssistantTest = ({autoDetectAnimations}: Props) => {
+-    const app = (global as any).app;
+-    const editor = app.editor;
+-    const model = editor.selected;
+-    const camera = editor.camera;
+-
+-    // OpenAI question and answer states
+-    const [question, setQuestion] = useState("");
+-    const [answer, setAnswer] = useState("");
+-    const [loading, setLoading] = useState(false);
+-
+-    const handleAskQuestion = async () => {
+-        if (!question) return;
+-        setLoading(true);
+-        await askQuestion(question);
+-    };
+-    //TODO this is being tested for AI response to suggest animations
+-    //it is not finished but trains the Chatgpt to suggest animations to use for the character
+-    const _AiSuggestAnimoitions = async (weaponType: string) => {
+-        setLoading(true);
+-
+-        const characterOptions = camera.userData.cameraData.characterOptions;
+-        const animationProperties: string[] = [];
+-        Object.keys(characterOptions).forEach(key => {
+-            if (key.includes("Animation")) {
+-                animationProperties.push(key);
+-            }
+-        });
+-
+-        const animationList = animationProperties.join(", ");
+-
+-        const availableAnimations = model._obj.animations.map((anim: any) => anim.name).join(", ");
+-        console.log("Available Animations for ChatGPT:", availableAnimations);
+-
+-        const question = `What are the best animations for this character's existing animation clips if it was holding 
+-        this weapon type: ${weaponType}? Here is the list of available animations from the model: ${availableAnimations}.
+-        Here is the list of animation properties to set from the model: ${availableAnimations}.
+-        Can you return the recommended animation names as a numbered list with a short sentence for each? Make sure the next clip starts on a new line with a line break like this <br>
+-        Send the response as HTML, and don't say "sure" or "certainly." Start the response with "Recommend animation clips to use from your model with a ${weaponType} new line in response.
+-        Make sure to suggest each animation name from ${availableAnimations} that has ${weaponType}.
+-        Sometimes the list is not returned as a numbered list with <br> after each animation name please make sure add numbered items.
+-        Please make sure all ${availableAnimations} are returned in the response if a weapon from this list ${weaponType} is found in the animation name
+-        Make sure that each one of the animation objects below have recommended values to be set from the animations list
+-        ${animationList} remove any syntax at start and end that is not human readable
+-        left, right and reverse directions animations should be the same as the walkAnimation
+-        response should read similar to this below
+-        Response template start
+-        
+-        That looks better but it not returning all of the available animation clip names on seperate lines
+-        Example please make each link look like this each 
+-       
+-        The returned response must be formated like this always like below example
+-        
+-        <div>1. idleAnimaton (idle): animation name: rifle_idle<br></div>
+-        <div>2. walkAnimaton (walk): animation name: rifle_walk<br></div>
+-    
+-        Please make human readable if none is selected do not add that to the response
+-        there should be separate line for each item in the ${animationList} 
+-        remove any syntax from start and end of response that is not readable
+-
+-         `;
+-
+-        await askQuestion(question);
+-
+-        setLoading(false);
+-    };
+-
+-    //TODO future AI assistant
+-    const askQuestion = async (question: string) => {
+-        const apiKey = ""; //enter the api key for Open AI sk-!@#$%@##$
+-
+-        if (!question) {
+-            console.log("No question provided.");
+-            return;
+-        }
+-
+-        const requestBody = {
+-            model: "gpt-3.5-turbo",
+-            messages: [
+-                {role: "system", content: "You are a helpful assistant."},
+-                {role: "user", content: question},
+-            ],
+-            max_tokens: 1000,
+-            temperature: 0.7,
+-        };
+-
+-        try {
+-            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+-                method: "POST",
+-                headers: {
+-                    "Content-Type": "application/json",
+-                    Authorization: `Bearer ${apiKey}`,
+-                },
+-                body: JSON.stringify(requestBody),
+-            });
+-
+-            if (!response.ok) {
+-                throw new Error("Request failed with status " + response.status);
+-            }
+-
+-            const data = await response.json();
+-            const answer = data.choices[0].message.content;
+-
+-            const stripHtml = (htmlString: any) => {
+-                return htmlString.replace(/<[^>]*>/g, "");
+-            };
+-
+-            const strippedAnswer = stripHtml(answer);
+-            console.log("ChatGPT says:", strippedAnswer);
+-
+-            const keywords: string[] = strippedAnswer
+-                .split("\n")
+-                .map((line: string) => line.trim())
+-                .filter((line: string) => line.toLowerCase().includes("animation name:"))
+-                .map((line: string) => {
+-                    const parts: string[] = line.split("animation name:");
+-                    return parts[1]?.trim() || "";
+-                })
+-                .filter((keyword: string) => keyword.length > 0);
+-
+-            keywords.forEach((keyword: string) => {
+-                console.log(keyword);
+-                autoDetectAnimations();
+-            });
+-
+-            setAnswer(answer);
+-        } catch (error) {
+-            console.error("Error:", error);
+-            setAnswer("Sorry, something went wrong.");
+-        } finally {
+-            setLoading(false);
+-        }
+-    };
+-
+-    return (
+-        <DefaultWrapper>
+-            <DefaultWrapper>
+-                <div>
+-                    <input
+-                        type="text"
+-                        placeholder="Ask OpenAI something..."
+-                        value={question}
+-                        onChange={e => setQuestion(e.target.value)}
+-                    />
+-                    <button onClick={handleAskQuestion}
+-                        disabled={loading}
+-                    >
+-                        Ask
+-                    </button>
+-                    {loading ? 
+-                        <p className="small-font">Loading...</p>
+-                     : 
+-                        answer && 
+-                            <div>
+-                                <p className="small-font">AI Assistant:</p>
+-                                <div className="small-font"
+-                                    dangerouslySetInnerHTML={{__html: answer}}
+-                                />
+-                            </div>
+-                        
+-                    }
+-                </div>
+-            </DefaultWrapper>
+-        </DefaultWrapper>
+-    );
+-};
+diff --git a/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.ts b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.ts
+index b492576..c8307bf 100644
+--- a/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.ts
++++ b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.ts
+@@ -3,7 +3,7 @@ import {MathUtils} from "three";
+ import AttributeUtil from "./AttributeUtil";
+ import {BehaviorAttributes} from "./BehaviorAttributes";
+ import {BehaviorThrottleConfig} from "../../behaviors/Behavior";
+-import BehaviorData from "../../behaviors/BehaviorData";
++import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
+ 
+ 
+ class BehaviorDataFactory {
+@@ -15,6 +15,7 @@ class BehaviorDataFactory {
+         customUUID?: string,
+     ): BehaviorData {
+         const behaviorData: BehaviorData = {
++            schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
+             id: id,
+             uuid: customUUID || MathUtils.generateUUID(),
+             priority: priority ?? 0,
+diff --git a/client/packages/editor-oss/src/editor/behaviors/BehaviorDataManager.ts b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataManager.ts
+index 1f87560..da1f635 100644
+--- a/client/packages/editor-oss/src/editor/behaviors/BehaviorDataManager.ts
++++ b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataManager.ts
+@@ -5,7 +5,7 @@ import BehaviorAttributeType from "./BehaviorAttributeType";
+ import BehaviorConfigRegistry from "./BehaviorConfigRegistry";
+ import {BehaviorContext} from "./BehaviorContextProvider";
+ import BehaviorDataFactory from "./BehaviorDataFactory";
+-import BehaviorData from "../../behaviors/BehaviorData";
++import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
+ import { getPrefabRoot, isPrefabUnlocked } from '@stem/editor-oss/prefab/util';
+ import { showToast } from "@stem/editor-oss/showToast";
+ 
+@@ -35,6 +35,7 @@ class BehaviorDataManager {
+ 
+     cloneBehaviorData(data: BehaviorData): BehaviorData {
+         return {
++            schemaVersion: data.schemaVersion ?? BEHAVIOR_DATA_SCHEMA_VERSION,
+             id: data.id,
+             uuid: MathUtils.generateUUID(),
+             enabled: data.enabled,
+diff --git a/client/packages/editor-oss/src/editor/behaviors/hooks/behaviors.ts b/client/packages/editor-oss/src/editor/behaviors/hooks/behaviors.ts
+index ebc5162..38407d8 100644
+--- a/client/packages/editor-oss/src/editor/behaviors/hooks/behaviors.ts
++++ b/client/packages/editor-oss/src/editor/behaviors/hooks/behaviors.ts
+@@ -193,8 +193,6 @@ export const useUpdateSceneBehaviorRevision = () => {
+             config: newConfig,
+         });
+ 
+-        // TODO: get rid of this event
+-        app.call("currentRevisionUpdated");
+         return true;
+     };
+ };
+diff --git a/client/packages/editor-oss/src/editor/scripts/hooks/useApplySceneScriptRevision.ts b/client/packages/editor-oss/src/editor/scripts/hooks/useApplySceneScriptRevision.ts
+index 8092e11..8159add 100644
+--- a/client/packages/editor-oss/src/editor/scripts/hooks/useApplySceneScriptRevision.ts
++++ b/client/packages/editor-oss/src/editor/scripts/hooks/useApplySceneScriptRevision.ts
+@@ -40,8 +40,6 @@ export const useApplySceneScriptRevision = () => {
+ 
+             await updateSceneScriptRevision({assetId, revisionId, code});
+ 
+-            app.call("currentRevisionUpdated");
+-
+             if (app.editor?.isCollaborative) {
+                 await saveScene(false, false);
+             }
+diff --git a/client/packages/editor-oss/src/serialization/schema/BehaviorDataSchema.ts b/client/packages/editor-oss/src/serialization/schema/BehaviorDataSchema.ts
+index 9f377d3..8a8dc00 100644
+--- a/client/packages/editor-oss/src/serialization/schema/BehaviorDataSchema.ts
++++ b/client/packages/editor-oss/src/serialization/schema/BehaviorDataSchema.ts
+@@ -1,6 +1,7 @@
+ import z from 'zod';
+ 
+ import { BehaviorThrottlePriority } from '@stem/editor-oss/behaviors/performance/interfaces/IThrottleStrategy';
++import {BEHAVIOR_DATA_SCHEMA_VERSION} from '@stem/editor-oss/behaviors/BehaviorData';
+ 
+ export const BehaviorThrottleConfigSchema = z.object({
+     throttlePriority: z.enum(BehaviorThrottlePriority),
+@@ -10,6 +11,7 @@ export const BehaviorThrottleConfigSchema = z.object({
+ });
+ 
+ export const BehaviorDataSchema = z.object({
++    schemaVersion: z.number().int().positive().default(BEHAVIOR_DATA_SCHEMA_VERSION),
+     id: z.string(),
+     uuid: z.string(),
+     prefabBehaviorUuid: z.string().optional(),
+diff --git a/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServicesController.ts b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServicesController.ts
+index fa74286..9d5023b 100644
+--- a/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServicesController.ts
++++ b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServicesController.ts
+@@ -12,6 +12,7 @@ import {getAuthProvider} from "../../../auth";
+ import {IUser} from "../../types";
+ import {GameServiceType} from "../../utils/PlatformDetector";
+ import {capacitorMobileServices} from "../capacitor-mobile-wrapper";
++import {createMobileGameServiceEmail} from "./MobileGameServiceIdentity";
+ 
+ /**
+  * Handles mobile game services authentication and operations
+@@ -66,28 +67,6 @@ export class MobileGameServicesController extends BaseGameServiceController {
+         return null;
+     };
+ 
+-    private sanitizeUsername(inputString: string): string {
+-        // 1. Convert to lowercase
+-        let sanitizedUsername = inputString.toLowerCase();
+-
+-        // 2. Replace common separators (spaces, dots, underscores) with hyphens
+-        // This adheres to RFC 5322 (which allows dots/underscores but hyphens are safer for many systems)
+-        sanitizedUsername = sanitizedUsername.replace(/[ ._]/g, '-');
+-
+-        // 3. Remove any characters that are NOT letters, numbers, or hyphens
+-        // This creates a very strict and safe local part.
+-        // The pattern [^a-z0-9\-] matches any character that is not a lowercase letter, a digit, or a hyphen.
+-        sanitizedUsername = sanitizedUsername.replace(/[^a-z0-9-]/g, '');
+-
+-        // 4. Remove duplicate hyphens (e.g., --) that might have been created
+-        sanitizedUsername = sanitizedUsername.replace(/--+/g, '-');
+-
+-        // 5. Remove leading or trailing hyphens
+-        sanitizedUsername = sanitizedUsername.replace(/^-+|-+$/g, '');
+-
+-        return sanitizedUsername ?? "guest_"+Math.random().toString(36).substring(2, 15);
+-    }
+-
+     /**
+      * Main authentication flow
+      */
+@@ -143,6 +122,10 @@ export class MobileGameServicesController extends BaseGameServiceController {
+                 throw new Error(`Unsupported service: ${this.activeService}`);
+             }
+ 
++            if (!credentialData.credential.playerID) {
++                throw new Error(`${this.activeService} credential is missing playerID`);
++            }
++
+             // Step 3: Sign in to Firebase with the credential
+             const fbAuthData = await authenticateWithGameCenter({
+                 player_id: credentialData.credential.playerID,
+@@ -159,7 +142,11 @@ export class MobileGameServicesController extends BaseGameServiceController {
+                 id: credentialData.credential.playerID,
+                 username: credentialData.credential.playerID,
+                 name: credentialData.credential.displayName,
+-                email: `${this.activeService}_${this.sanitizeUsername(credentialData.credential.displayName)}@erthgames.com`, //FIXME: we need to make it unique by using playerID
++                email: createMobileGameServiceEmail(
++                    this.activeService,
++                    credentialData.credential.displayName,
++                    credentialData.credential.playerID,
++                ),
+                 firebaseId: fbAuthData?.user.user_id,
+                 avatar: null,
+                 token: fbAuthData?.id_token,
+
+diff --git a/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.test.ts b/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.test.ts
+new file mode 100644
+index 0000000..83591e9
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/collisions/CollisionDetector.test.ts
+@@ -0,0 +1,116 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import CollisionDetector, {type CollisionContext} from "./CollisionDetector";
++import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
++
++const createDetector = () => {
++    let physicsCollisionListener: ((collision: {uuid: string; listenerId: string}) => void) | undefined;
++    const physics = {
++        detectCollisionsForObject: vi.fn(),
++    };
++    const source = {
++        addCollisionListener: vi.fn((listener: (collision: {uuid: string; listenerId: string}) => void) => {
++            physicsCollisionListener = listener;
++        }),
++    };
++
++    return {
++        detector: new CollisionDetector(physics as any, source as any),
++        physics,
++        emitPhysicsCollision: (uuid: string, listenerId: string) => physicsCollisionListener?.({uuid, listenerId}),
++    };
++};
++
++describe("CollisionDetector", () => {
++    it("passes target and player objects to distance callbacks", () => {
++        const {detector} = createDetector();
++        const target = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const player = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const callback = vi.fn<(context: CollisionContext) => void>();
++
++        detector.setPlayer(player);
++        detector.addListener(
++            target,
++            {
++                type: COLLISION_TYPE.WITH_PLAYER,
++                useBoundingBoxes: true,
++                callback,
++            },
++            false,
++        );
++
++        detector.update();
++
++        expect(callback).toHaveBeenCalledWith(
++            expect.objectContaining({
++                target,
++                other: player,
++                source: "distance",
++            }),
++        );
++    });
++
++    it("passes target and player objects to physics callbacks", () => {
++        const {detector, emitPhysicsCollision} = createDetector();
++        const target = new THREE.Object3D();
++        const player = new THREE.Object3D();
++        const callback = vi.fn<(context: CollisionContext) => void>();
++
++        detector.setPlayer(player);
++        const listenerId = detector.addListener(
++            target,
++            {
++                type: COLLISION_TYPE.WITH_PLAYER,
++                callback,
++            },
++            true,
++        );
++
++        emitPhysicsCollision(target.uuid, listenerId);
++        detector.update();
++
++        expect(callback).toHaveBeenCalledWith(
++            expect.objectContaining({
++                target,
++                other: player,
++                source: "physics",
++                collision: {uuid: target.uuid, listenerId},
++            }),
++        );
++    });
++
++    it("does not distance-check physics listeners when non-physics listeners exist", () => {
++        const {detector} = createDetector();
++        const player = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const physicsTarget = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const distanceTarget = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const physicsCallback = vi.fn();
++        const distanceCallback = vi.fn();
++
++        detector.setPlayer(player);
++        detector.addListener(
++            physicsTarget,
++            {
++                type: COLLISION_TYPE.WITH_PLAYER,
++                useBoundingBoxes: true,
++                callback: physicsCallback,
++            },
++            true,
++        );
++        detector.addListener(
++            distanceTarget,
++            {
++                type: COLLISION_TYPE.WITH_PLAYER,
++                useBoundingBoxes: true,
++                callback: distanceCallback,
++            },
++            false,
++        );
++
++        detector.update();
++
++        expect(distanceCallback).toHaveBeenCalledOnce();
++        expect(physicsCallback).not.toHaveBeenCalled();
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.test.ts
+new file mode 100644
+index 0000000..81a3770
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/consumable/ConsumableBehavior.test.ts
+@@ -0,0 +1,55 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import {CONSUMABLE_TYPES} from "@stem/editor-oss/types/editor";
++import ConsumableBehavior from "./ConsumableBehavior";
++
++const createBehavior = (getUseAction: () => boolean, pressE = false): ConsumableBehavior => {
++    const target = new THREE.Object3D();
++    const behavior = new ConsumableBehavior(target, "consumable", {
++        gameObject: {target} as any,
++        erth: {} as any,
++        attributes: {
++            consumableType: CONSUMABLE_TYPES.PRESS_E,
++        },
++    });
++
++    behavior.init({
++        inputManager: {
++            getAction: vi.fn((action: string) => (action === "use" ? getUseAction() : false)),
++        },
++        scene: {userData: {pressE}},
++        player: {userData: {pressE}},
++    } as any);
++
++    return behavior;
++};
++
++describe("ConsumableBehavior", () => {
++    it("collects PRESS_E consumables from the input action system", () => {
++        const behavior = createBehavior(() => true, false);
++        const collectObject = vi.spyOn(behavior, "collectObject").mockImplementation(() => undefined as any);
++
++        behavior.onCollision();
++
++        expect(collectObject).toHaveBeenCalledOnce();
++    });
++
++    it("keeps the legacy pressE state as a fallback", () => {
++        const behavior = createBehavior(() => false, true);
++        const collectObject = vi.spyOn(behavior, "collectObject").mockImplementation(() => undefined as any);
++
++        behavior.onCollision();
++
++        expect(collectObject).toHaveBeenCalledOnce();
++    });
++
++    it("does not collect PRESS_E consumables until the use action is active", () => {
++        const behavior = createBehavior(() => false, false);
++        const collectObject = vi.spyOn(behavior, "collectObject").mockImplementation(() => undefined as any);
++
++        behavior.onCollision();
++
++        expect(collectObject).not.toHaveBeenCalled();
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.test.ts
+new file mode 100644
+index 0000000..7b74522
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/enemy/EnemyBehavior.test.ts
+@@ -0,0 +1,96 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import EnemyBehavior from "./EnemyBehavior";
++
++const createEnemy = (attributes: Record<string, unknown> = {}) => {
++    const enemy = new THREE.Object3D();
++    const player = new THREE.Object3D();
++    const scene = new THREE.Scene();
++    scene.add(enemy, player);
++
++    const behavior = new EnemyBehavior(enemy, "enemy", {
++        gameObject: {target: enemy} as any,
++        erth: {} as any,
++        attributes: {
++            movementSpeed: 0,
++            rotationSpeed: 1,
++            fightDistance: 1,
++            roamDistance: 10,
++            directionDuration: 1,
++            attackDistance: 25,
++            idleAnimation: "idle",
++            runAnimation: "run",
++            walkAnimation: "walk",
++            attackAnimation: "attack",
++            ...attributes,
++        },
++    });
++
++    const game = {
++        scene,
++        player,
++        physics: {
++            setRotation: vi.fn(),
++            setLinearVelocity: vi.fn(),
++        },
++        engine: {
++            animationControl: {
++                playAnimation: vi.fn(),
++                stopAnimation: vi.fn(),
++            },
++        },
++    };
++
++    behavior.init(game as any);
++
++    return {behavior, enemy, player, game};
++};
++
++const getState = (behavior: EnemyBehavior): string => (behavior as any).state;
++const setState = (behavior: EnemyBehavior, state: string): void => {
++    (behavior as any).state = state;
++    (behavior as any).stateTimer = 0;
++};
++
++describe("EnemyBehavior", () => {
++    it("uses engageDistance to decide when to pursue", () => {
++        const {behavior, player} = createEnemy({engageDistance: 5, idleRetreatDelay: 30});
++        player.position.set(8, 0, 0);
++
++        behavior.update(1);
++        expect(getState(behavior)).toBe("standing");
++
++        player.position.set(4, 0, 0);
++        behavior.update(1);
++        expect(getState(behavior)).toBe("approaching");
++    });
++
++    it("uses strikeDistance to decide when to attack", () => {
++        const {behavior, player} = createEnemy({engageDistance: 10, strikeDistance: 1});
++        setState(behavior, "approaching");
++        player.position.set(2, 0, 0);
++
++        behavior.update(1);
++        expect(getState(behavior)).toBe("approaching");
++
++        player.position.set(0.5, 0, 0);
++        behavior.update(1);
++        expect(getState(behavior)).toBe("attacking");
++    });
++
++    it("uses authored timers for idle and retreat state transitions", () => {
++        const {behavior, player} = createEnemy({
++            engageDistance: 5,
++            idleRetreatDelay: 0.25,
++            retreatDuration: 0.5,
++        });
++        player.position.set(20, 0, 0);
++
++        behavior.update(0.3);
++        expect(getState(behavior)).toBe("retreating");
++
++        behavior.update(0.6);
++        expect(getState(behavior)).toBe("standing");
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.test.ts
+new file mode 100644
+index 0000000..3d98484
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/jointFixed/FixedJointBehavior.test.ts
+@@ -0,0 +1,38 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import FixedJointBehavior from "./FixedJointBehavior";
++
++const createGame = (scene: THREE.Scene) => ({
++    scene,
++    physics: {
++        addFixedJoint: vi.fn(),
++        removeJoint: vi.fn(),
++    },
++});
++
++describe("FixedJointBehavior", () => {
++    it("removes the joint it added when stopped", () => {
++        const scene = new THREE.Scene();
++        const objectA = new THREE.Object3D();
++        const objectB = new THREE.Object3D();
++        scene.add(objectA, objectB);
++
++        const game = createGame(scene);
++        const behavior = new FixedJointBehavior(objectA, "jointFixed", {
++            gameObject: {target: objectA} as any,
++            erth: {} as any,
++            attributes: {
++                objectB: objectB.uuid,
++                collisionEnabled: false,
++            },
++        });
++        behavior.init(game as any);
++
++        behavior.onStart();
++        behavior.onStop();
++
++        expect(game.physics.addFixedJoint).toHaveBeenCalledOnce();
++        expect(game.physics.removeJoint).toHaveBeenCalledWith(objectA.uuid, objectB.uuid);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.test.ts
+new file mode 100644
+index 0000000..6ca8c0a
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/jointHinge/HingeJointBehavior.test.ts
+@@ -0,0 +1,44 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import HingeJointBehavior from "./HingeJointBehavior";
++
++const createGame = (scene: THREE.Scene) => ({
++    scene,
++    physics: {
++        addHingeJoint: vi.fn(),
++        removeJoint: vi.fn(),
++    },
++});
++
++describe("HingeJointBehavior", () => {
++    it("removes the joint it added when stopped", () => {
++        const scene = new THREE.Scene();
++        const objectA = new THREE.Object3D();
++        const objectB = new THREE.Object3D();
++        scene.add(objectA, objectB);
++
++        const game = createGame(scene);
++        const behavior = new HingeJointBehavior(objectA, "jointHinge", {
++            gameObject: {target: objectA} as any,
++            erth: {} as any,
++            attributes: {
++                objectB: objectB.uuid,
++                collisionEnabled: true,
++                axis: {x: 0, y: 1, z: 0},
++                angularLimitEnabled: false,
++                angularLimit: {x: 0, y: 0, z: 0},
++                motorEnabled: false,
++                motorSpeed: 0,
++                motorTorque: 0,
++            },
++        });
++        behavior.init(game as any);
++
++        behavior.onStart();
++        behavior.onStop();
++
++        expect(game.physics.addHingeJoint).toHaveBeenCalledOnce();
++        expect(game.physics.removeJoint).toHaveBeenCalledWith(objectA.uuid, objectB.uuid);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.test.ts
+new file mode 100644
+index 0000000..0f6f15c
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/jointPoint2Point/Point2PointJointBehavior.test.ts
+@@ -0,0 +1,40 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import Point2PointJointBehavior from "./Point2PointJointBehavior";
++
++const createGame = (scene: THREE.Scene) => ({
++    scene,
++    physics: {
++        addPoint2PointJoint: vi.fn(),
++        removeJoint: vi.fn(),
++    },
++});
++
++describe("Point2PointJointBehavior", () => {
++    it("removes the joint it added when stopped", () => {
++        const scene = new THREE.Scene();
++        const objectA = new THREE.Object3D();
++        const objectB = new THREE.Object3D();
++        scene.add(objectA, objectB);
++
++        const game = createGame(scene);
++        const behavior = new Point2PointJointBehavior(objectA, "jointPoint2Point", {
++            gameObject: {target: objectA} as any,
++            erth: {} as any,
++            attributes: {
++                objectB: objectB.uuid,
++                collisionEnabled: true,
++                pivotA: {x: 0, y: 0, z: 0},
++                pivotB: {x: 1, y: 0, z: 0},
++            },
++        });
++        behavior.init(game as any);
++
++        behavior.onStart();
++        behavior.onStop();
++
++        expect(game.physics.addPoint2PointJoint).toHaveBeenCalledOnce();
++        expect(game.physics.removeJoint).toHaveBeenCalledWith(objectA.uuid, objectB.uuid);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.test.ts
+new file mode 100644
+index 0000000..19a8c5f
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/jumppad/JumppadBehavior.test.ts
+@@ -0,0 +1,38 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import JumppadBehavior, {CalculationMode} from "./JumppadBehavior";
++
++describe("JumppadBehavior", () => {
++    it("applies impulse to the collision object from the callback context", () => {
++        const pad = new THREE.Object3D();
++        const collidingObject = new THREE.Object3D();
++        collidingObject.userData.physics = {enabled: true};
++        const physics = {applyImpulseToPlayer: vi.fn()};
++        const behavior = new JumppadBehavior(pad, "jumppad", {
++            gameObject: {target: pad} as any,
++            erth: {} as any,
++            attributes: {
++                strength: 12,
++                strengthMode: CalculationMode.FIXED,
++                enableAngle: false,
++            },
++        });
++        behavior.init({
++            collisionDetector: {physics},
++            player: undefined,
++        } as any);
++
++        behavior.onCollision({
++            target: pad,
++            other: collidingObject,
++            listener: {} as any,
++            source: "distance",
++        });
++
++        expect(physics.applyImpulseToPlayer).toHaveBeenCalledWith(
++            collidingObject.uuid,
++            expect.objectContaining({x: 0, y: 12, z: 0}),
++        );
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.test.ts
+new file mode 100644
+index 0000000..7d44ad5
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/shop/ShopBehavior.test.ts
+@@ -0,0 +1,108 @@
++import * as THREE from "three";
++import {afterEach, describe, expect, it, vi} from "vitest";
++
++import ShopBehavior from "./ShopBehavior";
++
++const createShopBehavior = (attributes: Record<string, unknown>): ShopBehavior => {
++    const target = new THREE.Object3D();
++    return new ShopBehavior(target, "shop", {
++        gameObject: {target} as any,
++        erth: {} as any,
++        attributes,
++    });
++};
++
++describe("ShopBehavior", () => {
++    afterEach(() => {
++        document.getElementById("shopMenu")?.remove();
++    });
++
++    it("builds the shop menu from behavior attributes without executing authored HTML", () => {
++        const behavior = createShopBehavior({
++            introDialog: "<b>Welcome</b>",
++            items: [{
++                itemId: {assetId: "item-prefab", revisionId: "rev-1"},
++                itemDisplayName: "<script>bad()</script>",
++                price: 3,
++            }],
++        });
++
++        behavior.createShopMenu();
++
++        const menu = document.getElementById("shopMenu");
++        expect(menu).not.toBeNull();
++        expect(menu?.textContent).toContain("<b>Welcome</b>");
++        expect(menu?.textContent).toContain("<script>bad()</script>");
++        expect(menu?.querySelector("b")).toBeNull();
++        expect(menu?.querySelector("script")).toBeNull();
++    });
++
++    it("falls back to a safe image for unsupported image URL schemes", () => {
++        const behavior = createShopBehavior({
++            shopImage: "javascript:alert(1)",
++            items: [],
++        });
++
++        behavior.createShopMenu();
++
++        const image = document.querySelector<HTMLImageElement>("#shopMenu img[alt='Shop']");
++        expect(image?.src).toContain("data:image/svg+xml");
++    });
++
++    it("removes the open shop menu when the behavior is removed", () => {
++        const behavior = createShopBehavior({
++            introDialog: "Welcome",
++            items: [],
++        });
++
++        behavior.createShopMenu();
++        expect(document.getElementById("shopMenu")).not.toBeNull();
++
++        behavior.onRemoved();
++
++        expect(document.getElementById("shopMenu")).toBeNull();
++    });
++
++    it("resets menu state when the cancel button closes the menu", () => {
++        const behavior = createShopBehavior({
++            introDialog: "Welcome",
++            items: [],
++        });
++        const player = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
++        behavior.target.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)));
++        behavior.init({
++            player,
++            collisionDetector: undefined,
++        } as any);
++
++        behavior.update();
++        document.querySelector<HTMLButtonElement>("#shopMenu button:last-child")?.click();
++        expect(document.getElementById("shopMenu")).toBeNull();
++
++        behavior.update();
++
++        expect(document.getElementById("shopMenu")).not.toBeNull();
++    });
++
++    it("preloads item prefabs from behavior attributes", () => {
++        const behavior = createShopBehavior({
++            items: [
++                {itemId: {assetId: "item-1", revisionId: "rev-1"}},
++                {itemId: {assetId: "item-2", revisionId: "rev-2"}},
++                {itemDisplayName: "No prefab"},
++            ],
++        });
++        const preloadPrefab = vi.fn();
++        behavior.init({
++            scene: new THREE.Scene(),
++            prefabManager: {preloadPrefab},
++            collisionDetector: undefined,
++        } as any);
++
++        behavior.preloadPrefabs();
++
++        expect(preloadPrefab).toHaveBeenCalledWith({assetId: "item-1", revisionId: "rev-1"});
++        expect(preloadPrefab).toHaveBeenCalledWith({assetId: "item-2", revisionId: "rev-2"});
++        expect(preloadPrefab).toHaveBeenCalledTimes(2);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.test.ts
+new file mode 100644
+index 0000000..2deeb8b
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/spawnpoint/SpawnPointBehavior.test.ts
+@@ -0,0 +1,49 @@
++import * as THREE from "three";
++import {describe, expect, it} from "vitest";
++
++import SpawnPointBehavior from "./SpawnPointBehavior";
++
++const createSpawnPointBehavior = (target: THREE.Object3D, attributes: Record<string, unknown> = {}) =>
++    new SpawnPointBehavior(target, "spawnpoint", {
++        gameObject: {target} as any,
++        erth: {} as any,
++        attributes,
++    });
++
++describe("SpawnPointBehavior", () => {
++    it("writes and clears structured spawn point metadata", () => {
++        const target = new THREE.Object3D();
++        const behavior = createSpawnPointBehavior(target, {slot: 2, spawnType: "team"});
++
++        behavior.onAdded();
++
++        expect(target.userData.isSpawnPoint).toBe(true);
++        expect(target.userData.spawnPoint).toEqual({slot: 2, type: "team"});
++
++        behavior.onRemoved();
++
++        expect(target.userData.isSpawnPoint).toBeUndefined();
++        expect(target.userData.spawnPoint).toBeUndefined();
++    });
++
++    it("syncs the editor marker after target transform changes", () => {
++        const target = new THREE.Object3D();
++        const editor = {sceneHelpers: new THREE.Group()} as any;
++        const behavior = createSpawnPointBehavior(target, {slot: 0, spawnType: "normal"});
++
++        behavior.onEditorAdded(editor);
++        const marker = editor.sceneHelpers.children[0] as THREE.Object3D;
++
++        target.position.set(3, 4, 5);
++        target.rotation.set(0, Math.PI / 2, 0);
++        behavior.onEditorUpdate();
++
++        expect(marker.position.distanceTo(target.position)).toBeLessThan(1e-12);
++        expect(marker.quaternion.angleTo(target.quaternion)).toBeLessThan(1e-12);
++
++        behavior.onEditorRemoved();
++
++        expect(editor.sceneHelpers.children).toHaveLength(0);
++        expect(target.userData.isSpawnPoint).toBeUndefined();
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.test.ts
+new file mode 100644
+index 0000000..590a535
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/teleport/TeleportBehavior.test.ts
+@@ -0,0 +1,50 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import TeleportBehavior from "./TeleportBehavior";
++
++describe("TeleportBehavior", () => {
++    it("teleports the collision object from the callback context", () => {
++        const trigger = new THREE.Object3D();
++        const teleportTarget = new THREE.Object3D();
++        teleportTarget.position.set(4, 5, 6);
++        teleportTarget.rotation.set(0, Math.PI / 2, 0);
++        const collidingObject = new THREE.Object3D();
++        const scene = new THREE.Scene();
++        scene.add(trigger, teleportTarget, collidingObject);
++        const characterBehavior = {
++            setPosition: vi.fn(),
++            setAngle: vi.fn(),
++        };
++        const game = {
++            scene,
++            player: undefined,
++            cameraControl: {resetCamera: vi.fn()},
++            behaviorManager: {
++                getTargetBehaviorsById: vi.fn((target: THREE.Object3D, id: string) =>
++                    target === collidingObject && id === "character" ? [characterBehavior] : [],
++                ),
++            },
++        };
++        const behavior = new TeleportBehavior(trigger, "teleport", {
++            gameObject: {target: trigger} as any,
++            erth: {} as any,
++            attributes: {
++                teleportTargetUuid: teleportTarget.uuid,
++            },
++        });
++        behavior.init(game as any);
++
++        behavior.onCollision({
++            target: trigger,
++            other: collidingObject,
++            listener: {} as any,
++            source: "distance",
++        });
++
++        expect(game.behaviorManager.getTargetBehaviorsById).toHaveBeenCalledWith(collidingObject, "character");
++        expect(characterBehavior.setPosition).toHaveBeenCalledWith(expect.objectContaining({x: 4, y: 5, z: 6}));
++        expect(characterBehavior.setAngle).toHaveBeenCalledWith(expect.any(Number));
++        expect(game.cameraControl.resetCamera).toHaveBeenCalledOnce();
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.test.ts
+new file mode 100644
+index 0000000..eb0c6fe
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/tween/TweenAnimationBehavior.test.ts
+@@ -0,0 +1,35 @@
++import * as THREE from "three";
++import {describe, expect, it} from "vitest";
++
++import TweenAnimationBehavior from "./TweenAnimationBehavior";
++
++describe("TweenAnimationBehavior", () => {
++    it("interpolates rotation with quaternion slerp", () => {
++        const target = new THREE.Object3D();
++        target.rotation.set(Math.PI * 0.8, Math.PI * 0.45, -Math.PI * 0.25);
++        const startQuaternion = target.quaternion.clone();
++        const endQuaternion = new THREE.Quaternion().setFromEuler(
++            new THREE.Euler(
++                target.rotation.x + THREE.MathUtils.degToRad(140),
++                target.rotation.y + THREE.MathUtils.degToRad(170),
++                target.rotation.z + THREE.MathUtils.degToRad(-120),
++                target.rotation.order,
++            ),
++        );
++        const behavior = new TweenAnimationBehavior(target, "tween", {
++            gameObject: {target} as any,
++            erth: {} as any,
++            attributes: {
++                rotate: {x: 140, y: 170, z: -120},
++            },
++        });
++
++        const config = (behavior as any).getAnimationConfig();
++        const update = (behavior as any).createUpdateFunction(config);
++        update(0.5);
++
++        const expected = startQuaternion.clone().slerp(endQuaternion, 0.5);
++        expect(target.quaternion.angleTo(expected)).toBeLessThan(1e-6);
++        expect(Math.abs(target.quaternion.length() - 1)).toBeLessThan(1e-6);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.test.ts b/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.test.ts
+new file mode 100644
+index 0000000..0317437
+--- /dev/null
++++ b/client/packages/editor-oss/src/behaviors/packs/volume/VolumeBehavior.test.ts
+@@ -0,0 +1,85 @@
++import * as THREE from "three";
++import {describe, expect, it, vi} from "vitest";
++
++import VolumeBehavior, {VOLUME_TYPES} from "./VolumeBehavior";
++import {CollisionType} from "../../../physics/common/physicsConfig";
++
++const createVolumeBehavior = (
++    target: THREE.Object3D,
++    volumeType: VOLUME_TYPES,
++    game: any,
++) => {
++    const behavior = new VolumeBehavior(target, "volume", {
++        gameObject: {target} as any,
++        erth: {} as any,
++        attributes: {
++            volumeOptions: {volumeType},
++        },
++    });
++    behavior.init(game);
++    return behavior;
++};
++
++const createGame = () => ({
++    engine: {
++        addPhysicsObject: vi.fn(),
++        removePhysicsObject: vi.fn(),
++    },
++    collisionDetector: {
++        addListener: vi.fn(),
++        deleteListener: vi.fn(),
++    },
++});
++
++describe("VolumeBehavior", () => {
++    it("auto-applies kinematic physics for blocking volumes without existing physics", () => {
++        const target = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const game = createGame();
++        const behavior = createVolumeBehavior(target, VOLUME_TYPES.BLOCKING, game);
++
++        behavior.onStart();
++
++        expect(target.userData.physics.enabled).toBe(true);
++        expect(target.userData.physics.ctype).toBe(CollisionType.Kinematic);
++        expect(target.userData.physics.mass).toBe(0);
++        expect(game.engine.addPhysicsObject).toHaveBeenCalledWith(target);
++        expect(game.collisionDetector.addListener).not.toHaveBeenCalled();
++
++        behavior.onStop();
++
++        expect(game.engine.removePhysicsObject).toHaveBeenCalledWith(target);
++        expect(target.userData.physics).toBeUndefined();
++    });
++
++    it("does not override existing physics on blocking volumes", () => {
++        const target = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        target.userData.physics = {
++            enabled: true,
++            ctype: CollisionType.Static,
++            mass: 0,
++            shape: "btBoxShape",
++        };
++        const game = createGame();
++        const behavior = createVolumeBehavior(target, VOLUME_TYPES.BLOCKING, game);
++
++        behavior.onStart();
++
++        expect(target.userData.physics.ctype).toBe(CollisionType.Static);
++        expect(game.engine.addPhysicsObject).not.toHaveBeenCalled();
++    });
++
++    it("registers collision listeners for non-blocking volumes", () => {
++        const target = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
++        const game = createGame();
++        const behavior = createVolumeBehavior(target, VOLUME_TYPES.KILL_VOLUME, game);
++
++        behavior.onStart();
++
++        expect(game.collisionDetector.addListener).toHaveBeenCalledOnce();
++        expect(game.engine.addPhysicsObject).not.toHaveBeenCalled();
++
++        behavior.onStop();
++
++        expect(game.collisionDetector.deleteListener).toHaveBeenCalledWith(target);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.test.ts b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.test.ts
+new file mode 100644
+index 0000000..8538a4a
+--- /dev/null
++++ b/client/packages/editor-oss/src/editor/behaviors/BehaviorDataFactory.test.ts
+@@ -0,0 +1,24 @@
++import {describe, expect, it} from "vitest";
++
++import BehaviorDataFactory from "./BehaviorDataFactory";
++import {BEHAVIOR_DATA_SCHEMA_VERSION} from "../../behaviors/BehaviorData";
++import {BehaviorDataSchema} from "../../serialization/schema/BehaviorDataSchema";
++
++describe("BehaviorDataFactory", () => {
++    it("stamps new behavior data with the current schema version", () => {
++        const data = BehaviorDataFactory.createData("test", {}, 0);
++
++        expect(data.schemaVersion).toBe(BEHAVIOR_DATA_SCHEMA_VERSION);
++    });
++
++    it("defaults legacy serialized behavior data to the current schema version", () => {
++        const data = BehaviorDataSchema.parse({
++            id: "legacy",
++            uuid: "behavior-uuid",
++            enabled: true,
++            priority: 0,
++        });
++
++        expect(data.schemaVersion).toBe(BEHAVIOR_DATA_SCHEMA_VERSION);
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.test.ts b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.test.ts
+new file mode 100644
+index 0000000..63a8bce
+--- /dev/null
++++ b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.test.ts
+@@ -0,0 +1,43 @@
++import {describe, expect, it} from "vitest";
++import {GameServiceType} from "../../utils/PlatformDetector";
++import {
++    createMobileGameServiceEmail,
++    sanitizeMobileGameServiceEmailSegment,
++} from "./MobileGameServiceIdentity";
++
++describe("MobileGameServiceIdentity", () => {
++    it("creates distinct emails for users with the same display name", () => {
++        const firstEmail = createMobileGameServiceEmail(GameServiceType.GAME_CENTER, "Sam Player", "player-1");
++        const secondEmail = createMobileGameServiceEmail(GameServiceType.GAME_CENTER, "Sam Player", "player-2");
++
++        expect(firstEmail).not.toBe(secondEmail);
++        expect(firstEmail).toContain("sam-player");
++        expect(secondEmail).toContain("sam-player");
++    });
++
++    it("sanitizes display and player ids into email-safe segments", () => {
++        const email = createMobileGameServiceEmail(
++            GameServiceType.GOOGLE_PLAY,
++            " Player.Name_#42 ",
++            "Google Player:/ABC 123",
++        );
++
++        expect(email).toMatch(/^google-play_player-name-42_google-playerabc-123-[a-z0-9]+@erthgames\.com$/);
++    });
++
++    it("keeps generated local parts within the email limit", () => {
++        const email = createMobileGameServiceEmail(
++            GameServiceType.GAME_CENTER,
++            "A Very Long Native Display Name That Would Otherwise Overflow The Local Part",
++            "native-provider-player-id-with-a-very-long-stable-identifier",
++        );
++        const localPart = email.split("@")[0]!;
++
++        expect(localPart.length).toBeLessThanOrEqual(64);
++    });
++
++    it("uses deterministic fallback segments instead of random identity text", () => {
++        expect(sanitizeMobileGameServiceEmailSegment("", "player")).toBe("player");
++        expect(sanitizeMobileGameServiceEmailSegment("!!!", "player")).toBe("player");
++    });
++});
+
+diff --git a/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.ts b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.ts
+new file mode 100644
+index 0000000..9938fb0
+--- /dev/null
++++ b/client/packages/editor-oss/src/userManagement/playerProfile/game-service-controllers/MobileGameServiceIdentity.ts
+@@ -0,0 +1,63 @@
++import {GameServiceType} from "../../utils/PlatformDetector";
++
++const EMAIL_DOMAIN = "erthgames.com";
++const MAX_LOCAL_PART_LENGTH = 64;
++const MAX_DISPLAY_SEGMENT_LENGTH = 24;
++const MAX_PLAYER_SEGMENT_PREFIX_LENGTH = 20;
++
++const trimHyphens = (value: string): string => value.replace(/^-+|-+$/g, "");
++
++export const sanitizeMobileGameServiceEmailSegment = (
++    value: string | null | undefined,
++    fallback: string,
++    maxLength = Number.POSITIVE_INFINITY,
++): string => {
++    const sanitized = trimHyphens(
++        String(value ?? "")
++            .toLowerCase()
++            .replace(/[ ._]/g, "-")
++            .replace(/[^a-z0-9-]/g, "")
++            .replace(/--+/g, "-"),
++    );
++
++    const segment = sanitized || fallback;
++    return trimHyphens(segment.slice(0, maxLength)) || fallback;
++};
++
++const stableHash = (value: string): string => {
++    let hash = 0x811c9dc5;
++
++    for (let i = 0; i < value.length; i++) {
++        hash ^= value.charCodeAt(i);
++        hash = Math.imul(hash, 0x01000193);
++    }
++
++    return (hash >>> 0).toString(36);
++};
++
++const createPlayerSegment = (playerID: string): string => {
++    const sanitizedPlayerID = sanitizeMobileGameServiceEmailSegment(
++        playerID,
++        "player",
++        MAX_PLAYER_SEGMENT_PREFIX_LENGTH,
++    );
++
++    return `${sanitizedPlayerID}-${stableHash(playerID)}`;
++};
++
++export const createMobileGameServiceEmail = (
++    service: GameServiceType,
++    displayName: string | null | undefined,
++    playerID: string,
++): string => {
++    const serviceSegment = sanitizeMobileGameServiceEmailSegment(service, "mobile");
++    const displaySegment = sanitizeMobileGameServiceEmailSegment(
++        displayName,
++        "player",
++        MAX_DISPLAY_SEGMENT_LENGTH,
++    );
++    const playerSegment = createPlayerSegment(playerID);
++    const localPart = `${serviceSegment}_${displaySegment}_${playerSegment}`.slice(0, MAX_LOCAL_PART_LENGTH);
++
++    return `${trimHyphens(localPart)}@${EMAIL_DOMAIN}`;
++};
+

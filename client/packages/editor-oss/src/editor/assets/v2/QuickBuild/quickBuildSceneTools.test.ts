@@ -16,6 +16,7 @@ import {
     getPlaceableQuickBuildPoints,
     getQuickBuildBrushPoints,
     getQuickBuildPlacementCandidates,
+    getQuickBuildSceneCounts,
     getQuickBuildDuplicateRemovalTargets,
     rebuildQuickBuildLiveBatch,
     clearQuickBuildLiveBatches,
@@ -23,6 +24,26 @@ import {
 } from "./quickBuildSceneTools";
 
 describe("quickBuildSceneTools", () => {
+    it("analyzes and freezes deep builder hierarchies without recursive Three traversal", () => {
+        const scene = new THREE.Scene();
+        const object = createQuickBuildObject("tree");
+        let parent = object;
+        for (let index = 0; index < 12_000; index++) {
+            const child = new THREE.Object3D();
+            parent.add(child);
+            parent = child;
+        }
+        scene.add(object);
+
+        const traverseSpy = vi.spyOn(THREE.Object3D.prototype, "traverse").mockImplementation(() => {
+            throw new Error("recursive traversal must not be used");
+        });
+
+        expect(analyzeQuickBuildScene(scene).objectCount).toBe(1);
+        expect(collectQuickBuildStaticTargets([object])).toContain(parent);
+        expect(traverseSpy).not.toHaveBeenCalled();
+    });
+
     it("collects quick build roots from a scene", () => {
         const scene = new THREE.Scene();
         const tree = createQuickBuildObject("tree");
@@ -30,6 +51,22 @@ describe("quickBuildSceneTools", () => {
         scene.add(tree, house, new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)));
 
         expect(collectQuickBuildObjects(scene)).toEqual([tree, house]);
+    });
+
+    it("collects toolbar scene counts in one compatible inventory", () => {
+        const scene = new THREE.Scene();
+        scene.add(createQuickBuildObject("tree"));
+        const bake = new THREE.Group();
+        bake.userData.isQuickBuildBake = true;
+        const live = new THREE.Group();
+        live.userData.isQuickBuildLiveBatch = true;
+        scene.add(bake, live);
+
+        expect(getQuickBuildSceneCounts(scene)).toEqual({
+            stampCount: 1,
+            bakedBatchCount: 1,
+            liveBatchCount: 1,
+        });
     });
 
     it("finds duplicate stamps on the same snapped footprint", () => {

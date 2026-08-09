@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {SVGLoader} from "three/examples/jsm/loaders/SVGLoader.js";
+import {SVGLoader} from "three/addons/loaders/SVGLoader.js";
 
 // Default SVG path - a star
 const defaultSVGPath = "M 0,50 L 15,15 L 50,10 L 20,-10 L 30,-50 L 0,-20 L -30,-50 L -20,-10 L -50,10 L -15,15 Z";
@@ -75,7 +75,7 @@ class CustomShape extends THREE.Mesh {
             }
 
             // Collect shapes from all parsed paths so grouped/multi-path SVGs import fully.
-            const shapes = svgData.paths.flatMap(path => SVGLoader.createShapes(path));
+            const shapes = svgData.paths.flatMap(path => path.toShapes());
             if (shapes.length === 0) {
                 throw new Error("No shapes created from SVG");
             }

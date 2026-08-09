@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useState} from "react";
 import {createPortal} from "react-dom";
-import {Vector3Like} from "three/webgpu";
+import type {Vector3Like} from "three";
 
 import {EmptyAssetsState} from "./EmptyAssetsState";
 import {saveScene} from "@stem/network/api/scene";

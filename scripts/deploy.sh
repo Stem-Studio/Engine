@@ -4,7 +4,7 @@
 # Pipeline:
 #   1. Sanity-check the redirect rules (catches the "static host routes
 #      the wrong page" class of bug before it hits prod).
-#   2. Run the OSS build (BUILD_MODE=oss bun run build).
+#   2. Run the production build.
 #   3. Hand off to one or more deploy backends.
 #
 # Targets:
@@ -60,8 +60,8 @@ run_build() {
         echo "[deploy] SKIP_BUILD=1 — skipping build"
         return
     fi
-    print_header "2/3 Building (BUILD_MODE=oss bun run build)"
-    BUILD_MODE=oss bun run build
+    print_header "2/3 Building (bun run build)"
+    bun run build
     if [[ ! -d build/public ]]; then
         echo "[deploy] build/public is missing — build failed" >&2
         exit 1
@@ -70,6 +70,14 @@ run_build() {
     for shell in index.html shell.html editor.html play.html; do
         if [[ ! -f "build/public/$shell" ]]; then
             echo "[deploy] build/public/$shell missing — vite multi-input build is broken" >&2
+            exit 1
+        fi
+    done
+    # GitHub Pages does not honour _redirects, so the public Playground and
+    # its embedded dashboard also need real directory indexes.
+    for route_index in playground/index.html dashboard/index.html; do
+        if [[ ! -f "build/public/$route_index" ]]; then
+            echo "[deploy] build/public/$route_index missing — deep-link route entrypoint was not emitted" >&2
             exit 1
         fi
     done
