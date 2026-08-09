@@ -2,10 +2,8 @@ import I18n from "i18next";
 import React, {useEffect, useState} from "react";
 
 import {useAuthorizationContext} from ".";
-import {ROUTES} from "@web-shared/routes";
 import {FileData} from "../editor/assets/v2/types/file";
 import global from "../global";
-import {IS_OSS} from "../mode/buildMode";
 import {showToast} from "../showToast";
 import Ajax from "../utils/Ajax";
 import {UploadUtils} from "../utils/UploadUtils";
@@ -17,14 +15,6 @@ export enum AssetType {
     VIDEOS = "Video",
     NPC_PROFILES = "NPC",
 }
-
-// Explicit event name mapping for each asset type (improves readability and debuggability)
-const ASSET_LOADED_EVENTS: Record<AssetType, string> = {
-    [AssetType.SOUNDS]: "onAudiosLoaded",
-    [AssetType.IMAGES]: "onMapsLoaded",
-    [AssetType.VIDEOS]: "onVideosLoaded",
-    [AssetType.NPC_PROFILES]: "onNPCsLoaded",
-};
 
 interface AssetsTabContextValue {
     fetchAssets: (assetType: AssetType) => void;
@@ -76,30 +66,7 @@ const AssetsTabContextProvider: React.FC<AssetsTabContextProviderProps> = ({chil
     }, [assetsData]);
 
     const fetchAssets = (assetType: AssetType) => {
-        if (IS_OSS) {
-            setAssetsData(prev => new Map(prev).set(assetType, []));
-            return;
-        }
-        Ajax.get({url: backendUrlFromPath(`/api/${assetType}/List`)})
-            .then(response => {
-                const obj = response?.data;
-                if (obj.Code !== 200) {
-                    showToast({type: "warning", body: I18n.t(obj.Msg)});
-                    return;
-                }
-                setAssetsData(prev => new Map(prev).set(assetType, obj.Data));
-                app.call(ASSET_LOADED_EVENTS[assetType], this, obj.Data);
-                app.call("refreshBillboardList");
-            })
-            .catch(error => {
-                showToast({type: "error", body: "Failed to fetch data. Please try again later."});
-                console.error("Fetch error:", error);
-                const errorMessage = typeof error === "string" ? error : error?.message || "";
-
-                if (errorMessage.toLowerCase().includes("unauthorized".toLowerCase())) {
-                    window.location.href = ROUTES.LOGIN;
-                }
-            });
+        setAssetsData(prev => new Map(prev).set(assetType, []));
     };
 
     const batchAudioUpload = (libraryIDToAdd: string) => {

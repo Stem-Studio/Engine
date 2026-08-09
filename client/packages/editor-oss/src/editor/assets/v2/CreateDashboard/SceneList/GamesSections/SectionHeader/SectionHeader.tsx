@@ -1,5 +1,3 @@
-import React from "react";
-
 import {CommunityFilters} from "./Filters/CommunityFilters";
 import {Filters} from "./Filters/Filters";
 import {Breadcrumb, Header, Label} from "./SectionHeader.style";

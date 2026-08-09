@@ -106,7 +106,6 @@ object.userData = {
 // web/src/global.ts
 interface GlobalType {
   app: EngineRuntime | AppRuntime | null; // Shared runtime singleton
-  three$1: typeof THREE;     // Three.js reference
 }
 // Access: global.app.scene, global.app.editor, global.app.camera
 ```
@@ -135,16 +134,11 @@ Command pattern with `History` managing `undos[]` / `redos[]` stacks. Updatable 
 
 Usage: `await app.editor.history.execute(new AddObjectCommand(mesh, parent), "Add Cube")`
 
-## Frame Orchestration
+## Runtime Loop
 
-`FrameOrchestrator` (`web/src/scheduler/FrameOrchestrator.ts`) provides a unified frame pipeline:
-
-1. **INPUT** — input processing (always runs)
-2. **FIXED_UPDATE** — physics timestep accumulator (default 60Hz)
-3. **PRE_UPDATE** — preparation
-4. **UPDATE** — main logic (time-sliced per frame budget, 14ms default)
-5. **POST_UPDATE** — cleanup/late updates
-6. **RENDER** — rendering
+The editor and player use the legacy sequential runtime loop. Fixed-rate
+behavior and lambda hooks are driven from that loop when enabled; the retired
+staged scheduler pipeline is no longer part of the runtime surface.
 
 Features: frame budget management, time-slicing, dependency graph scheduling, background tab throttling, spatial grid frustum culling.
 

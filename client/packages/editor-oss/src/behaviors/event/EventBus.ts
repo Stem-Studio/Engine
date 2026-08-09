@@ -12,6 +12,11 @@ interface EventBusSubscription {
     handler: (data: any) => void;
 }
 
+interface EventBusEventNames {
+    engine: string;
+    game: string;
+}
+
 class EventBus {
     static instance: EventBus = new EventBus();
 
@@ -20,6 +25,8 @@ class EventBus {
     private tokens = new Map<string, EventBusSubscription>();
 
     private topicTokens = new Map<string, Set<string>>();
+
+    private eventNames = new Map<string, EventBusEventNames>();
 
     private counter = 0;
 
@@ -39,12 +46,13 @@ class EventBus {
         this.tokens.forEach((_, token) => this.unsubscribe(token));
         this.tokens.clear();
         this.topicTokens.clear();
+        this.eventNames.clear();
     }
 
     unsubscribe(tokenOrTopic: string) {
         const subscription = this.tokens.get(tokenOrTopic);
         if (subscription) {
-            this.emitter.off(this.eventName(subscription.topic, subscription.priority), subscription.handler);
+            this.emitter.off(this.getEventNames(subscription.topic)[subscription.priority], subscription.handler);
             this.tokens.delete(tokenOrTopic);
             const topicSet = this.topicTokens.get(subscription.topic);
             topicSet?.delete(tokenOrTopic);
@@ -59,7 +67,13 @@ class EventBus {
             return;
         }
 
-        Array.from(topicSet).forEach(token => this.unsubscribe(token));
+        while (topicSet.size > 0) {
+            const token = topicSet.values().next().value;
+            if (!token) {
+                break;
+            }
+            this.unsubscribe(token);
+        }
     }
 
     subscribe(topic: string, callback: (msg: string, data: any) => void, options: EventBusSubscribeOptions = {}): string {
@@ -74,7 +88,7 @@ class EventBus {
             }
         };
 
-        this.emitter.on(this.eventName(topic, priority), handler);
+        this.emitter.on(this.getEventNames(topic)[priority], handler);
         this.tokens.set(token, {topic, priority, handler});
         if (!this.topicTokens.has(topic)) {
             this.topicTokens.set(topic, new Set());
@@ -92,24 +106,41 @@ class EventBus {
         if (this.shouldTrace(topic)) {
             console.info(`[EventBus] send topic=${topic}`, data);
         }
+
+        if (this.topicTokens.size === 0) {
+            return;
+        }
+
         // Emit exact match
-        this.emitter.emit(this.eventName(topic, "engine"), data);
-        this.emitter.emit(this.eventName(topic, "game"), data);
+        if (this.topicTokens.has(topic)) {
+            const eventNames = this.getEventNames(topic);
+            this.emitter.emit(eventNames.engine, data);
+            this.emitter.emit(eventNames.game, data);
+        }
 
         // Emit hierarchical parents
         let parentTopic = topic;
         while (parentTopic.includes(".")) {
             const index = parentTopic.lastIndexOf(".");
             parentTopic = parentTopic.substring(0, index);
-            if (parentTopic) {
-                this.emitter.emit(this.eventName(parentTopic, "engine"), topic, data);
-                this.emitter.emit(this.eventName(parentTopic, "game"), topic, data);
+            if (parentTopic && this.topicTokens.has(parentTopic)) {
+                const eventNames = this.getEventNames(parentTopic);
+                this.emitter.emit(eventNames.engine, topic, data);
+                this.emitter.emit(eventNames.game, topic, data);
             }
         }
     }
 
-    private eventName(topic: string, priority: EventBusPriority) {
-        return `${priority}:${topic}`;
+    private getEventNames(topic: string): EventBusEventNames {
+        let eventNames = this.eventNames.get(topic);
+        if (!eventNames) {
+            eventNames = {
+                engine: `engine:${topic}`,
+                game: `game:${topic}`,
+            };
+            this.eventNames.set(topic, eventNames);
+        }
+        return eventNames;
     }
 }
 

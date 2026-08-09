@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Brush, Evaluator, ADDITION } from "three-bvh-csg";
-import { describe, it, expect, beforeAll } from "vitest";
+import { afterEach, describe, it, expect, beforeAll, vi } from "vitest";
 
 import BufferGeometrySerializer from "./BufferGeometrySerializer";
 import GeometriesSerializer from "./GeometriesSerializer";
@@ -9,6 +9,22 @@ import CustomTube, { CurveType } from "@stem/editor-oss/object/geometry/CustomTu
 describe("BufferGeometrySerializer", () => {
     beforeAll(async () => {
         // Initialize any required dependencies
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("omits default geometry properties without stringifying every field", () => {
+        const stringify = vi.spyOn(JSON, "stringify");
+        const geometry = new THREE.BufferGeometry();
+
+        const json = new BufferGeometrySerializer().toJSON(geometry);
+
+        expect(stringify).not.toHaveBeenCalled();
+        expect(json.metadata?.generator).toBe("BufferGeometrySerializer");
+        expect(json.parameters).toBeUndefined();
+        expect(json.userData).toBeUndefined();
     });
 
     describe("CSG Geometries", () => {

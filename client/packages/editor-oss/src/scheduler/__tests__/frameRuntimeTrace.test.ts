@@ -35,9 +35,9 @@ describe("frameRuntimeTrace", () => {
     it("trims the ring buffer to the configured size", () => {
         (globalThis as any).__TRACE_FRAME_RUNTIME__ = { maxEvents: 2 };
 
-        recordFrameRuntimeTrace({ kind: "orchestrator-frame", frameCount: 1 });
-        recordFrameRuntimeTrace({ kind: "orchestrator-frame", frameCount: 2 });
-        recordFrameRuntimeTrace({ kind: "orchestrator-frame", frameCount: 3 });
+        recordFrameRuntimeTrace({ kind: "runtime-frame", frameCount: 1 });
+        recordFrameRuntimeTrace({ kind: "runtime-frame", frameCount: 2 });
+        recordFrameRuntimeTrace({ kind: "runtime-frame", frameCount: 3 });
 
         const store = getFrameRuntimeTraceStore();
         expect(store.events).toHaveLength(2);

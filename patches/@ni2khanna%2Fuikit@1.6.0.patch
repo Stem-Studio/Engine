@@ -1,0 +1,473 @@
+diff --git a/dist/components/fullscreen.js b/dist/components/fullscreen.js
+index 7bd1ee2a820c6cdb98ee2070d87104ad39491191..359d2f19ab011c5126fc35d65d73a4bf3f092c2e 100644
+--- a/dist/components/fullscreen.js
++++ b/dist/components/fullscreen.js
+@@ -49,7 +49,7 @@ export class Fullscreen extends Container {
+         super.update(delta);
+         const camera = this.parent;
+         if (!(isPerspectiveCamera(camera) || isOrthographicCamera(camera))) {
+-            throw new Error(`fullscreen can only be added to a camera`);
++            return;
+         }
+         const distanceToCamera = this.properties.peek().distanceToCamera ?? camera.near + 0.1;
+         batch(() => {
+diff --git a/dist/panel/instanced-panel-group.js b/dist/panel/instanced-panel-group.js
+index a61eae272b9441b1fd84fb2257dff66a8fb5276c..1f853abf9cbe905bf0f6977118530356b91605a4 100644
+--- a/dist/panel/instanced-panel-group.js
++++ b/dist/panel/instanced-panel-group.js
+@@ -151,12 +151,22 @@ export class InstancedPanelGroup {
+         this.root = root;
+         this.orderInfo = orderInfo;
+         this.panelGroupProperties = panelGroupProperties;
+-        const materialClass = resolvePanelMaterialClassProperty(panelGroupProperties.panelMaterialClass);
+-        this.instanceMaterial = root.useNodeMaterial
+-            ? createPanelNodeMaterial(materialClass, { type: 'instanced' })
++        if (!root.useNodeMaterial) {
++            this.instanceMaterial = this.createInstanceMaterial();
++        }
++    }
++    createInstanceMaterial() {
++        const materialClass = resolvePanelMaterialClassProperty(this.panelGroupProperties.panelMaterialClass);
++        const material = this.root.useNodeMaterial
++            ? createPanelNodeMaterial(materialClass, {
++                type: 'instanced',
++                instanceData: this.instanceData,
++                instanceClipping: this.instanceClipping,
++            })
+             : createPanelMaterial(materialClass, { type: 'instanced' });
+-        this.instanceMaterial.depthTest = panelGroupProperties.depthTest;
+-        this.instanceMaterial.depthWrite = panelGroupProperties.depthWrite;
++        material.depthTest = this.panelGroupProperties.depthTest;
++        material.depthWrite = this.panelGroupProperties.depthWrite;
++        return material;
+     }
+     updateCount() {
+         const lastBucket = this.buckets[this.buckets.length - 1];
+@@ -268,6 +278,11 @@ export class InstancedPanelGroup {
+         }
+         this.instanceClipping = new InstancedBufferAttribute(clippingArray, 16, false);
+         this.instanceClipping.setUsage(DynamicDrawUsage);
++        if (this.root.useNodeMaterial) {
++            const previousMaterial = this.instanceMaterial;
++            this.instanceMaterial = this.createInstanceMaterial();
++            previousMaterial?.dispose();
++        }
+         this.mesh = new InstancedPanelMesh(this.root, this.instanceMatrix, this.instanceData, this.instanceClipping);
+         this.mesh.renderOrder = this.panelGroupProperties.renderOrder;
+         setupRenderOrder(this.mesh, { peek: () => this.root }, { value: this.orderInfo });
+@@ -283,7 +298,7 @@ export class InstancedPanelGroup {
+         }
+         this.object.remove(this.mesh);
+         this.mesh?.dispose();
+-        this.instanceMaterial.dispose();
++        this.instanceMaterial?.dispose();
+     }
+ }
+ function copyWithinAttribute(attribute, targetIndex, startIndex, endIndex) {
+diff --git a/dist/panel/instanced-panel-mesh.js b/dist/panel/instanced-panel-mesh.js
+index 6a9aca161e9844914601063d013ce5394f4c74f5..b5b36e383bf851a11852a096a26491e470e32abb 100644
+--- a/dist/panel/instanced-panel-mesh.js
++++ b/dist/panel/instanced-panel-mesh.js
+@@ -1,21 +1,6 @@
+-import { Box3, InstancedInterleavedBuffer, InterleavedBufferAttribute, Mesh, Sphere, } from 'three';
++import { Box3, Mesh, Sphere, } from 'three';
+ import { createPanelGeometry } from './utils.js';
+ import { instancedPanelDepthMaterial, instancedPanelDistanceMaterial } from './panel-material.js';
+-/**
+- * Sets up split vec4 attributes from a 16-float-per-instance InstancedBufferAttribute.
+- * TSL cannot read mat4 attributes directly, so we expose 4 vec4 views via InterleavedBufferAttribute.
+- * The original mat4 attribute (for GLSL/onBeforeCompile) is kept as-is.
+- */
+-function setupSplitAttributes(geometry, sourceAttr, baseName) {
+-    // Create an interleaved buffer backed by the same Float32Array
+-    const interleavedBuffer = new InstancedInterleavedBuffer(sourceAttr.array, 16);
+-    interleavedBuffer.setUsage(sourceAttr.usage);
+-    // 4 vec4 slices at offsets 0, 4, 8, 12 within each 16-float stride
+-    geometry.setAttribute(`${baseName}0`, new InterleavedBufferAttribute(interleavedBuffer, 4, 0, false));
+-    geometry.setAttribute(`${baseName}1`, new InterleavedBufferAttribute(interleavedBuffer, 4, 4, false));
+-    geometry.setAttribute(`${baseName}2`, new InterleavedBufferAttribute(interleavedBuffer, 4, 8, false));
+-    geometry.setAttribute(`${baseName}3`, new InterleavedBufferAttribute(interleavedBuffer, 4, 12, false));
+-}
+ export class InstancedPanelMesh extends Mesh {
+     root;
+     instanceMatrix;
+@@ -26,6 +11,9 @@ export class InstancedPanelMesh extends Mesh {
+     morphTexture = null;
+     boundingBox = new Box3();
+     boundingSphere = new Sphere();
++    onBeforeRender = () => {
++        this.material?.userData?.uikitSyncInstancedBuffers?.();
++    };
+     customUpdateMatrixWorld = () => {
+         const parent = this.root.component.parent;
+         if (parent == null) {
+@@ -44,9 +32,6 @@ export class InstancedPanelMesh extends Mesh {
+         // Original mat4 attributes for GLSL onBeforeCompile path
+         panelGeometry.attributes.aData = instanceData;
+         panelGeometry.attributes.aClipping = instanceClipping;
+-        // Split vec4 attributes for TSL node material path
+-        setupSplitAttributes(panelGeometry, instanceData, 'aData');
+-        setupSplitAttributes(panelGeometry, instanceClipping, 'aClipping');
+         this.customDepthMaterial = instancedPanelDepthMaterial;
+         this.customDistanceMaterial = instancedPanelDistanceMaterial;
+         this.frustumCulled = false;
+diff --git a/dist/panel/panel-node-material.d.ts b/dist/panel/panel-node-material.d.ts
+index 379457fb05ec4601bd2f99e80a0e133c81e3bfcd..8940c4ac5d29ebc8bc05a69f6e610f276a15bd48 100644
+--- a/dist/panel/panel-node-material.d.ts
++++ b/dist/panel/panel-node-material.d.ts
+@@ -1,4 +1,4 @@
+-import { Material } from 'three';
++import { InstancedBufferAttribute, Material } from 'three';
+ import type { Constructor } from './utils.js';
+ import type { PanelMaterialInfo } from './panel-material.js';
+ /**
+@@ -11,4 +11,10 @@ export declare function initNodeMaterials(): Promise<void>;
+  * Creates a TSL-based panel material compatible with both WebGL and WebGPU renderers.
+  * initNodeMaterials() must have been called and awaited before using this function.
+  */
+-export declare function createPanelNodeMaterial<T extends Constructor<Material>>(MaterialClass: T, info: PanelMaterialInfo): any;
++export declare function createPanelNodeMaterial<T extends Constructor<Material>>(MaterialClass: T, info: {
++    type: 'instanced';
++    instanceData: InstancedBufferAttribute;
++    instanceClipping: InstancedBufferAttribute;
++} | Extract<PanelMaterialInfo, {
++    type: 'normal';
++}>): any;
+diff --git a/dist/panel/panel-node-material.js b/dist/panel/panel-node-material.js
+index 1369d7e687862f211c022f6c8d60d9756458ccc1..18d1ad3edbb1d376e267f5e1b91aa25b8a081abb 100644
+--- a/dist/panel/panel-node-material.js
++++ b/dist/panel/panel-node-material.js
+@@ -1,4 +1,4 @@
+-import { FrontSide, MeshBasicMaterial, MeshPhongMaterial, MeshStandardMaterial, MeshPhysicalMaterial, MeshLambertMaterial, } from 'three';
++import { FrontSide, InstancedInterleavedBuffer, MeshBasicMaterial, MeshPhongMaterial, MeshStandardMaterial, MeshPhysicalMaterial, MeshLambertMaterial, } from 'three';
+ // All TSL and node material imports are lazy to avoid crashing on WebGL
+ // where three/tsl exports are null.
+ let _tsl = null;
+@@ -70,7 +70,7 @@ function _buildTSLHelpers() {
+         for (let i = 0; i < 4; i++) {
+             const plane = planes[i];
+             const distanceToPlane = dot(localPos, plane.xyz).add(plane.w);
+-            const planeDistanceGradient = fwidth(distanceToPlane).mul(0.5);
++            const planeDistanceGradient = max(fwidth(distanceToPlane).mul(0.5), float(1e-6));
+             clipOpacity.assign(clipOpacity.mul(smoothstep(planeDistanceGradient.negate(), planeDistanceGradient, distanceToPlane)));
+         }
+         return clipOpacity;
+@@ -194,7 +194,7 @@ function resolveNodeMaterialClass(MaterialClass) {
+  */
+ export function createPanelNodeMaterial(MaterialClass, info) {
+     const tsl = getTSL();
+-    const { attribute, float, vec2, vec4, int, uv, positionLocal, uniform, varying } = tsl;
++    const { float, vec4, int, uv, positionLocal, uniform, varying } = tsl;
+     const NodeClass = resolveNodeMaterialClass(MaterialClass);
+     const material = new NodeClass();
+     material.side = FrontSide;
+@@ -203,22 +203,18 @@ export function createPanelNodeMaterial(MaterialClass, info) {
+     material.toneMapped = false;
+     material.shadowSide = FrontSide;
+     if (info.type === 'instanced') {
+-        const aData0 = attribute('aData0', 'vec4');
+-        const aData1 = attribute('aData1', 'vec4');
+-        const aData2 = attribute('aData2', 'vec4');
+-        const aData3 = attribute('aData3', 'vec4');
+-        const aClipping0 = attribute('aClipping0', 'vec4');
+-        const aClipping1 = attribute('aClipping1', 'vec4');
+-        const aClipping2 = attribute('aClipping2', 'vec4');
+-        const aClipping3 = attribute('aClipping3', 'vec4');
+-        const vData0 = varying(aData0);
+-        const vData1 = varying(aData1);
+-        const vData2 = varying(aData2);
+-        const vData3 = varying(aData3);
+-        const vClipping0 = varying(aClipping0);
+-        const vClipping1 = varying(aClipping1);
+-        const vClipping2 = varying(aClipping2);
+-        const vClipping3 = varying(aClipping3);
++        const data = createInstancedMat4Nodes(info.instanceData);
++        const clipping = createInstancedMat4Nodes(info.instanceClipping);
++        const [data0, data1, data2, data3] = data.nodes;
++        const [clip0, clip1, clip2, clip3] = clipping.nodes;
++        const vData0 = varying(data0);
++        const vData1 = varying(data1);
++        const vData2 = varying(data2);
++        const vData3 = varying(data3);
++        const vClipping0 = varying(clip0);
++        const vClipping1 = varying(clip1);
++        const vClipping2 = varying(clip2);
++        const vClipping3 = varying(clip3);
+         const vLocalPosition = varying(positionLocal);
+         const packedBR = int(vData2.x);
+         const vBorderRadius = vec4(float(packedBR.div(125000).mod(50)), float(packedBR.div(2500).mod(50)), float(packedBR.div(50).mod(50)), float(packedBR.mod(50))).mul(0.01);
+@@ -226,6 +222,10 @@ export function createPanelNodeMaterial(MaterialClass, info) {
+         const result = _panelFragment(vData0, vData1, vData2, vData3, vBorderRadius, clipOpacity, uv(), float(1.0));
+         material.colorNode = result.xyz;
+         material.opacityNode = result.w;
++        material.userData.uikitSyncInstancedBuffers = () => {
++            data.sync();
++            clipping.sync();
++        };
+         if ('normalNode' in material) {
+             // TODO: borderWeight needs to be shared from panelFragment - for now skip normal bending
+         }
+@@ -244,3 +244,19 @@ export function createPanelNodeMaterial(MaterialClass, info) {
+     }
+     return material;
+ }
++function createInstancedMat4Nodes(sourceAttr) {
++    const { instancedDynamicBufferAttribute } = getTSL();
++    const interleaved = new InstancedInterleavedBuffer(sourceAttr.array, 16, 1);
++    interleaved.setUsage(sourceAttr.usage);
++    let lastSourceVersion = -1;
++    const lane = (offset) => instancedDynamicBufferAttribute(interleaved, 'vec4', 16, offset).setInstanced(true);
++    return {
++        nodes: [lane(0), lane(4), lane(8), lane(12)],
++        sync: () => {
++            if (sourceAttr.version !== lastSourceVersion) {
++                lastSourceVersion = sourceAttr.version;
++                interleaved.needsUpdate = true;
++            }
++        },
++    };
++}
+diff --git a/dist/properties/alias.d.ts b/dist/properties/alias.d.ts
+index 3d73faa23fb254d9f3eed138122eb5a86c6c4b92..ee90fe34e850ebcb0e60b4384e8cca28fdeeacaf 100644
+--- a/dist/properties/alias.d.ts
++++ b/dist/properties/alias.d.ts
+@@ -5,6 +5,10 @@ export type GetAliases<T, A extends Aliases> = {
+ export type Aliases = Record<string, ReadonlyArray<string>>;
+ export type AddAllAliases<T> = AddAliases<T, AllAliases>;
+ declare const flexAliases: {
++    readonly top: readonly ["positionTop"];
++    readonly right: readonly ["positionRight"];
++    readonly bottom: readonly ["positionBottom"];
++    readonly left: readonly ["positionLeft"];
+     readonly borderWidth: readonly ["borderBottomWidth", "borderTopWidth", "borderLeftWidth", "borderRightWidth"];
+     readonly borderXWidth: readonly ["borderLeftWidth", "borderRightWidth"];
+     readonly borderYWidth: readonly ["borderTopWidth", "borderBottomWidth"];
+diff --git a/dist/properties/alias.js b/dist/properties/alias.js
+index 364e636d440961734a2221292da8712754845f12..bbc564aedb2df8a4033eab180256f4ecff616a0c 100644
+--- a/dist/properties/alias.js
++++ b/dist/properties/alias.js
+@@ -1,4 +1,8 @@
+ const flexAliases = {
++    top: ['positionTop'],
++    right: ['positionRight'],
++    bottom: ['positionBottom'],
++    left: ['positionLeft'],
+     borderWidth: ['borderBottomWidth', 'borderTopWidth', 'borderLeftWidth', 'borderRightWidth'],
+     borderXWidth: ['borderLeftWidth', 'borderRightWidth'],
+     borderYWidth: ['borderTopWidth', 'borderBottomWidth'],
+diff --git a/dist/text/render/instanced-glyph-group.js b/dist/text/render/instanced-glyph-group.js
+index 230ce4901eb4f4ada8d62bdff94f90f130e6d458..5768170cbd6ca90cd4c6b31df1e59772eee1ec85 100644
+--- a/dist/text/render/instanced-glyph-group.js
++++ b/dist/text/render/instanced-glyph-group.js
+@@ -60,16 +60,28 @@ export class InstancedGlyphGroup {
+     mesh;
+     instanceMaterial;
+     timeTillDecimate;
++    font;
++    depthTest;
++    depthWrite;
+     constructor(object, font, root, orderInfo, depthTest, depthWrite, renderOrder) {
+         this.object = object;
++        this.font = font;
+         this.root = root;
+         this.orderInfo = orderInfo;
+         this.renderOrder = renderOrder;
+-        this.instanceMaterial = root.useNodeMaterial
+-            ? createGlyphNodeMaterial(font)
+-            : new InstancedGlyphMaterial(font);
+-        this.instanceMaterial.depthTest = depthTest;
+-        this.instanceMaterial.depthWrite = depthWrite;
++        this.depthTest = depthTest;
++        this.depthWrite = depthWrite;
++        if (!root.useNodeMaterial) {
++            this.instanceMaterial = this.createInstanceMaterial();
++        }
++    }
++    createInstanceMaterial() {
++        const material = this.root.useNodeMaterial
++            ? createGlyphNodeMaterial(this.font, this.instanceClipping)
++            : new InstancedGlyphMaterial(this.font);
++        material.depthTest = this.depthTest;
++        material.depthWrite = this.depthWrite;
++        return material;
+     }
+     requestActivate(glyph) {
+         const holeIndex = this.holeIndicies.shift();
+@@ -180,6 +192,11 @@ export class InstancedGlyphGroup {
+         this.instanceRGBA.setUsage(DynamicDrawUsage);
+         this.instanceClipping = new InstancedBufferAttribute(clippingArray, 16, false);
+         this.instanceClipping.setUsage(DynamicDrawUsage);
++        if (this.root.useNodeMaterial) {
++            const previousMaterial = this.instanceMaterial;
++            this.instanceMaterial = this.createInstanceMaterial();
++            previousMaterial?.dispose();
++        }
+         const oldMesh = this.mesh;
+         this.mesh = new InstancedGlyphMesh(this.root, this.instanceMatrix, this.instanceRGBA, this.instanceUV, this.instanceClipping, this.instanceMaterial);
+         this.mesh.renderOrder = this.renderOrder;
+@@ -218,7 +235,7 @@ export class InstancedGlyphGroup {
+         }
+         this.object.remove(this.mesh);
+         this.mesh.dispose();
+-        this.instanceMaterial.dispose();
++        this.instanceMaterial?.dispose();
+     }
+ }
+ function copyBuffer(target, start, end, oldMesh, newMesh) {
+diff --git a/dist/text/render/instanced-glyph-mesh.js b/dist/text/render/instanced-glyph-mesh.js
+index 31f917da7807f13077f0e49ea9eeab82cf6208c9..bb82efac26d12bba50e33d3df281701be5607d32 100644
+--- a/dist/text/render/instanced-glyph-mesh.js
++++ b/dist/text/render/instanced-glyph-mesh.js
+@@ -1,4 +1,4 @@
+-import { Box3, InstancedInterleavedBuffer, InterleavedBufferAttribute, Mesh, PlaneGeometry, Sphere, } from 'three';
++import { Box3, Mesh, PlaneGeometry, Sphere, } from 'three';
+ export class InstancedGlyphMesh extends Mesh {
+     root;
+     instanceMatrix;
+@@ -12,6 +12,9 @@ export class InstancedGlyphMesh extends Mesh {
+     morphTexture = null;
+     boundingBox = new Box3();
+     boundingSphere = new Sphere();
++    onBeforeRender = () => {
++        this.material?.userData?.uikitSyncInstancedBuffers?.();
++    };
+     customUpdateMatrixWorld = () => {
+         const parent = this.root.component.parent;
+         if (parent == null) {
+@@ -34,13 +37,6 @@ export class InstancedGlyphMesh extends Mesh {
+         planeGeometry.attributes.instanceUVOffset = instanceUV;
+         planeGeometry.attributes.instanceRGBA = instanceRGBA;
+         planeGeometry.attributes.instanceClipping = instanceClipping;
+-        // Split instanceClipping (mat4, 16 floats) into 4 vec4 attributes for TSL compatibility
+-        const clippingInterleavedBuffer = new InstancedInterleavedBuffer(instanceClipping.array, 16);
+-        clippingInterleavedBuffer.setUsage(instanceClipping.usage);
+-        planeGeometry.setAttribute('instanceClipping0', new InterleavedBufferAttribute(clippingInterleavedBuffer, 4, 0, false));
+-        planeGeometry.setAttribute('instanceClipping1', new InterleavedBufferAttribute(clippingInterleavedBuffer, 4, 4, false));
+-        planeGeometry.setAttribute('instanceClipping2', new InterleavedBufferAttribute(clippingInterleavedBuffer, 4, 8, false));
+-        planeGeometry.setAttribute('instanceClipping3', new InterleavedBufferAttribute(clippingInterleavedBuffer, 4, 12, false));
+         this.frustumCulled = false;
+         root.onUpdateMatrixWorldSet.add(this.customUpdateMatrixWorld);
+     }
+diff --git a/dist/text/render/instanced-glyph-node-material.d.ts b/dist/text/render/instanced-glyph-node-material.d.ts
+index eafdc2da0709a46fe728c19f04e8945daff489a7..1d559ef914cdff6c051691b327d56a739aba7400 100644
+--- a/dist/text/render/instanced-glyph-node-material.d.ts
++++ b/dist/text/render/instanced-glyph-node-material.d.ts
+@@ -1,4 +1,4 @@
+-import { Material } from 'three';
++import { InstancedBufferAttribute, Material } from 'three';
+ import { Font } from '../font.js';
+ /**
+  * Initialize this module's TSL dependencies.
+@@ -11,7 +11,10 @@ export declare function initGlyphNodeMaterials(): Promise<void>;
+  *
+  * initGlyphNodeMaterials() must have been called and awaited before use.
+  */
+-export declare function createGlyphNodeMaterial(font: Font): Material;
++export declare function createGlyphNodeMaterial(font: Font, instanceClipping: InstancedBufferAttribute): Material & {
++    colorNode?: unknown;
++    opacityNode?: unknown;
++};
+ export declare class InstancedGlyphNodeMaterial {
+-    constructor(font: Font);
++    constructor(font: Font, instanceClipping: InstancedBufferAttribute);
+ }
+diff --git a/dist/text/render/instanced-glyph-node-material.js b/dist/text/render/instanced-glyph-node-material.js
+index 47267365a8e662cddf5e72fb8723b1b5108a80d8..70c01bd44d542ca413706b2eac61f6d19c97a4b8 100644
+--- a/dist/text/render/instanced-glyph-node-material.js
++++ b/dist/text/render/instanced-glyph-node-material.js
+@@ -1,3 +1,4 @@
++import { InstancedInterleavedBuffer } from 'three';
+ // All TSL and node material imports are lazy - loaded dynamically.
+ // This module must only be used after initGlyphNodeMaterials() has been called.
+ let _MeshBasicNodeMaterial = null;
+@@ -23,7 +24,7 @@ export function initGlyphNodeMaterials() {
+  *
+  * initGlyphNodeMaterials() must have been called and awaited before use.
+  */
+-export function createGlyphNodeMaterial(font) {
++export function createGlyphNodeMaterial(font, instanceClipping) {
+     if (_MeshBasicNodeMaterial == null || _tsl == null) {
+         throw new Error('Glyph node materials not initialized. Call initGlyphNodeMaterials() first.');
+     }
+@@ -32,17 +33,19 @@ export function createGlyphNodeMaterial(font) {
+         depthWrite: false,
+         toneMapped: false,
+     });
+-    _applyGlyphShader(material, font);
++    if (instanceClipping != null) {
++        _applyGlyphShader(material, font, instanceClipping);
++    }
+     return material;
+ }
+ // Keep the class export for backward compat (used in instanced-glyph-group.ts)
+ // This is a thin wrapper that delegates to createGlyphNodeMaterial
+ export class InstancedGlyphNodeMaterial {
+-    constructor(font) {
+-        return createGlyphNodeMaterial(font);
++    constructor(font, instanceClipping) {
++        return createGlyphNodeMaterial(font, instanceClipping);
+     }
+ }
+-function _applyGlyphShader(material, font) {
++function _applyGlyphShader(material, font, instanceClippingAttr) {
+     const { Fn, Discard, attribute, float, vec2, vec4, int, uv, positionLocal, uniform, varying, texture, clamp, dot, fwidth, length, max, min, pow, smoothstep, } = _tsl;
+     // Set anisotropy directly on texture (max reasonable value)
+     font.page.anisotropy = 16;
+@@ -53,19 +56,15 @@ function _applyGlyphShader(material, font) {
+     // Per-instance attributes
+     const instanceUVOffset = attribute('instanceUVOffset', 'vec4');
+     const instanceRGBA = attribute('instanceRGBA', 'vec4');
+-    // Split clipping mat4 into 4 vec4 attributes
+-    const instanceClipping0 = attribute('instanceClipping0', 'vec4');
+-    const instanceClipping1 = attribute('instanceClipping1', 'vec4');
+-    const instanceClipping2 = attribute('instanceClipping2', 'vec4');
+-    const instanceClipping3 = attribute('instanceClipping3', 'vec4');
++    const instanceClipping = createInstancedMat4Nodes(instanceClippingAttr);
+     // Vertex -> fragment varyings
+     const vFontUv = varying(instanceUVOffset.xy.add(uv().mul(instanceUVOffset.zw)));
+     const vRGBA = varying(instanceRGBA);
+     const vLocalPosition = varying(positionLocal);
+-    const vClip0 = varying(instanceClipping0);
+-    const vClip1 = varying(instanceClipping1);
+-    const vClip2 = varying(instanceClipping2);
+-    const vClip3 = varying(instanceClipping3);
++    const vClip0 = varying(instanceClipping.nodes[0]);
++    const vClip1 = varying(instanceClipping.nodes[1]);
++    const vClip2 = varying(instanceClipping.nodes[2]);
++    const vClip3 = varying(instanceClipping.nodes[3]);
+     // MSDF median function
+     const getDistance = Fn(() => {
+         const msdf = fontPageTexture.sample(vFontUv).rgb;
+@@ -79,7 +78,7 @@ function _applyGlyphShader(material, font) {
+         for (let i = 0; i < 4; i++) {
+             const plane = planes[i];
+             const distanceToPlane = dot(localPos, plane.xyz).add(plane.w);
+-            const distanceGradient = fwidth(distanceToPlane).div(2.0);
++            const distanceGradient = max(fwidth(distanceToPlane).div(2.0), float(1e-6));
+             clipOpacity.assign(clipOpacity.mul(smoothstep(distanceGradient.negate(), distanceGradient, distanceToPlane)));
+         }
+         return clipOpacity;
+@@ -106,4 +105,23 @@ function _applyGlyphShader(material, font) {
+     const result = glyphOutput();
+     material.colorNode = result.xyz;
+     material.opacityNode = result.w;
++    material.userData.uikitSyncInstancedBuffers = () => {
++        instanceClipping.sync();
++    };
++}
++function createInstancedMat4Nodes(sourceAttr) {
++    const { instancedDynamicBufferAttribute } = _tsl;
++    const interleaved = new InstancedInterleavedBuffer(sourceAttr.array, 16, 1);
++    interleaved.setUsage(sourceAttr.usage);
++    let lastSourceVersion = -1;
++    const lane = (offset) => instancedDynamicBufferAttribute(interleaved, 'vec4', 16, offset).setInstanced(true);
++    return {
++        nodes: [lane(0), lane(4), lane(8), lane(12)],
++        sync: () => {
++            if (sourceAttr.version !== lastSourceVersion) {
++                lastSourceVersion = sourceAttr.version;
++                interleaved.needsUpdate = true;
++            }
++        },
++    };
+ }

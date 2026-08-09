@@ -124,17 +124,25 @@ instanced.userData.isRuntimeOnly = true;
 this.target.add(instanced);
 ```
 
-## Mandatory `dispose()` Rule
+## Mandatory Ownership and `dispose()` Rule
 
-Every behavior that creates runtime resources should clean them up in `dispose()`.
+Every behavior that creates runtime resources should clean them up in
+`dispose()`, but it must only dispose GPU resources that it allocated and owns
+exclusively. Loader-cache, prefab, and cloned model resources can share the same
+geometry, material, or texture with other live objects. Remove those objects
+through the engine-aware object lifecycle and let the engine's managed
+ownership layer release the shared resources after their final owner exits.
+Never manually call `dispose()` on a resource borrowed from a loaded asset,
+prefab, or another object.
 
 Checklist:
 
 | Resource | Cleanup |
 |----------|---------|
-| Geometry | `geometry.dispose()` |
-| Material | `material.dispose()` |
-| Texture | `texture.dispose()` |
+| Behavior-created, exclusive geometry | `geometry.dispose()` |
+| Behavior-created, exclusive material | `material.dispose()` |
+| Behavior-created, exclusive texture | `texture.dispose()` |
+| Loaded/prefab/cloned geometry, material, or texture | Remove the owning object through the engine-aware lifecycle; do not dispose the shared resource directly. |
 | Render target | `renderTarget.dispose()` |
 | Runtime object | remove from parent |
 | Event listener | unregister/remove |
@@ -165,6 +173,7 @@ this.init = function(_game) {
 this.dispose = function() {
   for (const item of visuals) {
     if (item.mesh.parent) item.mesh.parent.remove(item.mesh);
+    // These were constructed by this behavior and are not shared.
     item.geometry.dispose();
     item.material.dispose();
   }
@@ -176,6 +185,11 @@ this.dispose = function() {
   timers = [];
 };
 ```
+
+If a behavior intentionally shares one resource among several objects it owns,
+deduplicate its cleanup and dispose the resource once, after all of those
+objects have been removed. Do not transfer an engine-managed loaded resource
+into behavior ownership by assumption.
 
 ## `scene.add()` vs Engine-Aware Object Creation
 
@@ -227,5 +241,6 @@ Use pooling when:
 - allocating math objects inside `update()` or `fixedUpdate()`
 - creating many identical meshes instead of instancing
 - using `requiresConsistentUpdates: true` everywhere
-- forgetting `dispose()` cleanup
+- forgetting cleanup, or manually disposing a resource still shared by a loaded
+  asset, prefab, or clone
 - rebuilding heavy procedural geometry on every small attribute change

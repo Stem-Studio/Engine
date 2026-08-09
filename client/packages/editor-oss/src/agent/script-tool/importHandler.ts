@@ -4,6 +4,8 @@
  */
 
 import type {TerminalResult} from "./builtins";
+import type {ReadonlyAssetResolutionContext} from "../../asset-management/AssetResolutionContext";
+import type {ScriptImportRevisionMap} from "../../script-runtime/scriptImportCore";
 import {updateLambdaRegistries} from "../../editor/lambdas/util";
 import {showToast} from "../../showToast";
 import {isScriptsEnabled} from "../../utils/featureFlags";
@@ -265,13 +267,109 @@ export function getSupportedImportTypes(): string[] {
  * @param name
  * @param companionFiles
  */
-/** Hex SHA-256 of a byte buffer, used to content-address imported model files. */
-async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
-    const digest = await crypto.subtle.digest("SHA-256", buffer);
-    return Array.from(new Uint8Array(digest))
-        .map(b => b.toString(16).padStart(2, "0"))
-        .join("");
-}
+export type ProcessImportedFileOptions = {
+    /** Batch import optimization: caller will flush behavior scene sync once after the batch. */
+    deferBehaviorSceneSync?: boolean;
+    /** Batch import optimization: caller pre-resolved script import names after script assets imported. */
+    scriptImportContext?: ReadonlyAssetResolutionContext;
+    /** Batch import optimization: shared cache of fetched script import revision sources. */
+    scriptImportRevisionMap?: ScriptImportRevisionMap;
+};
+
+type ImportPhaseTimingEntry = {
+    type: string;
+    label: string;
+    phase: string;
+    ms: number;
+    success: boolean;
+    message?: string;
+};
+
+const recordImportPhaseTiming = (entry: ImportPhaseTimingEntry): void => {
+    const root = globalThis as typeof globalThis & {
+        __stemImportPhaseTimings?: ImportPhaseTimingEntry[];
+    };
+    root.__stemImportPhaseTimings ??= [];
+    root.__stemImportPhaseTimings.push(entry);
+};
+
+const timeImportPhase = async <T>(
+    type: string,
+    label: string,
+    phase: string,
+    task: () => Promise<T>,
+): Promise<T> => {
+    const start = performance.now();
+    try {
+        const result = await task();
+        recordImportPhaseTiming({
+            type,
+            label,
+            phase,
+            ms: Math.round(performance.now() - start),
+            success: true,
+        });
+        return result;
+    } catch (error) {
+        recordImportPhaseTiming({
+            type,
+            label,
+            phase,
+            ms: Math.round(performance.now() - start),
+            success: false,
+            message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+    }
+};
+
+const loadProcessImportedFileDeps = () => Promise.all([
+    import("../../global"),
+    import("../../asset-management/AssetResolutionContext"),
+    import("@stem/network/api/asset"),
+    import("../../editor/asset-management/hooks/assets"),
+]);
+
+let processImportedFileDepsPromise: ReturnType<typeof loadProcessImportedFileDeps> | undefined;
+
+const getProcessImportedFileDeps = () => {
+    processImportedFileDepsPromise ??= loadProcessImportedFileDeps();
+    return processImportedFileDepsPromise;
+};
+
+const loadModelImportDeps = () => Promise.all([
+    import("../../model/createModelWithData"),
+    import("../../model/convertToGlb"),
+    import("../../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/ModelUpload/utils/cleanupInvalidTextures"),
+    import("../../model/loadModelFromFile"),
+    import("../../model/util"),
+]);
+
+let modelImportDepsPromise: ReturnType<typeof loadModelImportDeps> | undefined;
+
+const getModelImportDeps = () => {
+    modelImportDepsPromise ??= loadModelImportDeps();
+    return modelImportDepsPromise;
+};
+
+const getModelFileDedupKey = (file: File): string => {
+    const relativePath = file.webkitRelativePath || "";
+    const identity = relativePath || file.name;
+    return `file:${identity}:${file.size}:${file.lastModified || 0}:${file.type || ""}`;
+};
+
+const loadBehaviorImportDeps = () => Promise.all([
+    import("../../editor/assets/v2/AssetsLibrary/exportImportUtils"),
+    import("../../editor/behaviors/util"),
+    import("@stem/network/api/asset"),
+]);
+
+let behaviorImportDepsPromise: ReturnType<typeof loadBehaviorImportDeps> | undefined;
+
+const getBehaviorImportDeps = () => {
+    behaviorImportDepsPromise ??= loadBehaviorImportDeps();
+    return behaviorImportDepsPromise;
+};
 
 export async function processImportedFile(
     file: File,
@@ -297,14 +395,10 @@ export async function processImportedFile(
      * entire import batch; omit it for one-off imports.
      */
     modelAssetDedupCache?: Map<string, {id: string; headRevisionId: string}>,
+    options: ProcessImportedFileOptions = {},
 ): Promise<{success: boolean; message: string}> {
     // Dynamic imports to keep module resolution lightweight for tests
-    const [{default: global}, {setAssetRevision, resolveAssetRevisionId, getAssetResolutionContext}, {AssetType, ModelFormat, createAssetRevisionWithData, isNoChangesError, getAsset}, {createAsset}] = await Promise.all([
-        import("../../global"),
-        import("../../asset-management/AssetResolutionContext"),
-        import("@stem/network/api/asset"),
-        import("../../editor/asset-management/hooks/assets"),
-    ]);
+    const [{default: global}, {setAssetRevision, resolveAssetRevisionId, getAssetResolutionContext}, {AssetType, ModelFormat, createAssetRevisionWithData, isNoChangesError, getAsset}, {createAsset}] = await getProcessImportedFileDeps();
 
     const app = global.app;
     const editor = app?.editor;
@@ -317,9 +411,14 @@ export async function processImportedFile(
     try {
         switch (type) {
             case "behavior": {
-                const {importBehaviorFile} = await import("../../editor/assets/v2/AssetsLibrary/exportImportUtils");
-                const {createBehavior, createBehaviorRevision} = await import("../../editor/behaviors/util");
-                const {config, code} = await importBehaviorFile(file);
+                const [
+                    {importBehaviorFile},
+                    {createBehavior, createBehaviorRevision},
+                    {getOssAssetsForProject, unregisterOssAsset},
+                ] = await timeImportPhase("behavior", name || file.name, "deps", getBehaviorImportDeps);
+                const {config, code} = await timeImportPhase("behavior", name || file.name, "importBehaviorFile", () =>
+                    importBehaviorFile(file),
+                );
                 // Re-key the behavior to the id the stemscript references it
                 // by (see `behaviorIdOverride` doc above). The override
                 // becomes `originalConfigId`, so the behavior registers and
@@ -328,27 +427,31 @@ export async function processImportedFile(
                     config.id = behaviorIdOverride;
                 }
                 const originalConfigId = config.id;
+                const behaviorLabel = config.name || name || file.name;
 
                 // Idempotent: create new revision if behavior already exists.
                 // Look up by YAML config.id first, then fall back to a unique
                 // name match. After a page reload the YAML-id alias may be
                 // gone and only the server-assigned 24-char asset ID remains.
-                let existingBhvConfig = editor.behaviorConfigRegistry?.getConfig(originalConfigId);
-                if (!existingBhvConfig && editor.behaviorConfigRegistry) {
-                    const nameMatches = editor.behaviorConfigRegistry
-                        .getAllConfigs()
-                        .filter(c => c.name === config.name);
-                    if (nameMatches.length === 1) {
-                        existingBhvConfig = nameMatches[0]!;
-                    } else if (nameMatches.length > 1) {
-                        // Avoid non-deterministic updates when multiple assets share a name.
-                        // Fall through to create a new asset so script alias stays deterministic.
-                        console.warn(
-                            `[ScriptImport] Multiple behaviors named "${config.name}" found; ` +
-                            `skipping name fallback for alias "${originalConfigId}"`,
-                        );
+                let existingBhvConfig = await timeImportPhase("behavior", behaviorLabel, "existing-lookup", async () => {
+                    let existing = editor.behaviorConfigRegistry?.getConfig(originalConfigId);
+                    if (!existing && editor.behaviorConfigRegistry) {
+                        const nameMatches = editor.behaviorConfigRegistry
+                            .getAllConfigs()
+                            .filter(c => c.name === config.name);
+                        if (nameMatches.length === 1) {
+                            existing = nameMatches[0]!;
+                        } else if (nameMatches.length > 1) {
+                            // Avoid non-deterministic updates when multiple assets share a name.
+                            // Fall through to create a new asset so script alias stays deterministic.
+                            console.warn(
+                                `[ScriptImport] Multiple behaviors named "${config.name}" found; ` +
+                                `skipping name fallback for alias "${originalConfigId}"`,
+                            );
+                        }
                     }
-                }
+                    return existing;
+                });
                 let survivorAssetId: string | undefined;
                 let resultMessage = `Behavior "${config.name}" imported`;
                 if (existingBhvConfig) {
@@ -356,7 +459,9 @@ export async function processImportedFile(
                     // Always fetch the asset's actual HEAD revision to avoid stale-parent 409s
                     let headRevisionId: string;
                     try {
-                        headRevisionId = (await getAsset(assetId)).headRevisionId;
+                        headRevisionId = await timeImportPhase("behavior", behaviorLabel, "getAssetHead", async () =>
+                            (await getAsset(assetId)).headRevisionId,
+                        );
                     } catch (err) {
                         // We matched this asset in the scene's behavior configs, so
                         // it exists — a getAsset failure here is unexpected. Falling
@@ -377,43 +482,46 @@ export async function processImportedFile(
                         config.id = assetId;
                         const aliasId = originalConfigId !== assetId ? originalConfigId : undefined;
 
-                        await createBehaviorRevision({
-                            assetId,
-                            parentRevisionId: headRevisionId,
-                            code,
-                            config,
-                            assetSource: global.app?.editor?.assetSource,
-                            aliasId,
-                            retryOnConflict: true,
-                        });
+                        await timeImportPhase("behavior", behaviorLabel, "createBehaviorRevision", () =>
+                            createBehaviorRevision({
+                                assetId,
+                                parentRevisionId: headRevisionId,
+                                code,
+                                config,
+                                assetSource: global.app?.editor?.assetSource,
+                                aliasId,
+                                deferSceneSync: options.deferBehaviorSceneSync,
+                                scriptImportContext: options.scriptImportContext,
+                                scriptImportRevisionMap: options.scriptImportRevisionMap,
+                                retryOnConflict: true,
+                            }),
+                        );
                         survivorAssetId = assetId;
                         resultMessage = `Behavior "${config.name}" updated (new revision)`;
                     }
                 }
 
                 if (!survivorAssetId) {
-                    const newBehavior = await createBehavior({
-                        assetSource: global.app?.editor?.assetSource,
-                        name: config.name,
-                        code,
-                        config,
-                        aliasId: originalConfigId !== config.name ? originalConfigId : undefined,
-                    });
+                    const newBehavior = await timeImportPhase("behavior", behaviorLabel, "createBehavior", () =>
+                        createBehavior({
+                            assetSource: global.app?.editor?.assetSource,
+                            name: config.name,
+                            code,
+                            config,
+                            aliasId: originalConfigId !== config.name ? originalConfigId : undefined,
+                            deferSceneSync: options.deferBehaviorSceneSync,
+                            scriptImportContext: options.scriptImportContext,
+                            scriptImportRevisionMap: options.scriptImportRevisionMap,
+                        }),
+                    );
                     survivorAssetId = newBehavior.id;
                     resultMessage = `Behavior "${config.name}" imported (${newBehavior.id})`;
                 }
 
-                // OSS de-duplication (on import, per user request). OSS has no
-                // revision history — there is only the latest version — so earlier
-                // imports of the same behavior leave orphan asset records that pile
-                // up in the Behaviors panel (the reported 3× copies). Collapse every
-                // other same-named behavior record down to the survivor we just
-                // imported. Scene objects attach by the logical/alias id, which
-                // resolves to this survivor, so dropping the other records is safe
-                // for attachments. Gated to OSS; integrated keeps server-side history.
-                const {IS_OSS} = await import("../../mode/buildMode");
-                if (IS_OSS) {
-                    const {getOssAssetsForProject, unregisterOssAsset} = await import("@stem/network/api/asset");
+                // De-duplicate behavior imports by name. The local asset store
+                // has only the latest version, so earlier imports of the same
+                // behavior leave orphan records that clutter the Behaviors panel.
+                await timeImportPhase("behavior", behaviorLabel, "dedupeRecords", async () => {
                     const projectId = editor.sceneID;
                     if (projectId) {
                         const configRegistry = editor.behaviorConfigRegistry;
@@ -431,12 +539,12 @@ export async function processImportedFile(
                         }
                         if (dupes.length) {
                             console.info(
-                                `[ScriptImport] OSS dedup: collapsed ${dupes.length} duplicate ` +
+                                `[ScriptImport] dedup: collapsed ${dupes.length} duplicate ` +
                                 `"${config.name}" behavior record(s) into ${survivorAssetId}`,
                             );
                         }
                     }
-                }
+                });
 
                 return {success: true, message: resultMessage};
             }
@@ -538,48 +646,49 @@ export async function processImportedFile(
                 if (file.size === 0) {
                     return {success: false, message: `Model file "${file.name}" is 0 bytes — the file is empty or was not downloaded correctly. Skipping import.`};
                 }
-                const {IS_OSS} = await import("../../mode/buildMode");
-                const [{createModelWithData}, {convertToGlb}, {createLods}, {cleanupInvalidTextures}, {ModelUtils}, {default: Converter}, {DEFAULT_UPLOAD_SETTINGS, THUMBNAIL_SIZE}, {loadModelFromFile, AnimationOnlyModelError}] = await Promise.all([
-                    import("../../model/createModelWithData"),
-                    import("../../model/convertToGlb"),
-                    import("../../model/load-util"),
-                    import("../../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/ModelUpload/utils/cleanupInvalidTextures"),
-                    import("../../utils/ModelUtils"),
-                    import("../../utils/Converter"),
-                    import("../../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/ModelUpload/constants"),
-                    import("../../model/loadModelFromFile"),
-                ]);
                 const modelName = name || file.name.replace(/\.[^.]+$/, "");
+                const [
+                    {createModelWithData},
+                    {convertToGlb},
+                    {cleanupInvalidTextures},
+                    {loadModelFromFile, AnimationOnlyModelError},
+                    {setModelId, setModelRevisionId},
+                ] = await timeImportPhase("model", modelName, "deps", getModelImportDeps);
 
                 // Idempotent: skip re-import if model already exists in scene
-                const existingModel = scene.getObjectByName(modelName);
+                const existingModel = await timeImportPhase("model", modelName, "existing-check", async () => scene.getObjectByName(modelName));
                 if (existingModel) {
                     return {success: true, message: `Model "${modelName}" already in scene, skipping re-import`};
                 }
 
-                // Content-addressed dedup. If an identical source file was already
-                // imported in this batch, reuse that asset and just place a new
-                // scene object — skipping the whole load/convert/texture-bake
-                // pipeline AND avoiding a duplicate multi-MB inline asset.
-                let srcHash: string | undefined;
+                // Batch dedup. If the same resolved source file is imported more
+                // than once, reuse that asset and just place a new scene object —
+                // skipping the whole load/convert/texture-bake pipeline AND
+                // avoiding a duplicate multi-MB inline asset.
+                let modelDedupKey: string | undefined;
+                let sourceFileBuffer: ArrayBuffer | undefined;
                 if (modelAssetDedupCache) {
-                    try {
-                        srcHash = await sha256Hex(await file.arrayBuffer());
-                    } catch {
-                        srcHash = undefined; // crypto unavailable — fall through to a normal import
-                    }
-                    const cached = srcHash ? modelAssetDedupCache.get(srcHash) : undefined;
+                    modelDedupKey = getModelFileDedupKey(file);
+                    const cached = modelAssetDedupCache.get(modelDedupKey);
                     if (cached) {
-                        setAssetRevision(scene, cached.id, cached.headRevisionId);
-                        const {loadModel} = await import("../../model/load-util");
-                        const context = scene.userData?.assetResolutionContext || {};
-                        const object = await loadModel(cached.id, context);
-                        if (name) object.name = name;
-                        editor.addObject(object);
-                        app?.call("objectChanged", null, scene);
+                        await timeImportPhase("model", modelName, "dedup-place", async () => {
+                            setAssetRevision(scene, cached.id, cached.headRevisionId);
+                            const {loadModel} = await import("../../model/load-util");
+                            const context = scene.userData?.assetResolutionContext || {};
+                            const object = await loadModel(cached.id, context);
+                            if (name) object.name = name;
+                            editor.addObject(object);
+                            app?.call("objectChanged", null, scene);
+                        });
                         return {success: true, message: `Model "${modelName}" placed (reused shared asset ${cached.id})`};
                     }
                 }
+
+                await timeImportPhase("model", modelName, "source-buffer", async () => {
+                    sourceFileBuffer = await file.arrayBuffer();
+                }).catch(() => {
+                    sourceFileBuffer = undefined;
+                });
 
                 const abortController = new AbortController();
                 const abortSignal = abortController.signal;
@@ -599,7 +708,11 @@ export async function processImportedFile(
                     // onto raw files, which threw "Can't find end of central
                     // directory" and silently dropped every non-zipped model
                     // from the scene. Detect by magic bytes so both shapes work.
-                    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+                    const head = new Uint8Array(await timeImportPhase("model", modelName, "sniff", async () =>
+                        sourceFileBuffer
+                            ? sourceFileBuffer.slice(0, 4)
+                            : await file.slice(0, 4).arrayBuffer(),
+                    ));
                     const isZipArchive =
                         head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
                     ({
@@ -608,11 +721,14 @@ export async function processImportedFile(
                         rootFile: loadedRootFile,
                         atlasData: loadedAtlas,
                         textureOverrides: loadedTextureOverrides,
-                    } = await loadModelFromFile(
-                        file,
-                        abortSignal,
-                        companionFiles,
-                        isZipArchive ? "application/zip" : "",
+                    } = await timeImportPhase("model", modelName, "loadModelFromFile", () =>
+                        loadModelFromFile(
+                            file,
+                            abortSignal,
+                            companionFiles,
+                            isZipArchive ? "application/zip" : "",
+                            sourceFileBuffer,
+                        ),
                     ));
                 } catch (loadErr) {
                     if (loadErr instanceof AnimationOnlyModelError) {
@@ -622,7 +738,7 @@ export async function processImportedFile(
                 }
 
                 // 2. Fix broken textures (especially FBX)
-                await cleanupInvalidTextures(model);
+                await timeImportPhase("model", modelName, "cleanupInvalidTextures", () => cleanupInvalidTextures(model));
 
                 // 3. Produce the GLB buffer to store.
                 // Fast path: a self-contained GLB source (no atlas, no loose
@@ -637,54 +753,41 @@ export async function processImportedFile(
                 // GLB, so they take the fallback.
                 let sourceGlbBuffer: ArrayBuffer;
                 if (loadedFormat === "glb" && !loadedAtlas && !loadedTextureOverrides && loadedRootFile) {
-                    sourceGlbBuffer = await loadedRootFile.arrayBuffer();
+                    sourceGlbBuffer = await timeImportPhase("model", modelName, "sourceGlbBuffer", async () =>
+                        loadedRootFile === file && sourceFileBuffer
+                            ? sourceFileBuffer
+                            : await loadedRootFile.arrayBuffer(),
+                    );
                 } else {
-                    sourceGlbBuffer = await convertToGlb(model, abortSignal, {});
+                    sourceGlbBuffer = await timeImportPhase("model", modelName, "convertToGlb", () => convertToGlb(model, abortSignal, {}));
                 }
 
-                // 4. Create LODs with meshopt compression + texture compression (best effort).
-                // Skip in OSS: derivatives don't persist (no upload endpoint), and the
-                // compression worker pool can stall when the dev server's worker
-                // graph hits HMR / DataCloneError edge cases.
-                let modelLods: Awaited<ReturnType<typeof createLods>> = [];
-                if (!IS_OSS) {
-                    try {
-                        modelLods = await createLods(sourceGlbBuffer, file.name, DEFAULT_UPLOAD_SETTINGS, abortSignal);
-                    } catch (lodError) {
-                        console.warn("[importHandler] LOD creation failed, continuing without LODs", lodError);
-                    }
-                }
-
-                // 5. Generate thumbnail (skip in OSS — also worker-backed; the editor
-                // surfaces a placeholder gracefully when the derivative is missing).
-                let thumbnailParam: {file: File; width: number; height: number} | undefined;
-                if (!IS_OSS) {
-                    const thumbnailUrl = await ModelUtils.createThumbnailFromModel(model, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
-                    const thumbnailFile = Converter.dataURLtoFile(thumbnailUrl, "thumbnail");
-                    thumbnailParam = {file: thumbnailFile, width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE};
-                }
+                const modelLods: never[] = [];
+                const thumbnailParam = undefined;
 
                 // 6. Upload with LODs and thumbnail
-                const modelBlob = new Blob([sourceGlbBuffer], {type: "model/gltf-binary"});
-                const asset = await createModelWithData({
-                    name: modelName,
-                    blob: modelBlob,
-                    format: ModelFormat.Glb,
-                    contentType: "model/gltf-binary",
-                    assetSource: global.app?.editor?.assetSource,
-                    lods: modelLods,
-                    thumbnail: thumbnailParam,
-                });
-                if (modelAssetDedupCache && srcHash) {
-                    modelAssetDedupCache.set(srcHash, {id: asset.id, headRevisionId: asset.headRevisionId});
+                const asset = await timeImportPhase("model", modelName, "createModelWithData", () =>
+                    createModelWithData({
+                        name: modelName,
+                        blob: sourceGlbBuffer,
+                        format: ModelFormat.Glb,
+                        contentType: "model/gltf-binary",
+                        assetSource: global.app?.editor?.assetSource,
+                        lods: modelLods,
+                        thumbnail: thumbnailParam,
+                    }),
+                );
+                if (modelAssetDedupCache && modelDedupKey) {
+                    modelAssetDedupCache.set(modelDedupKey, {id: asset.id, headRevisionId: asset.headRevisionId});
                 }
-                setAssetRevision(scene, asset.id, asset.headRevisionId);
-                const {loadModel} = await import("../../model/load-util");
-                const context = scene.userData?.assetResolutionContext || {};
-                const object = await loadModel(asset.id, context);
-                if (name) object.name = name;
-                editor.addObject(object);
-                app?.call("objectChanged", null, scene);
+                await timeImportPhase("model", modelName, "placeModel", async () => {
+                    setAssetRevision(scene, asset.id, asset.headRevisionId);
+                    setModelId(model, asset.id);
+                    setModelRevisionId(model, asset.headRevisionId);
+                    if (name) model.name = name;
+                    editor.addObject(model);
+                    app?.call("objectChanged", null, scene);
+                });
                 return {success: true, message: `Model "${modelName}" imported and added to scene (${asset.id})`};
             }
 
@@ -766,7 +869,7 @@ export async function processImportedFile(
                 // registered with the same metadata the editor would attach
                 // when authoring an import asset through the UI.
                 const [{buildNameAwareScriptImportContext, getScriptImportDependencyMap}, {seedScriptDependencyEntry}] = await Promise.all([
-                    import("../../script-runtime/scriptImports"),
+                    import("../../script-runtime/scriptImportCore"),
                     import("../../script-runtime/scriptDependencyCache"),
                 ]);
                 const sceneContext = scene.userData?.assetResolutionContext;

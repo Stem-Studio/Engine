@@ -54,7 +54,6 @@ export const IconsFlexContainer = (props: Props) => {
 
 const SingleIcon = ({item, props}: {item: IList; props: Props}) => {
     const [selected, setSelected] = useState<string[]>([]);
-    const [hovered, setHovered] = useState(false);
     const {
         onSelectItem,
         disableSelection,
@@ -70,9 +69,9 @@ const SingleIcon = ({item, props}: {item: IList; props: Props}) => {
     const currentIsSelected = indexOf !== -1;
     const editor = global.app?.editor;
 
-    const handleDragStart = (e: React.DragEvent<HTMLDivElement>, item: IList) => {
+    const handleDragStart = (e: React.DragEvent<HTMLButtonElement>, item: IList) => {
         if (draggable && onDragStart) {
-            onDragStart(e, item);
+            onDragStart(e as unknown as React.DragEvent<HTMLDivElement>, item);
         }
     };
 
@@ -117,83 +116,83 @@ const SingleIcon = ({item, props}: {item: IList; props: Props}) => {
 
     const content =
         <SingleIconContainer
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            onClick={() => !disabled && handleClick(item)}
-            draggable={!!draggable && !disabled}
-            onDragStart={e => handleDragStart(e, item)}
             $disabled={disabled}
             data-testid={`icon-item-${(item.name ?? item.text ?? "").toLowerCase().replace(/\s+/g, "-")}`}
         >
-            <IconWrapper>
-                {icon && 
-                    <IconImg
-                        className={`${!disableSelection && currentIsSelected && "icon-img-selected"} icon-img`}
-                        src={icon}
-                        alt=""
-                    />
-                }
-                {revisionItemCondition && item.headRevisionId !== item.revisionId && <OutOfDateBadge />}
-                {hovered &&
-                    <ItemMenu>
-                        {revisionItemCondition &&
-                            <Tooltip text="Version History"
-                                height="auto"
+            <PrimaryItemButton
+                onClick={() => !disabled && handleClick(item)}
+                draggable={!!draggable && !disabled}
+                onDragStart={e => handleDragStart(e, item)}
+                disabled={disabled}
+                aria-label={name || text}
+                aria-pressed={!disableSelection ? currentIsSelected : undefined}
+            >
+                <IconWrapper>
+                    {icon &&
+                        <IconImg
+                            className={`${!disableSelection && currentIsSelected && "icon-img-selected"} icon-img`}
+                            src={icon}
+                            alt=""
+                        />
+                    }
+                    {revisionItemCondition && item.headRevisionId !== item.revisionId && <OutOfDateBadge />}
+                </IconWrapper>
+                <MainText
+                    className={`${!disableSelection && currentIsSelected && "icon-text-selected"} icon-text`}
+                    dangerouslySetInnerHTML={{__html: text}}
+                />
+            </PrimaryItemButton>
+            {(onDelete || onEdit || revisionItemCondition) &&
+                <ItemMenu className="item-actions"
+                    aria-label={`${name || text} actions`}
+                >
+                    {revisionItemCondition &&
+                        <Tooltip text="Version History"
+                            height="auto"
+                        >
+                            <Icon className="reset-css"
+                                aria-label={`Version history for ${name}`}
+                                onClick={() => openRevisionPanel(item.id!, item.revisionId!)}
                             >
-                                <Icon className="reset-css"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        openRevisionPanel(item.id!, item.revisionId!);
-                                    }}
-                                >
-                                    <img className="revisionsIcon"
-                                        src={historyIcon}
-                                        alt="see revisions"
-                                    />
-                                </Icon>
-                            </Tooltip>
-                        }
-                        {onDelete &&
-                            <Tooltip text="Delete"
-                                height="auto"
+                                <img className="revisionsIcon"
+                                    src={historyIcon}
+                                    alt=""
+                                />
+                            </Icon>
+                        </Tooltip>
+                    }
+                    {onDelete &&
+                        <Tooltip text="Delete"
+                            height="auto"
+                        >
+                            <Icon className="reset-css"
+                                aria-label={`Delete ${name}`}
+                                onClick={() => onDelete({id: item.id!, name: item.name})}
                             >
-                                <Icon className="reset-css"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        onDelete({id: item.id!, name: item.name});
-                                    }}
-                                >
-                                    <img className="deleteIcon"
-                                        src={deleteIcon}
-                                        alt="delete"
-                                    />
-                                </Icon>
-                            </Tooltip>
-                        }
-                        {onEdit &&
-                            <Tooltip text="Edit"
-                                height="auto"
+                                <img className="deleteIcon"
+                                    src={deleteIcon}
+                                    alt=""
+                                />
+                            </Icon>
+                        </Tooltip>
+                    }
+                    {onEdit &&
+                        <Tooltip text="Edit"
+                            height="auto"
+                        >
+                            <Icon className="reset-css"
+                                aria-label={`Edit ${name}`}
+                                onClick={() => onEdit({id: item.id!, name: item.name})}
                             >
-                                <Icon className="reset-css"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        onEdit({id: item.id!, name: item.name});
-                                    }}
-                                >
-                                    <img className="editIcon"
-                                        src={editIcon}
-                                        alt="edit"
-                                    />
-                                </Icon>
-                            </Tooltip>
-                        }
-                    </ItemMenu>
-                }
-            </IconWrapper>
-            <MainText
-                className={`${!disableSelection && currentIsSelected && "icon-text-selected"} icon-text`}
-                dangerouslySetInnerHTML={{__html: text}}
-            />
+                                <img className="editIcon"
+                                    src={editIcon}
+                                    alt=""
+                                />
+                            </Icon>
+                        </Tooltip>
+                    }
+                </ItemMenu>
+            }
         </SingleIconContainer>
     ;
 
@@ -205,22 +204,46 @@ const SingleIcon = ({item, props}: {item: IList; props: Props}) => {
 };
 
 const SingleIconContainer = styled.div<{$disabled?: boolean}>`
+    position: relative;
+    width: 108px;
+    opacity: ${({$disabled}) => $disabled ? 0.5 : 1};
+
+    &:hover .item-actions,
+    &:focus-within .item-actions {
+        opacity: 1;
+        pointer-events: auto;
+    }
+`;
+
+const PrimaryItemButton = styled.button`
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     row-gap: 8px;
-    cursor: ${({$disabled}) => $disabled ? "not-allowed" : "pointer"};
+    cursor: pointer;
     width: 108px;
-    opacity: ${({$disabled}) => $disabled ? 0.5 : 1};
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
 
     &:hover {
         .icon-text {
-            color: ${({$disabled}) => $disabled ? "var(--theme-font-unselected-color)" : "var(--theme-font-main-selected-color)"};
+            color: var(--theme-font-main-selected-color);
         }
         .icon-img {
-            filter: ${({$disabled}) => $disabled ? "none" : "unset"};
+            filter: unset;
         }
+    }
+
+    &:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 3px;
+    }
+
+    &:disabled {
+        cursor: not-allowed;
     }
 `;
 
@@ -254,10 +277,14 @@ const ItemMenu = styled.div`
     font-size: var(--theme-font-size-s);
     padding: 6px;
     border-radius: 8px;
+    opacity: 0;
+    pointer-events: none;
 `;
 
 const Icon = styled.button`
-    height: 13px;
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
     ${flexCenter};
     img {
         width: auto;

@@ -1,5 +1,6 @@
 import {Mesh} from "three";
 
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {BehaviorBase} from "../../Behavior";
 import GameManager from "../../game/GameManager";
 
@@ -30,7 +31,7 @@ class SkyboxBehavior extends BehaviorBase {
     }
 
     private makeTransparent(): void {
-        this.target.traverse(child => {
+        traverseObjectDepthFirst(this.target, child => {
             // Disable shadow casting/receiving on all skybox children
             child.castShadow = false;
             child.receiveShadow = false;

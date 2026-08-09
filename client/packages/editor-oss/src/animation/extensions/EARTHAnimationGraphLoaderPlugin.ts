@@ -1,5 +1,5 @@
 import {AnimationClip} from "three";
-import {GLTFLoaderPlugin, GLTFParser} from "three/examples/jsm/loaders/GLTFLoader.js";
+import {GLTFLoaderPlugin, GLTFParser} from "three/addons/loaders/GLTFLoader.js";
 
 import {EARTHAnimationGraphExtension, EARTHAnimationGraphExtensionData} from "./EARTH_animation_graph";
 import {AnimationGraph} from "../AnimationGraph";

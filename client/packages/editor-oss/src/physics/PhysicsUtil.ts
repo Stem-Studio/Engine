@@ -1,24 +1,32 @@
 import {
+    Box3,
     BufferAttribute,
     BufferGeometry,
     Matrix4,
     Mesh,
     Object3D,
     Quaternion,
+    type QuaternionLike,
     Scene,
     Vector3,
+    type Vector3Like,
 } from "three";
-import {SimplifyModifier} from "three/examples/jsm/modifiers/SimplifyModifier.js";
-import {QuaternionLike, Vector3Like} from "three/webgpu";
+import {SimplifyModifier} from "three/addons/modifiers/SimplifyModifier.js";
 
 import {BodyShapeType, BoxShape, CapsuleShape, COLLISION_MAP, CollisionFlag, CommonData, ConcaveHullShape, ConvexHullShape, IPhysics, SphereShape} from "./common/types";
-import {CollisionType, normalizeCType, PhysicsConfig} from "./common/physicsConfig";
+import {CollisionType, isConcaveHullEffectiveBodyTypeSupported, normalizeCType, PhysicsConfig, resolveEffectiveCollisionType} from "./common/physicsConfig";
 import {GeometryExtractor} from "./GeometryExtractor";
 import {HullCompute} from "./hull/HullCompute";
 import {PhysicsShape} from "@stem/editor-oss/behaviors/state/IMultiplayerState";
 import {getModelId, getModelRevisionId, isModelAssetInstance} from "@stem/editor-oss/model/userData";
 import BoundingBoxUtil from "@stem/editor-oss/utils/BoundingBoxUtil";
-import {TransformUtils} from "@stem/editor-oss/utils/TransformUtils";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
+import {
+    traverseObjectDepthFirst,
+    traverseObjectVisibleDepthFirst,
+    updateObjectMatrixWorldDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
+import TransformUtils from "@stem/editor-oss/utils/TransformUtils";
 import {getGeometryComputePool} from "./worker/GeometryComputePool";
 
 interface BoxShapeWithOffset extends BoxShape {
@@ -59,8 +67,41 @@ const roundForKey = (n: number): string => n.toFixed(4);
 const formatVec = (v: { x: number; y: number; z: number }): string =>
     `${roundForKey(v.x)},${roundForKey(v.y)},${roundForKey(v.z)}`;
 
+const shapeKeyWorldPosition = new Vector3();
+const shapeKeyWorldQuaternion = new Quaternion();
+const shapeKeyWorldScale = new Vector3();
+const IDENTITY_SHAPE_SCALE = { x: 1, y: 1, z: 1 } as const;
+
 const SHAREABLE_ANY_SCALE = new Set<BodyShapeType>([BodyShapeType.CONCAVE_HULL]);
 const SHAREABLE_SAME_SCALE = new Set<BodyShapeType>([BodyShapeType.CONVEX_HULL]);
+
+/**
+ * Runtime behavior scripts may construct physics configs directly instead of
+ * passing through the editor serializer. Keep that boundary compatible with
+ * the same friendly/legacy aliases accepted by `getPhysics`, while producing
+ * only the retained Ammo/Rapier body-shape identifiers.
+ */
+const RUNTIME_BODY_SHAPE_ALIASES: Readonly<Record<string, BodyShapeType>> = {
+    box: BodyShapeType.BOX,
+    btboxshape: BodyShapeType.BOX,
+    sphere: BodyShapeType.SPHERE,
+    btsphereshape: BodyShapeType.SPHERE,
+    capsule: BodyShapeType.CAPSULE,
+    cylinder: BodyShapeType.CAPSULE,
+    btcapsuleshape: BodyShapeType.CAPSULE,
+    convexhull: BodyShapeType.CONVEX_HULL,
+    btconvexhullshape: BodyShapeType.CONVEX_HULL,
+    concavehull: BodyShapeType.CONCAVE_HULL,
+    trimesh: BodyShapeType.CONCAVE_HULL,
+    btconcavehullshape: BodyShapeType.CONCAVE_HULL,
+};
+
+const describeUnsupportedShape = (shape: unknown): string => {
+    if (shape === undefined) return "<missing>";
+    if (shape === null) return "<null>";
+    if (typeof shape === "string") return JSON.stringify(shape);
+    return String(shape);
+};
 
 /**
  * Decide whether a shared collision shape is appropriate for `object`, and
@@ -116,18 +157,12 @@ export const getModelAssetShapeKey = (
 
     if (convexShareable) {
         object.updateWorldMatrix(true, false);
-        const worldScale = new Vector3();
-        object.matrixWorld.decompose(new Vector3(), new Quaternion(), worldScale);
-        key += `:ws=${formatVec(worldScale)}`;
+        object.matrixWorld.decompose(shapeKeyWorldPosition, shapeKeyWorldQuaternion, shapeKeyWorldScale);
+        key += `:ws=${formatVec(shapeKeyWorldScale)}`;
     }
 
     return key;
 };
-
-interface ObjectGeometryData {
-    vertices: Vector3[];
-    indexes: number[];
-}
 
 /* 
 the whole idea of physics shape calculation is:
@@ -143,6 +178,7 @@ export class PhysicsUtil {
     private static tmpQuaternionA = new Quaternion();
     private static tmpMatrixA = new Matrix4();
     private static tmpMatrixB = new Matrix4();
+    private static tmpBoxA = new Box3();
 
     public static setPhysicsConfig(object: Object3D, config: PhysicsConfig) {
         object.userData.physics = config;
@@ -160,9 +196,16 @@ export class PhysicsUtil {
         return defaultShape;
     }
 
+    public static clonePhysicsConfig(config: PhysicsConfig | undefined): PhysicsConfig | undefined {
+        if (!config) {
+            return undefined;
+        }
+
+        return cloneJsonCompatible(config);
+    }
+
     public static copyPhysicsConfig(from: Object3D, to: Object3D) {
-        // TODO: should we do an actual copy here instead of an assignment?
-        to.userData.physics = PhysicsUtil.getPhysicsConfig(from);
+        to.userData.physics = PhysicsUtil.clonePhysicsConfig(PhysicsUtil.getPhysicsConfig(from));
     }
 
     public static updateShapeOffsetAndScale(object: Object3D) {
@@ -175,43 +218,44 @@ export class PhysicsUtil {
             return;
         }
 
-        const { shape, shapeExcludesHiddenObjects } = physicsConfig;
+        const { shape: configuredShape, shapeExcludesHiddenObjects } = physicsConfig;
+        const shape = PhysicsUtil.toBodyShapeType(configuredShape);
         if (!shape) {
+            console.warn(
+                `PhysicsUtil: set physics data failed, unsupported shape ${describeUnsupportedShape(configuredShape)} for object "${object.name || object.uuid}"`,
+            );
             return;
         }
         const excludeHiddenObjects = shapeExcludesHiddenObjects ?? false;
         switch (shape) {
-            case String(BodyShapeType.BOX):
+            case BodyShapeType.BOX:
                 {
                     const box = PhysicsUtil.getShapeData(object, BodyShapeType.BOX, excludeHiddenObjects);
                     physicsConfig.anchorOffset = box.center;
                 }
                 break;
-            case String(BodyShapeType.CAPSULE):
+            case BodyShapeType.CAPSULE:
                 {
                     const capsule = PhysicsUtil.getShapeData(object, BodyShapeType.CAPSULE, excludeHiddenObjects);
                     physicsConfig.anchorOffset = capsule.center;
                 }
                 break;
-            case String(BodyShapeType.SPHERE):
+            case BodyShapeType.SPHERE:
                 {
                     // Note that currently sphere shapes are centered around the object's
                     // origin and have no anchorOffset.
                     physicsConfig.anchorOffset = { x: 0, y: 0, z: 0 };
                 }
                 break;
-            case String(BodyShapeType.CONCAVE_HULL):
+            case BodyShapeType.CONCAVE_HULL:
                 // Anchor for concave is not needed because it's calculated
                 // based on the vertices.
                 physicsConfig.anchorOffset = { x: 0, y: 0, z: 0 };
                 break;
-            case String(BodyShapeType.CONVEX_HULL):
+            case BodyShapeType.CONVEX_HULL:
                 // Anchor for convex is not needed because it's calculated
                 // based on the vertices.
                 physicsConfig.anchorOffset = { x: 0, y: 0, z: 0 };
-                break;
-            default:
-                console.warn("PhysicsUtil: set physics data failed, shape not supported: "+object.name, shape);
                 break;
         }
 
@@ -238,11 +282,11 @@ export class PhysicsUtil {
     private static getBoxData(object: Object3D, excludeHiddenObjects?: boolean): BoxShapeWithOffset {
         const physicsConfig = PhysicsUtil.getPhysicsConfig(object);
         const userShapeScale = physicsConfig?.userShapeScale || { x: 1, y: 1, z: 1 };
-        const box = BoundingBoxUtil.getBoxWithoutTransform(object, excludeHiddenObjects);
+        const box = BoundingBoxUtil.getBoxWithoutTransform(object, excludeHiddenObjects, PhysicsUtil.tmpBoxA);
         //validate the box
         if (BoundingBoxUtil.isInfiniteBox(box)) {
-            box.max = new Vector3(0, 0, 0);
-            box.min = new Vector3(0, 0, 0);
+            box.min.set(0, 0, 0);
+            box.max.set(0, 0, 0);
             console.warn("PhysicsUtil: get box data failed, bounding box is infinite: ", object);
         }
         box.getCenter(PhysicsUtil.tmpVectorA);
@@ -405,11 +449,29 @@ export class PhysicsUtil {
             return;
         }
 
-        const shape = PhysicsUtil.toBodyShapeType(physicsConfig.shape);
+        const configuredShape = physicsConfig.shape;
+        const shape = PhysicsUtil.toBodyShapeType(configuredShape);
         if (!PhysicsUtil.isSupportedShape(shape)) {
             // Heightfields enter physics via `addTerrain`, not this function.
             // Anything else is genuinely unsupported.
-            console.warn("PhysicsUtil: addObjectShapeToPhysics: unsupported shape", shape);
+            console.warn(
+                `PhysicsUtil: addObjectShapeToPhysics: unsupported shape ${describeUnsupportedShape(configuredShape)} for object "${object.name || object.uuid}"`,
+            );
+            return;
+        }
+
+        // Triangle-mesh (concave) colliders are static-world geometry in the
+        // shared Ammo/Rapier contract. Reject invalid body types before any
+        // cache lookup, hull extraction, worker dispatch, or backend call so
+        // both local and worker paths fail consistently and cheaply.
+        if (shape === BodyShapeType.CONCAVE_HULL && !isConcaveHullEffectiveBodyTypeSupported(physicsConfig.ctype, physicsConfig.mass)) {
+            const bodyType = resolveEffectiveCollisionType(physicsConfig.ctype, physicsConfig.mass);
+            console.warn(
+                `PhysicsUtil: rejected concave hull collider for object "${object.name || object.uuid}" ` +
+                `(body type "${bodyType}"). Ammo/Rapier support concave hulls only for Static bodies; ` +
+                `use ctype "Static" with mass <= 0 for fixed geometry, a ConvexHull for dynamic/kinematic bodies, ` +
+                `or compound primitive colliders.`,
+            );
             return;
         }
 
@@ -551,7 +613,8 @@ export class PhysicsUtil {
      * @param excludeHiddenObjects skip hidden meshes during extraction
      * @param forceVisibleDuringExtract temporarily mark `geometrySource` visible
      */
-    private static isSupportedShape(shape: BodyShapeType): shape is SupportedShapeType {
+    private static isSupportedShape(shape: BodyShapeType | undefined): shape is SupportedShapeType {
+        if (shape === undefined) return false;
         return PhysicsUtil.isFastShape(shape) || PhysicsUtil.isHullShape(shape);
     }
 
@@ -648,15 +711,13 @@ export class PhysicsUtil {
                 userShapeScale,
             );
             const pool = getGeometryComputePool();
-            return pool.computeConcaveHull(geometries, { x: 1, y: 1, z: 1 }).then((result) => ({
+            return pool.computeConcaveHull(geometries, IDENTITY_SHAPE_SCALE).then((result) => ({
                 vertices: result.vertices,
                 indexes: result.indices,
             }));
         } else {
             const simplifiedGeometry = this.getSimplifiedGeometry(object, 0, excludeHiddenObjects);
-            const physicsConfig = PhysicsUtil.getPhysicsConfig(object);
-            const userShapeScale = physicsConfig?.userShapeScale || { x: 1, y: 1, z: 1 };
-            const result = HullCompute.concaveHull(simplifiedGeometry, userShapeScale);
+            const result = HullCompute.concaveHull(simplifiedGeometry, IDENTITY_SHAPE_SCALE);
             return { vertices: result.verticesArray, indexes: result.indicesArray };
         }
     }
@@ -684,12 +745,10 @@ export class PhysicsUtil {
                 userShapeScale,
             );
             const pool = getGeometryComputePool();
-            return pool.computeConvexHull(geometries, simplifyFactor, { x: 1, y: 1, z: 1 });
+            return pool.computeConvexHull(geometries, simplifyFactor, IDENTITY_SHAPE_SCALE);
         } else {
             const simplifiedGeometry = this.getSimplifiedGeometry(object, simplifyFactor, excludeHiddenObjects);
-            const physicsConfig = PhysicsUtil.getPhysicsConfig(object);
-            const userShapeScale = physicsConfig?.userShapeScale || { x: 1, y: 1, z: 1 };
-            return HullCompute.convexHull(simplifiedGeometry, userShapeScale);
+            return HullCompute.convexHull(simplifiedGeometry, IDENTITY_SHAPE_SCALE);
         }
     }
 
@@ -720,37 +779,6 @@ export class PhysicsUtil {
         return this.computeConcaveHull(object, excludeHiddenObjects ?? false, true);
     }
 
-    private static getObjectGeometryDataSimplified(
-        object: Object3D,
-        simplifyFactor: number = 0.8,
-        excludeHiddenObjects?: boolean,
-    ): ObjectGeometryData[] {
-        const simplifiedGeometry = this.getSimplifiedGeometry(object, simplifyFactor, excludeHiddenObjects);
-        const data: ObjectGeometryData[] = [];
-
-        simplifiedGeometry.forEach(geometry => {
-            const positionAttribute = geometry.getAttribute("position");
-            const currentPoints: Vector3[] = [];
-            const currentIndices: number[] = [];
-
-            for (let i = 0; i < positionAttribute.count; i++) {
-                currentPoints.push(
-                    new Vector3(positionAttribute.getX(i), positionAttribute.getY(i), positionAttribute.getZ(i)),
-                );
-            }
-
-            const indexAttribute = geometry.getIndex();
-            if (indexAttribute) {
-                for (let i = 0; i < indexAttribute.count; i++) {
-                    currentIndices.push(indexAttribute.getX(i));
-                }
-            }
-            data.push({vertices: currentPoints, indexes: currentIndices});
-        });
-
-        return data;
-    }
-
     public static getSimplifiedGeometry(
         object: Object3D,
         simplifyFactor: number = 0.8,
@@ -763,82 +791,91 @@ export class PhysicsUtil {
 
         const physicsConfig = PhysicsUtil.getPhysicsConfig(object);
         const userShapeScale = physicsConfig?.userShapeScale || { x: 1, y: 1, z: 1 };
-        const prevPosition = object.position.clone();
-        const prevRotation = object.rotation.clone();
-        const prevScale = object.scale.clone();
-        object.position.set(0, 0, 0);
-        object.rotation.set(0, 0, 0);
-        object.scale.multiply(userShapeScale);
-
-        object.updateMatrixWorld(true);
-
         const simplifiedGeometry: Array<BufferGeometry> = [];
         const simplifyModifier = new SimplifyModifier();
+        const prevPositionX = object.position.x;
+        const prevPositionY = object.position.y;
+        const prevPositionZ = object.position.z;
+        const prevRotationX = object.rotation.x;
+        const prevRotationY = object.rotation.y;
+        const prevRotationZ = object.rotation.z;
+        const prevRotationOrder = object.rotation.order;
+        const prevScaleX = object.scale.x;
+        const prevScaleY = object.scale.y;
+        const prevScaleZ = object.scale.z;
 
-        const traverseFn = (child: Object3D) => {
-            if ((child as Mesh).isMesh && (child as Mesh).geometry) {
-                const mesh = child as Mesh;
-                const geometry = mesh.geometry.clone();
+        try {
+            object.position.set(0, 0, 0);
+            object.rotation.set(0, 0, 0);
+            object.scale.multiply(userShapeScale);
 
-                const positionAttribute = geometry.getAttribute("position");
-                
-                // Skip if no position attribute or no data
-                if (!positionAttribute || !positionAttribute.array || positionAttribute.count === 0) {
-                    return;
-                }
-                
-                let newPositionAttribute = positionAttribute;
-                
-                // if array is not Float32Array, convert it
-                if (!(positionAttribute.array as unknown instanceof Float32Array)) {
-                    newPositionAttribute = new BufferAttribute(
-                        new Float32Array(positionAttribute.array.length),
-                        positionAttribute.itemSize,
-                    );
-                }
+            updateObjectMatrixWorldDepthFirst(object, true);
 
-                const vertex = new Vector3();
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    mesh.getVertexPosition(i, vertex);
-                    vertex.applyMatrix4(mesh.matrixWorld);
-                    newPositionAttribute.setXYZ(i, vertex.x, vertex.y, vertex.z);
-                }
+            const vertex = new Vector3();
+            const traverseFn = (child: Object3D) => {
+                if ((child as Mesh).isMesh && (child as Mesh).geometry) {
+                    const mesh = child as Mesh;
+                    const geometry = mesh.geometry.clone();
 
-                geometry.setAttribute("position", newPositionAttribute);
+                    const positionAttribute = geometry.getAttribute("position");
 
-                let newGeometry = geometry;
+                    // Skip if no position attribute or no data
+                    if (!positionAttribute || !positionAttribute.array || positionAttribute.count === 0) {
+                        return;
+                    }
 
-                if (simplifyFactor > 0) {
-                    try {
-                        newGeometry = simplifyModifier.modify(
-                            geometry,
-                            Math.floor(positionAttribute.count * simplifyFactor),
+                    let newPositionAttribute = positionAttribute;
+
+                    // if array is not Float32Array, convert it
+                    if (!(positionAttribute.array as unknown instanceof Float32Array)) {
+                        newPositionAttribute = new BufferAttribute(
+                            new Float32Array(positionAttribute.array.length),
+                            positionAttribute.itemSize,
                         );
-                    } catch {
-                        //error here but do nothing, just keep the original vertices
-                    } finally {
-                        if (newGeometry.getAttribute("position").count === 0) {
-                            newGeometry = geometry;
+                    }
+
+                    for (let i = 0; i < positionAttribute.count; i++) {
+                        mesh.getVertexPosition(i, vertex);
+                        vertex.applyMatrix4(mesh.matrixWorld);
+                        newPositionAttribute.setXYZ(i, vertex.x, vertex.y, vertex.z);
+                    }
+
+                    geometry.setAttribute("position", newPositionAttribute);
+
+                    let newGeometry = geometry;
+
+                    if (simplifyFactor > 0) {
+                        try {
+                            newGeometry = simplifyModifier.modify(
+                                geometry,
+                                Math.floor(positionAttribute.count * simplifyFactor),
+                            );
+                        } catch {
+                            //error here but do nothing, just keep the original vertices
+                        } finally {
+                            if (newGeometry.getAttribute("position").count === 0) {
+                                newGeometry = geometry;
+                            }
                         }
                     }
+
+                    simplifiedGeometry.push(newGeometry);
                 }
+            };
 
-                simplifiedGeometry.push(newGeometry);
+            if (excludeHiddenObjects) {
+                traverseObjectVisibleDepthFirst(object, traverseFn);
+            } else {
+                traverseObjectDepthFirst(object, traverseFn);
             }
-        };
+        } finally {
+            object.position.set(prevPositionX, prevPositionY, prevPositionZ);
+            object.rotation.set(prevRotationX, prevRotationY, prevRotationZ, prevRotationOrder);
+            object.scale.set(prevScaleX, prevScaleY, prevScaleZ);
 
-        if (excludeHiddenObjects) {
-            object.traverseVisible(traverseFn);
-        } else {
-            object.traverse(traverseFn);
-        }
-
-        object.position.copy(prevPosition);
-        object.rotation.copy(prevRotation);
-        object.scale.copy(prevScale);
-
-        if (parent) {
-            object.parent = parent;
+            if (parent) {
+                object.parent = parent;
+            }
         }
 
         return simplifiedGeometry;
@@ -1008,6 +1045,8 @@ export class PhysicsUtil {
             spinningFriction: physicsConfig.spinningFriction,
             contactStiffness: physicsConfig.contactStiffness,
             contactDamping: physicsConfig.contactDamping,
+            ccd: physicsConfig.ccd === true,
+            allowSleep: physicsConfig.allowSleep !== false,
             rotationLock: physicsConfig.rotationLock,
             //damping: physicsConfig.damping,
         };
@@ -1019,18 +1058,8 @@ export class PhysicsUtil {
      * @param shape - The PhysicsConfig shape type
      * @returns The corresponding BodyShapeType
      */
-    public static toBodyShapeType(shape: PhysicsConfig["shape"]): BodyShapeType {
-        switch (shape) {
-            case "btBoxShape":
-                return BodyShapeType.BOX;
-            case "btCapsuleShape":
-                return BodyShapeType.CAPSULE;
-            case "btSphereShape":
-                return BodyShapeType.SPHERE;
-            case "btConcaveHullShape":
-                return BodyShapeType.CONCAVE_HULL;
-            case "btConvexHullShape":
-                return BodyShapeType.CONVEX_HULL;
-        }
+    public static toBodyShapeType(shape: unknown): BodyShapeType | undefined {
+        if (typeof shape !== "string") return undefined;
+        return RUNTIME_BODY_SHAPE_ALIASES[shape.trim().toLowerCase()];
     }
 }

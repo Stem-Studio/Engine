@@ -164,6 +164,16 @@ const makeSceneData = () => {
     };
 };
 
+const makeDeepObjectChain = (depth = 12_000): {root: Record<string, any>; leaf: Record<string, any>} => {
+    const root: Record<string, any> = {};
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        cursor.next = {};
+        cursor = cursor.next;
+    }
+    return {root, leaf: cursor};
+};
+
 // ---------------------------------------------------------------------------
 
 describe('importAssets', () => {
@@ -545,6 +555,47 @@ describe('importAssets', () => {
             const items = objectWithArrayBehavior.userData.behaviors[0]!.attributesData.arrayAttr;
             expect(items[0]!.ref).toEqual({ assetId: 'newA1', revisionId: 'newRev1' });
             expect(items[1]!.ref).toEqual({ assetId: 'newA1', revisionId: 'newRev1' });
+        });
+
+        it('should rewrite deeply nested behavior asset references without recursive traversal', async () => {
+            setupSuccessParse();
+            const {root, leaf} = makeDeepObjectChain();
+            leaf.ref = {assetId: 'a1', revisionId: 'rev1'};
+            const objectWithDeepBehavior = {
+                metadata: { generator: 'Object3DSerializer' },
+                userData: {
+                    behaviors: [{
+                        id: 'a3',
+                        attributesData: {
+                            deepAttr: root,
+                        },
+                    }],
+                },
+            };
+            const { sceneDependencies, sceneData } = makeSceneData();
+            sceneData.push(objectWithDeepBehavior);
+
+            await importAssets(sceneData, sceneDependencies);
+
+            expect(leaf.ref).toEqual({ assetId: 'newA1', revisionId: 'newRev1' });
+        });
+    });
+
+    describe('material asset reference updates', () => {
+        it('should rewrite deeply nested material asset IDs without recursive traversal', async () => {
+            setupSuccessParse();
+            const {root, leaf} = makeDeepObjectChain();
+            leaf.map = 'a1';
+            const objectWithDeepMaterial = {
+                metadata: { generator: 'Object3DSerializer' },
+                material: root,
+            };
+            const { sceneDependencies, sceneData } = makeSceneData();
+            sceneData.push(objectWithDeepMaterial);
+
+            await importAssets(sceneData, sceneDependencies);
+
+            expect(leaf.map).toBe('newA1');
         });
     });
 
@@ -980,7 +1031,7 @@ describe('validateImportJob', () => {
 
         expect(result).toContain('Status: failed');
         expect(result).toContain('server failed to download');
-        expect(result).toContain('belongs to a user who is not present in the target environment');
+        expect(result).toContain('source project cannot be resolved');
         expect(result).toContain('Hint: Export the stem from the source environment');
     });
 

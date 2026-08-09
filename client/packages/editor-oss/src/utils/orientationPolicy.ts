@@ -9,7 +9,16 @@ export type OrientationPolicy =
     | "requirePortrait"
     | "requireLandscape";
 
-export const DEFAULT_ORIENTATION_POLICY: OrientationPolicy = "any";
+/**
+ * Playground's supported mobile workspace is landscape-only. Keep the
+ * historical values in the type so old local scenes still deserialize, but
+ * normalize every value at the runtime boundary instead of allowing a stale
+ * scene setting to reopen the unsupported portrait path.
+ */
+export const DEFAULT_ORIENTATION_POLICY: OrientationPolicy = "requireLandscape";
+
+export const normalizeOrientationPolicy = (_policy: unknown): OrientationPolicy =>
+    "requireLandscape";
 
 export const getCurrentDeviceOrientation = (): DeviceOrientation => {
     if (typeof window === "undefined") return "landscape";
@@ -17,24 +26,14 @@ export const getCurrentDeviceOrientation = (): DeviceOrientation => {
 };
 
 export const getOrientationTarget = (policy: OrientationPolicy): DeviceOrientation | null => {
-    switch (policy) {
-        case "preferPortrait":
-        case "requirePortrait":
-            return "portrait";
-        case "preferLandscape":
-        case "requireLandscape":
-            return "landscape";
-        case "any":
-        default:
-            return null;
-    }
+    return normalizeOrientationPolicy(policy) === "requireLandscape" ? "landscape" : null;
 };
 
 export const isOrientationRequired = (policy: OrientationPolicy): boolean =>
-    policy === "requirePortrait" || policy === "requireLandscape";
+    normalizeOrientationPolicy(policy) === "requireLandscape";
 
 export const shouldApplyOrientationPolicy = (policy: OrientationPolicy): boolean =>
-    policy !== "any" && DetectDevice.isMobile();
+    normalizeOrientationPolicy(policy) !== "any" && DetectDevice.isMobile();
 
 export const doesOrientationMatchPolicy = (
     policy: OrientationPolicy,

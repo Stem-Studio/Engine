@@ -27,13 +27,18 @@ export type AssetSourceQueryOptions = {
     includeThumbnails?: boolean;
 };
 
+export type CreateAssetInSourceParams = CreateAssetWithDataParams & {
+    /** Update dependency context now but let a caller-managed batch emit objectChanged later. */
+    deferSceneSync?: boolean;
+};
+
 export interface AssetSource {
     readonly kind: "scene" | "stem";
     readonly id: string;
     getAssets(options?: AssetSourceQueryOptions): Promise<AssetSourceResponse>;
     addDependencies(dependencies: Record<string, string>): Promise<void>;
     removeDependencies(assetIds: string[]): Promise<void>;
-    createAsset(params: CreateAssetWithDataParams): Promise<Asset>;
+    createAsset(params: CreateAssetInSourceParams): Promise<Asset>;
     createAssetRevision(params: CreateAssetRevisionWithDataParams): Promise<AssetRevision>;
 }
 
@@ -72,13 +77,16 @@ export class SceneAssetSource implements AssetSource {
         }
     }
 
-    async createAsset(params: CreateAssetWithDataParams): Promise<Asset> {
-        const asset = await rawCreateSceneAssetWithData({...params, sceneId: this.id});
+    async createAsset(params: CreateAssetInSourceParams): Promise<Asset> {
+        const {deferSceneSync, ...assetParams} = params;
+        const asset = await rawCreateSceneAssetWithData({...assetParams, sceneId: this.id});
 
         const scene = global.app?.scene;
         if (scene) {
             setAssetRevisionOnObject(scene, asset.id, asset.headRevisionId);
-            global.app?.call("objectChanged", null, scene);
+            if (!deferSceneSync) {
+                global.app?.call("objectChanged", null, scene);
+            }
         }
 
         return asset;

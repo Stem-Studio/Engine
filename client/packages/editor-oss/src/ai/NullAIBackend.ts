@@ -16,7 +16,7 @@ const PROVIDERS: AIProvider[] = [
  * responses without performing any network calls. Used for:
  *
  *   - **Tests** — drop-in stub via `setAIBackend(new NullAIBackend())`.
- *   - **OSS without an AI server** — when the user hasn't booted the
+ *   - **Local editor without an AI server** — when the user hasn't booted the
  *     ai-server (or doesn't want to), the editor still loads and AI panels
  *     show a "configure a key / start the AI server" CTA instead of throwing
  *     network errors on every request.

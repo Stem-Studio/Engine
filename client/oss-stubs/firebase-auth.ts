@@ -1,9 +1,8 @@
 // OSS stub for `firebase/auth`. See firebase-app.ts for the rationale.
 //
-// Types are deliberately permissive (`any`) so legacy editor-oss code paths
-// that read `auth.currentUser`, `user.uid`, `user.getIdToken()` etc. still
-// typecheck. None of these property accesses execute in OSS — the runtime
-// IS_OSS gates short-circuit before reaching them.
+// Types are deliberately permissive (`any`) so compatibility code paths that
+// read `auth.currentUser`, `user.uid`, `user.getIdToken()` etc. still
+// typecheck. Auth calls throw because this repository does not ship Firebase.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const unreachable = (name: string): never => {

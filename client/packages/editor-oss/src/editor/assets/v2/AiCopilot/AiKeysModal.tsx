@@ -7,8 +7,8 @@ import {
     getCopilotModelSelectionSync,
     resolveCopilotChatKeys,
     setCopilotModelSelection,
-} from "../../../../copilot";
-import type {CopilotChatKey, CopilotChatProvider} from "../../../../copilot";
+} from "../../../../copilot/playgroundCopilotKeys";
+import type {CopilotChatKey, CopilotChatProvider} from "../../../../copilot/playgroundCopilotKeys";
 import {BYOKKeysPanel} from "../CreateDashboard/SettingsPage/BYOKKeysPanel/BYOKKeysPanel";
 
 /**

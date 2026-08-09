@@ -50,10 +50,9 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
         ].forEach((type) => {
             it(`should not move a ${type} body while simulating`, () => {
                 physics.addShape('shape1', { type: BodyShapeType.BOX, width: 1, height: 1, length: 1 });
-                // TODO: currently mass needs to be 0 for kinematic and
-                // static bodies. It should be ignored for these bodies
-                // instead.
-                physics.addRigidBody('body1', 'shape1', type, { mass: 0 });
+                // A stale authored mass must be ignored for non-dynamic
+                // bodies; native construction still needs zero inertia.
+                physics.addRigidBody('body1', 'shape1', type, { mass: 25 });
                 physics.simulate();
                 const position = physics.getRigidBodyPosition('body1');
 
@@ -135,6 +134,25 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
         });
 
         describe('velocity', () => {
+            it('prevents a fast CCD body from tunneling through a thin static wall', async () => {
+                physics = await makePhysics(0);
+                physics.stepDuration = 1 / 60;
+                physics.addShape('wall-shape', { type: BodyShapeType.BOX, width: 0.1, height: 10, length: 10 });
+                physics.addRigidBody('wall', 'wall-shape', RigidBodyType.Static, { mass: 0 });
+                physics.addShape('projectile-shape', { type: BodyShapeType.SPHERE, radius: 0.1 });
+                physics.addRigidBody('projectile', 'projectile-shape', RigidBodyType.Dynamic, {
+                    mass: 1,
+                    ccd: true,
+                    position: {x: -2, y: 0, z: 0},
+                });
+                physics.setRigidBodyLinearVelocity('projectile', {x: 300, y: 0, z: 0});
+
+                physics.simulate();
+
+                const position = physics.getRigidBodyPosition('projectile');
+                expect(position?.x ?? Infinity).toBeLessThan(0.2);
+            });
+
             it('setRigidBodyLinearVelocity + getRigidBodyLinearVelocity round-trip', async () => {
                 physics = await makePhysics(0);
                 physics.stepDuration = 1;
@@ -245,6 +263,61 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
         });
 
         describe('setRigidBodyScale', () => {
+            it('supports native static heightfields in both backends', () => {
+                physics.addShape('terrain-shape', {
+                    type: BodyShapeType.HEIGHTFIELD,
+                    rows: 4,
+                    columns: 4,
+                    sampleCount: 4,
+                    heightSamples: new Array(16).fill(0),
+                    offset: {x: 0, y: 0, z: 0},
+                    scale: {x: 10, y: 1, z: 10},
+                });
+                physics.addRigidBody('terrain', 'terrain-shape', RigidBodyType.Static);
+
+                physics.addShape('height-probe-shape', { type: BodyShapeType.SPHERE, radius: 0.25 });
+                physics.addRigidBody('height-probe', 'height-probe-shape', RigidBodyType.Dynamic, { mass: 1 });
+                physics.setRigidBodyPosition('height-probe', {x: 0, y: 4, z: 0});
+
+                physics.stepDuration = 1 / 60;
+                for (let i = 0; i < 240; i++) physics.simulate();
+
+                const probeY = physics.getRigidBodyPosition('height-probe')?.y ?? 0;
+                expect(probeY, `heightfield probe rested at y=${probeY}`).toBeGreaterThan(0.2);
+                expect(probeY).toBeLessThan(0.8);
+            });
+
+            it('preserves an asymmetric heightfield peak at the shared center sample', () => {
+                // This catches row/column swaps and fallback seam regressions
+                // that a flat terrain test cannot see. The center sample is
+                // one metre above the surrounding 3×3 grid, so the probe
+                // should settle on that authored peak in both backends.
+                physics.addShape('peak-terrain-shape', {
+                    type: BodyShapeType.HEIGHTFIELD,
+                    rows: 3,
+                    columns: 3,
+                    sampleCount: 3,
+                    heightSamples: [0, 0, 0, 0, 1, 0, 0, 0, 0],
+                    offset: {x: 0, y: 0, z: 0},
+                    scale: {x: 4, y: 1, z: 4},
+                });
+                physics.addRigidBody('peak-terrain', 'peak-terrain-shape', RigidBodyType.Static);
+                expect(physics.getRigidBodyPosition('peak-terrain')?.y ?? Infinity).toBeCloseTo(0, 5);
+                physics.setRigidBodyPosition('peak-terrain', {x: 0, y: 2, z: 0});
+                expect(physics.getRigidBodyPosition('peak-terrain')?.y ?? Infinity).toBeCloseTo(2, 5);
+                physics.setRigidBodyPosition('peak-terrain', {x: 0, y: 0, z: 0});
+                physics.addShape('peak-probe-shape', {type: BodyShapeType.SPHERE, radius: 0.1});
+                physics.addRigidBody('peak-probe', 'peak-probe-shape', RigidBodyType.Dynamic, {mass: 1});
+                physics.setRigidBodyPosition('peak-probe', {x: 0, y: 4, z: 0});
+
+                physics.stepDuration = 1 / 60;
+                for (let i = 0; i < 240; i++) physics.simulate();
+
+                const probeY = physics.getRigidBodyPosition('peak-probe')?.y ?? 0;
+                expect(probeY, `heightfield peak probe rested at y=${probeY}`).toBeGreaterThan(0.9);
+                expect(probeY).toBeLessThan(1.35);
+            });
+
             it('scales the collider so a probe rests at the scaled surface', () => {
                 // Engine-level regression for the "giant box" bug: a
                 // 10×1×10 static floor scaled by 0.1 must collide as a
@@ -409,6 +482,61 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
                 expectCloseTo(pos?.x ?? 0, 3);
                 expectCloseTo(pos?.y ?? 0, 5);
                 expectCloseTo(pos?.z ?? 0, 7);
+            });
+
+            it('rejects replacing a dynamic collider with a concave hull', () => {
+                const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    physics.addShape('box-shape', { type: BodyShapeType.BOX, width: 1, height: 1, length: 1 });
+                    physics.addShape('concave-shape', {
+                        type: BodyShapeType.CONCAVE_HULL,
+                        vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                        indexes: [[0, 1, 2]],
+                    });
+                    physics.addRigidBody('body1', 'box-shape', RigidBodyType.Dynamic, { mass: 1 });
+
+                    physics.setRigidBodyShape('body1', 'concave-shape');
+
+                    expect(physics.getRigidBodyShapeUuid('body1')).toBe('box-shape');
+                    expect(warn).toHaveBeenCalledWith(expect.stringContaining('concave hull'));
+                } finally {
+                    warn.mockRestore();
+                }
+            });
+
+            it('rejects replacing a kinematic collider with a concave hull', () => {
+                const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    physics.addShape('box-shape', { type: BodyShapeType.BOX, width: 1, height: 1, length: 1 });
+                    physics.addShape('concave-shape', {
+                        type: BodyShapeType.CONCAVE_HULL,
+                        vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                        indexes: [[0, 1, 2]],
+                    });
+                    physics.addRigidBody('body1', 'box-shape', RigidBodyType.Kinematic);
+
+                    physics.setRigidBodyShape('body1', 'concave-shape');
+
+                    expect(physics.getRigidBodyShapeUuid('body1')).toBe('box-shape');
+                    expect(warn).toHaveBeenCalledWith(expect.stringContaining('concave hull'));
+                } finally {
+                    warn.mockRestore();
+                }
+            });
+
+            it('allows replacing a static collider with a concave hull', () => {
+                physics.addShape('box-shape', { type: BodyShapeType.BOX, width: 1, height: 1, length: 1 });
+                physics.addShape('concave-shape', {
+                    type: BodyShapeType.CONCAVE_HULL,
+                    vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                    indexes: [[0, 1, 2]],
+                });
+                physics.addRigidBody('body1', 'box-shape', RigidBodyType.Static);
+
+                physics.setRigidBodyShape('body1', 'concave-shape');
+
+                expect(physics.getRigidBodyShapeUuid('body1')).toBe('concave-shape');
+                expect(physics.hasRigidBody('body1')).toBe(true);
             });
         });
 
@@ -583,6 +711,74 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
                 const boxY = physics.getRigidBodyPosition('box')?.y ?? 0;
                 expect(boxY).toBeGreaterThan(0.5);
                 expect(boxY).toBeLessThan(1.0);
+            });
+        });
+
+        describe('solver stability', () => {
+            it('keeps a two-body dynamic stack resting on a static floor', async () => {
+                physics = await makePhysics(-9.81);
+                physics.stepDuration = 1 / 60;
+                physics.setSolverIterations?.(8);
+
+                physics.addShape('floor-shape', {
+                    type: BodyShapeType.BOX,
+                    width: 20,
+                    height: 1,
+                    length: 20,
+                });
+                physics.addRigidBody('floor', 'floor-shape', RigidBodyType.Static, {
+                    friction: 0.8,
+                    restitution: 0,
+                    position: {x: 0, y: 0, z: 0},
+                });
+
+                physics.addShape('stack-box-shape', {
+                    type: BodyShapeType.BOX,
+                    width: 1,
+                    height: 1,
+                    length: 1,
+                });
+                physics.addRigidBody('stack-bottom', 'stack-box-shape', RigidBodyType.Dynamic, {
+                    mass: 1,
+                    friction: 0.8,
+                    restitution: 0,
+                    position: {x: 0, y: 1.25, z: 0},
+                });
+                physics.addRigidBody('stack-top', 'stack-box-shape', RigidBodyType.Dynamic, {
+                    mass: 1,
+                    friction: 0.8,
+                    restitution: 0,
+                    position: {x: 0, y: 2.25, z: 0},
+                });
+
+                for (let i = 0; i < 300; i++) physics.simulate();
+
+                const bottom = physics.getRigidBodyPosition('stack-bottom');
+                const top = physics.getRigidBodyPosition('stack-top');
+                const bottomVelocity = physics.getRigidBodyLinearVelocity('stack-bottom');
+                const topVelocity = physics.getRigidBodyLinearVelocity('stack-top');
+                expect(bottom).not.toBeNull();
+                expect(top).not.toBeNull();
+                expect(bottomVelocity).not.toBeNull();
+                expect(topVelocity).not.toBeNull();
+
+                for (const [name, position] of [['bottom', bottom], ['top', top]] as const) {
+                    expect(
+                        position && Object.values(position).every(Number.isFinite),
+                        `${name} stack position became non-finite: ${JSON.stringify(position)}`,
+                    ).toBe(true);
+                    expect(Math.abs(position?.x ?? Infinity), `${name} stack drifted on X`).toBeLessThan(0.2);
+                    expect(Math.abs(position?.z ?? Infinity), `${name} stack drifted on Z`).toBeLessThan(0.2);
+                }
+
+                // Floor top is y=0.5. Unit boxes should settle near centers
+                // y=1 and y=2, with small backend-specific contact slop.
+                expect(bottom?.y ?? NaN).toBeGreaterThan(0.85);
+                expect(bottom?.y ?? NaN).toBeLessThan(1.2);
+                expect(top?.y ?? NaN).toBeGreaterThan(1.75);
+                expect(top?.y ?? NaN).toBeLessThan(2.25);
+                expect(Math.abs(bottomVelocity?.y ?? Infinity), 'bottom stack body is still moving vertically').toBeLessThan(0.5);
+                expect(Math.abs(topVelocity?.y ?? Infinity), 'top stack body is still moving vertically').toBeLessThan(0.5);
             });
         });
 
@@ -858,8 +1054,47 @@ export const makePhysicsTests = (makePhysics: (gravity: number) => Promise<Physi
                 const indexes = [[0, 1, 2]];
                 const concaveHullData = { type: BodyShapeType.CONCAVE_HULL as const, vertices, indexes };
                 physics.addShape('shape1', concaveHullData);
-                physics.addRigidBody('body1', 'shape1', RigidBodyType.Dynamic, { mass: 1 });
+                // Triangle meshes are fixed-world geometry in the shared
+                // Ammo/Rapier contract. Dynamic and kinematic concave bodies
+                // are rejected before a backend body is created.
+                physics.addRigidBody('body1', 'shape1', RigidBodyType.Static, { mass: 0 });
+                expect(physics.hasRigidBody('body1')).toBe(true);
                 physics.removeRigidBody('body1');
+            });
+
+            it(`rejects a dynamic concave hull before creating a body`, () => {
+                const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    physics.addShape('shape1', {
+                        type: BodyShapeType.CONCAVE_HULL,
+                        vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                        indexes: [[0, 1, 2]],
+                    });
+                    physics.addRigidBody('body1', 'shape1', RigidBodyType.Dynamic, { mass: 1 });
+
+                    expect(physics.hasRigidBody('body1')).toBe(false);
+                    expect(warn).toHaveBeenCalledWith(expect.stringContaining('concave hull'));
+                    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ConvexHull'));
+                } finally {
+                    warn.mockRestore();
+                }
+            });
+
+            it(`rejects a kinematic concave hull before creating a body`, () => {
+                const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    physics.addShape('shape1', {
+                        type: BodyShapeType.CONCAVE_HULL,
+                        vertices: [[0, 0, 0, 1, 0, 0, 0, 1, 0]],
+                        indexes: [[0, 1, 2]],
+                    });
+                    physics.addRigidBody('body1', 'shape1', RigidBodyType.Kinematic, { mass: 0 });
+
+                    expect(physics.hasRigidBody('body1')).toBe(false);
+                    expect(warn).toHaveBeenCalledWith(expect.stringContaining('kinematic'));
+                } finally {
+                    warn.mockRestore();
+                }
             });
 
             it(`should create and destroy a concave hull shape with no vertices`, () => {

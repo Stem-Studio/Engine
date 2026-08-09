@@ -4,7 +4,7 @@ import {
     LinearFilter,
     RedFormat,
     ClampToEdgeWrapping,
-} from "three/webgpu";
+} from "three";
 
 import { HeightFn } from "./EndlessTerrainTypes";
 

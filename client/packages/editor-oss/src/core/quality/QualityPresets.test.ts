@@ -21,7 +21,6 @@ describe("QualityPresets", () => {
 
         expect(mobile.settings.rendering.pixelRatio).toBeLessThan(low.settings.rendering.pixelRatio);
         expect(mobile.settings.rendering.lodBias).toBeGreaterThan(low.settings.rendering.lodBias);
-        expect(mobile.settings.physics.maxActiveBodies).toBeLessThan(low.settings.physics.maxActiveBodies);
         expect(mobile.settings.scene.viewDistance).toBeLessThan(low.settings.scene.viewDistance);
         expect(mobile.settings.scene.maxDrawCalls).toBeLessThan(low.settings.scene.maxDrawCalls);
         expect(mobile.settings.scene.maxTriangles).toBeLessThan(low.settings.scene.maxTriangles);
@@ -32,7 +31,6 @@ describe("QualityPresets", () => {
 
         expect(mobile.settings.rendering.pixelRatio).toBe(0.7);
         expect(mobile.settings.rendering.lodBias).toBe(5);
-        expect(mobile.settings.physics.maxActiveBodies).toBe(10);
         expect(mobile.settings.behavior.maxConcurrentBehaviors).toBe(10);
         expect(mobile.settings.behavior.maxParticles).toBe(100);
         expect(mobile.settings.scene.viewDistance).toBe(50);
@@ -60,8 +58,18 @@ describe("QualityPresets", () => {
             expect(preset.settings.network).toBeDefined();
             expect(preset.settings.scheduler).toBeDefined();
             expect(typeof preset.settings.rendering.pixelRatio).toBe("number");
-            expect(typeof preset.settings.physics.maxActiveBodies).toBe("number");
+            expect(typeof preset.settings.physics.updateRate).toBe("number");
+            expect(typeof preset.settings.physics.maxStepsPerFrame).toBe("number");
+            expect(preset.settings.physics.solverIterations).toBeGreaterThanOrEqual(1);
+            expect(preset.settings.physics.solverIterations).toBeLessThanOrEqual(8);
             expect(typeof preset.settings.scene.viewDistance).toBe("number");
+        }
+    });
+
+    it("presets default to the legacy sequential update loop", () => {
+        const presets = QualityPresets.getAllPresets();
+        for (const preset of presets) {
+            expect(preset.settings.scheduler.enabled, `${preset.id} should keep the retired frame scheduler disabled`).toBe(false);
         }
     });
 

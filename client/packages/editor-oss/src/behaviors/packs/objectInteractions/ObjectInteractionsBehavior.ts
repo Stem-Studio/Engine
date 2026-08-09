@@ -226,7 +226,7 @@ class ObjectInteractionsBehavior extends BehaviorBase {
             return false;
         }
 
-        if (!this.isHeld && !this.isTargetInRange()) {
+        if (!this.isHeld && !this.isTargetInRangeForCurrentFrame()) {
             this.setDebugStatus("blocked:outOfRange");
             return false;
         }
@@ -368,6 +368,10 @@ class ObjectInteractionsBehavior extends BehaviorBase {
 
         const distance = this.getNumberAttr("interactionDistance", 3.5);
         return this.playerPos.distanceToSquared(this.targetPos) <= distance * distance;
+    }
+
+    private isTargetInRangeForCurrentFrame(): boolean {
+        return this.rangeDetector?.isTargetInRange ?? this.isTargetInRange();
     }
 
     private isEPressed(): boolean {

@@ -3,7 +3,6 @@ import {useEffect, useMemo, useState} from "react";
 import {useAuthorizationContext} from "@stem/editor-oss/context";
 import {checkIsSceneCollaborator} from "@stem/network/api/scene";
 import global from "@stem/editor-oss/global";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 import {isTemplateScene} from "@stem/editor-oss/utils/isTemplateScene";
 
 // Cache the collaborator status for 1 minute
@@ -96,18 +95,8 @@ export const useCanEditAsset = ({assetOwnerId}: UseCanEditAssetParams) => {
     const canEdit = useMemo(() => {
         if (isTemplate) return false;
         if (isReadOnly) return false;
-        // OSS: there's no cross-user ownership — everything is local and
-        // the current "user" is a synthetic single-account stamp
-        // (`OSS_LOCAL_USER_ID`) shared by AuthorizationContext and every
-        // synth adapter. Owning the scene is sufficient; short-circuit
-        // ahead of the cross-user check so a missing/stale `assetOwnerId`
-        // (e.g. on a freshly-converted Stem before `getAsset` resolves)
-        // doesn't strip the Stem actions ("Edit Stem", "Open in Stem
-        // Editor", "Save Stem", "Export Stem") from the right-click menu.
-        if (IS_OSS) return !!sceneOwnerId;
-        const assetBelongsToSceneOwner = !!assetOwnerId && !!sceneOwnerId && assetOwnerId === sceneOwnerId;
-        return isContributor && assetBelongsToSceneOwner;
-    }, [assetOwnerId, sceneOwnerId, isContributor, isTemplate, isReadOnly]);
+        return !!sceneOwnerId;
+    }, [sceneOwnerId, isTemplate, isReadOnly]);
 
     // True when the user has a path to edit the asset *via fork*: they're a
     // scene contributor on a non-template, non-readonly scene. Used by

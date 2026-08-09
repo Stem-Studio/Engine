@@ -1,7 +1,4 @@
 import {InteractiveResult} from "@web-shared/agent/types/ACPTypes";
-import Ajax from "@web-shared/utils/Ajax";
-import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
-import {IS_OSS} from "../../../buildMode";
 
 export type MessageExtra = {
     SeqNum: number;
@@ -33,181 +30,48 @@ export type CopilotHistoryListResponse = {
 };
 
 export const getCopilotHistoryList = async (
-    sceneID: string,
+    _sceneID: string,
     page: number = 1,
     limit: number = 20,
 ): Promise<CopilotHistoryListResponse> => {
-    // OSS ships only the AI proxy — there is no Copilot history service.
-    // Return an empty page instead of 404-ing on every editor load.
-    if (IS_OSS) {
-        return {items: [], page, limit, totalCount: 0, totalPages: 0, hasMore: false};
-    }
-
-    try {
-        const params = new URLSearchParams();
-        params.append("SceneID", sceneID);
-        params.append("page", page.toString());
-        params.append("limit", limit.toString());
-
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/CopilotHistory/List?${params.toString()}`),
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to list copilot history.");
-        }
-
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error listing copilot history:", message);
-        throw new Error(message || "Failed to list copilot history.");
-    }
+    return {items: [], page, limit, totalCount: 0, totalPages: 0, hasMore: false};
 };
 
 export const getSessionExtras = async (id: string): Promise<CopilotHistoryData> => {
-    if (IS_OSS) {
-        return {
-            ID: id,
-            SessionID: "",
-            UserID: "",
-            SceneID: "",
-            Title: "",
-            MessageExtras: [],
-            UsedCredits: 0,
-            AddTime: "",
-            UpdateTime: "",
-        };
-    }
-
-    try {
-        const params = new URLSearchParams();
-        params.append("ID", id);
-
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/CopilotHistory/Get?${params.toString()}`),
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to get copilot session extras.");
-        }
-
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error getting copilot session extras:", message);
-        throw new Error(message || "Failed to get copilot session extras.");
-    }
+    return {
+        ID: id,
+        SessionID: "",
+        UserID: "",
+        SceneID: "",
+        Title: "",
+        MessageExtras: [],
+        UsedCredits: 0,
+        AddTime: "",
+        UpdateTime: "",
+    };
 };
 
 export const createCopilotSession = async (
-    sessionID: string,
-    sceneID: string,
-    title: string,
+    _sessionID: string,
+    _sceneID: string,
+    _title: string,
 ): Promise<void> => {
-    if (IS_OSS) return;
-
-    try {
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/CopilotHistory/Add`),
-            data: {SessionID: sessionID, SceneID: sceneID, Title: title},
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to create copilot session.");
-        }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error creating copilot session:", message);
-        throw new Error(message || "Failed to create copilot session.");
-    }
+    return;
 };
 
 export const addMessageExtra = async (
-    sessionID: string,
-    seqNum: number,
-    attachedObjects?: string[],
-    interactiveResult?: InteractiveResult,
+    _sessionID: string,
+    _seqNum: number,
+    _attachedObjects?: string[],
+    _interactiveResult?: InteractiveResult,
 ): Promise<void> => {
-    if (IS_OSS) return;
-
-    try {
-        const data: Record<string, string> = {
-            SessionID: sessionID,
-            SeqNum: seqNum.toString(),
-        };
-
-        if (attachedObjects && attachedObjects.length > 0) {
-            data.AttachedObjects = JSON.stringify(attachedObjects);
-        }
-
-        if (interactiveResult) {
-            data.InteractiveResult = JSON.stringify(interactiveResult);
-        }
-
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/CopilotHistory/AddExtra`),
-            data,
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to add message extra.");
-        }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error adding message extra:", message);
-        throw new Error(message || "Failed to add message extra.");
-    }
+    return;
 };
 
-export const deleteCopilotHistory = async (id?: string, sessionID?: string): Promise<unknown> => {
-    if (IS_OSS) return {};
-
-    try {
-        if (!id && !sessionID) {
-            throw new Error("Either ID or SessionID is required.");
-        }
-
-        const data: Record<string, string> = {};
-        if (id) data.ID = id;
-        if (sessionID) data.SessionID = sessionID;
-
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/CopilotHistory/Delete`),
-            data: data,
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to delete copilot history.");
-        }
-
-        return response.data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error deleting copilot history:", message);
-        throw new Error(message || "Failed to delete copilot history.");
-    }
+export const deleteCopilotHistory = async (_id?: string, _sessionID?: string): Promise<unknown> => {
+    return {};
 };
 
-export const updateCopilotHistoryCredits = async (sessionID: string, delta: number): Promise<void> => {
-    if (IS_OSS) return;
-
-    try {
-        const response = await Ajax.post({
-            url: backendUrlFromPath(`/api/CopilotHistory/UpdateCredits`),
-            data: {SessionID: sessionID, Delta: delta},
-            msgBodyType: "urlEncoded",
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to update copilot history credits.");
-        }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error updating copilot history credits:", message);
-        throw new Error(message || "Failed to update copilot history credits.");
-    }
+export const updateCopilotHistoryCredits = async (_sessionID: string, _delta: number): Promise<void> => {
+    return;
 };

@@ -80,7 +80,7 @@ self.onmessage = (e: MessageEvent<PhysicsWorkerMessage>) => {
         freezeRotationX: new Uint8Array(msg.freezeRotationX),
         freezeRotationY: new Uint8Array(msg.freezeRotationY),
         freezeRotationZ: new Uint8Array(msg.freezeRotationZ),
-        visibilityMask: msg.visibilityMask ? new Float32Array(msg.visibilityMask) : null,
+        visibilityMask: msg.visibilityMask ? new Uint8Array(msg.visibilityMask) : null,
     });
 
     const response: PhysicsWorkerResult = {

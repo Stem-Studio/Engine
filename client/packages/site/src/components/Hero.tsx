@@ -1,5 +1,6 @@
 import {useEffect, useRef} from "react";
 import {Link} from "react-router-dom";
+import {PLAYGROUND_ROUTE} from "../content/links";
 import * as THREE from "three";
 
 import {GITHUB_URL} from "../content/links";
@@ -58,9 +59,10 @@ export function Hero() {
         ro.observe(canvas);
 
         let raf = 0;
-        const clock = new THREE.Clock();
+        const timer = new THREE.Timer();
         const tick = () => {
-            const dt = clock.getDelta();
+            timer.update();
+            const dt = timer.getDelta();
             group.rotation.y += dt * 0.45;
             group.rotation.x += dt * 0.18;
             renderer.render(scene, camera);
@@ -75,6 +77,7 @@ export function Hero() {
             mat.dispose();
             (wire.geometry as THREE.BufferGeometry).dispose();
             (wire.material as THREE.Material).dispose();
+            timer.dispose();
             renderer.dispose();
         };
     }, []);
@@ -98,7 +101,7 @@ export function Hero() {
                     local-first, with a UI you can ship.
                 </p>
                 <div className="hero-cta">
-                    <Link to="/playground" className="btn btn-primary">
+                    <Link to={PLAYGROUND_ROUTE} className="btn btn-primary">
                         Open the playground
                     </Link>
                     <a

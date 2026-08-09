@@ -1,5 +1,5 @@
 import {Object3D, PerspectiveCamera, Raycaster, Vector2, WebGLRenderer} from "three";
-import {WebGPURenderer} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 
 type ClickableObject = Object3D & { onClick?: (event: PointerEvent) => void };
 type HoverableObject = Object3D & {
@@ -8,9 +8,15 @@ type HoverableObject = Object3D & {
     onClick?: (event: PointerEvent) => void;
 };
 
+const CLICK_MOVE_THRESHOLD = 0.05;
+const CLICK_MOVE_THRESHOLD_SQ = CLICK_MOVE_THRESHOLD * CLICK_MOVE_THRESHOLD;
+const CLICK_DURATION_THRESHOLD_MS = 500;
+
 export const UIKitPointerEventsDispatcher = (() => {
     const raycaster = new Raycaster();
     const pointer = new Vector2();
+    const clickIntersections: ReturnType<Raycaster["intersectObjects"]> = [];
+    const hoverIntersections: ReturnType<Raycaster["intersectObjects"]> = [];
     let canvas: HTMLCanvasElement | null, camera: PerspectiveCamera | null, rootScene: Object3D | null;
     let hoveredObject: HoverableObject | null = null;
 
@@ -42,11 +48,11 @@ export const UIKitPointerEventsDispatcher = (() => {
         isDown = false;
         updatePointer(event);
 
-        const dist = downPointer.distanceTo(pointer);
+        const distSq = downPointer.distanceToSquared(pointer);
         const timeDiff = performance.now() - downTime;
 
         // Thresholds: movement < 0.05 units, duration < 500ms
-        if (dist < 0.05 && timeDiff < 500) {
+        if (distSq < CLICK_MOVE_THRESHOLD_SQ && timeDiff < CLICK_DURATION_THRESHOLD_MS) {
             performClick(event);
         }
     };
@@ -54,9 +60,10 @@ export const UIKitPointerEventsDispatcher = (() => {
     const performClick = (event: PointerEvent) => {
         if (!raycaster || !camera || !rootScene) return;
         raycaster.setFromCamera(pointer, camera);
-        const intersects = raycaster.intersectObjects(rootScene.children, true);
+        clickIntersections.length = 0;
+        raycaster.intersectObjects(rootScene.children, true, clickIntersections);
 
-        for (const hit of intersects) {
+        for (const hit of clickIntersections) {
             let obj: ClickableObject = hit.object;
             while (obj && obj.onClick) {
                 if (obj.onClick) {
@@ -83,11 +90,12 @@ export const UIKitPointerEventsDispatcher = (() => {
             if (!raycaster || !camera || !rootScene) return;
 
             raycaster.setFromCamera(pointer, camera);
-            const intersects = raycaster.intersectObjects(rootScene.children, true);
+            hoverIntersections.length = 0;
+            raycaster.intersectObjects(rootScene.children, true, hoverIntersections);
 
             let hit: HoverableObject | null = null;
-            if (intersects.length > 0) {
-                for (const h of intersects) {
+            if (hoverIntersections.length > 0) {
+                for (const h of hoverIntersections) {
                     let obj: HoverableObject | null = h.object as HoverableObject;
                     while (obj) {
                         if (obj.hover || obj.onHoverChange || obj.onClick) {
@@ -129,6 +137,8 @@ export const UIKitPointerEventsDispatcher = (() => {
             camera = null;
             rootScene = null;
             hoveredObject = null;
+            clickIntersections.length = 0;
+            hoverIntersections.length = 0;
         },
     };
 })();

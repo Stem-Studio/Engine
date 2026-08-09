@@ -57,7 +57,7 @@ async function loadValidator(): Promise<void> {
     try {
         // @ts-expect-error — CJS module resolved via Vite alias, no .d.ts.
         // @vite-ignore so Vite doesn't fail builds where the alias target is
-        // absent (OSS export excludes stemstudio-importer).
+        // absent (the open-source build excludes stemstudio-importer).
         // eslint-disable-next-line import/no-unresolved
         const mod = await import(/* @vite-ignore */ "@stemstudio/validators");
         _validateCode = mod.validateCode ?? mod.default?.validateCode ?? null;

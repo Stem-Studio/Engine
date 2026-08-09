@@ -163,7 +163,7 @@ The current action bar also includes a set of quick-access buttons beyond transf
 | **Code Editor** | Opens the unified code editor for behaviors, lambdas, imports, and text files |
 | **Keyboard Shortcuts** | Opens shortcut help |
 | **Help** | Opens the docs site |
-| **Collaboration Status** | Shows whether collaborative editing is connected, connecting, or disconnected |
+| **Runtime Status** | Shows relevant local editor or runtime state |
 
 These buttons are especially useful once you move past scene layout and start iterating on gameplay logic and debugging.
 
@@ -231,7 +231,9 @@ Undo and Redo track most editing operations including:
 
 ## Save
 
-Save your scene to persist all changes.
+The active local project store auto-saves periodically. Use the explicit Save
+action to create a clear persistence boundary before a risky change or before
+closing the tab.
 
 | Action | Shortcut (Windows/Linux) | Shortcut (Mac) |
 |--------|--------------------------|----------------|
@@ -239,7 +241,9 @@ Save your scene to persist all changes.
 
 You can also save by clicking the Save button in the toolbar.
 
-> **Important:** StemStudio does not auto-save. Get in the habit of saving frequently, especially before entering play mode or making large changes. If you close the browser tab without saving, unsaved changes are lost.
+> **Important:** Auto-save is not a backup. A pending save, failed folder
+> permission, browser data clear, or origin change can still lose work. Use
+> folder storage and external backups for important projects.
 
 ---
 
@@ -340,7 +344,8 @@ Focus is useful when:
 - **Forgetting that play mode does not save changes.** Any object positions or settings changed during play revert when you stop. Make all permanent changes in editor mode.
 - **Dragging the wrong gizmo axis.** If an object moves in an unexpected direction, check which axis handle you are dragging. The color coding (red = X, green = Y, blue = Z) is consistent across all transform tools.
 - **Scaling when you meant to move.** If an object suddenly changes size, you may be in Scale mode (R) instead of Move mode (W). Check the toolbar to see which mode is active.
-- **Not saving frequently enough.** There is no auto-save. A browser crash or accidental tab close will lose all unsaved work.
+- **Treating auto-save as a backup.** Confirm saves complete and back up
+  folder-backed projects outside the browser.
 - **Panning instead of orbiting (or vice versa).** Right-click drag orbits, middle-click drag pans. Mixing these up is common when learning the controls.
 
 ## Next Steps

@@ -17,6 +17,7 @@ import {
     SpotLight,
     Vector3,
 } from 'three';
+import {findObjectByNameDepthFirst, traverseObjectVisibleDepthFirst} from '@stem/editor-oss/utils/SceneTraverser';
 
 const SPARK_LIGHTING_ROOT_NAME = '__SparkDynamicLighting';
 const DEFAULT_MAX_LIGHTS = 16;
@@ -276,7 +277,7 @@ export class SparkSceneLightingBridge {
 
     constructor(scene: Scene, parent?: Object3D | null) {
         this.scene = scene;
-        const existingRoot = scene.getObjectByName(SPARK_LIGHTING_ROOT_NAME);
+        const existingRoot = findObjectByNameDepthFirst(scene, SPARK_LIGHTING_ROOT_NAME);
         this.root = existingRoot ?? new Object3D();
         this.root.name = SPARK_LIGHTING_ROOT_NAME;
         this.root.userData.isRuntimeOnly = true;
@@ -365,7 +366,7 @@ export class SparkSceneLightingBridge {
     private scanLights(): void {
         this.discoveredLights.length = 0;
         this.hasVisibleSplat = false;
-        this.scene.traverseVisible((object) => {
+        traverseObjectVisibleDepthFirst(this.scene, (object) => {
             if (object instanceof Light) {
                 this.discoveredLights.push(object);
             }

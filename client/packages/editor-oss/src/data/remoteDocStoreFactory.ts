@@ -4,8 +4,8 @@ let singleton: IRemoteDocStore | undefined;
 
 /**
  * Returns the process-wide remote doc store. Defaults to
- * `NullRemoteDocStore` (silent no-op) until integrated bootstrap
- * registers a Firestore-backed impl.
+ * `NullRemoteDocStore` (silent no-op) unless an embedder registers a custom
+ * implementation.
  */
 export function getRemoteDocStore(): IRemoteDocStore {
     if (!singleton) {

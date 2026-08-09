@@ -104,3 +104,14 @@
     height: 32px;
     top: -2px;
 }
+
+@media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+    .ProjectTab > .tab-header {
+        padding: 6px 0;
+    }
+
+    .ProjectTab .tab-header .search > input {
+        height: 44px !important;
+        min-height: 44px;
+    }
+}

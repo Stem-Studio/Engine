@@ -338,7 +338,7 @@ describe("DashboardImportUtils", () => {
             const optionsServer = "http://test.com";
             mockShouldImportAssets.mockResolvedValue(true);
             mockImportAssets.mockRejectedValue(
-                new Error("The server failed to download or process this stem. This usually means the stem revision is private/unreleased or belongs to a user who is not present in the target environment."),
+                new Error("The server failed to download or process this stem. This usually means the stem revision is unavailable in this environment or its source project cannot be resolved."),
             );
             (global.confirm as any).mockReturnValue(false);
 
@@ -378,7 +378,7 @@ describe("DashboardImportUtils", () => {
             const optionsServer = "http://test.com";
             mockShouldImportAssets.mockResolvedValue(true);
             mockImportAssets.mockRejectedValue(
-                new Error("The server failed to download or process this stem. This usually means the stem revision is private/unreleased or belongs to a user who is not present in the target environment."),
+                new Error("The server failed to download or process this stem. This usually means the stem revision is unavailable in this environment or its source project cannot be resolved."),
             );
             (global.confirm as any).mockReturnValue(true);
 
@@ -420,7 +420,7 @@ describe("DashboardImportUtils", () => {
             const optionsServer = "http://test.com";
             mockShouldImportAssets.mockResolvedValue(true);
             mockImportAssets.mockRejectedValue(
-                new Error("The server failed to download or process this stem. This usually means the stem revision is private/unreleased or belongs to a user who is not present in the target environment."),
+                new Error("The server failed to download or process this stem. This usually means the stem revision is unavailable in this environment or its source project cannot be resolved."),
             );
             (global.confirm as any).mockReturnValue(true);
 
@@ -470,7 +470,7 @@ describe("DashboardImportUtils", () => {
                         "  • Revision ID: 5d772db7898bf8feabd52272367bec2a761cf9ee85fd7f521d6263e066844ef1",
                         "  • Object: [stem] BoxScreenhalo",
                         "",
-                        "  This may happen if the prefab was deleted or belongs to another user.",
+                        "  This may happen if the prefab was deleted or is missing from this environment.",
                     ].join("\n"),
                 ),
             );

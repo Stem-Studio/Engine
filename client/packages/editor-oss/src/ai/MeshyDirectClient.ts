@@ -5,8 +5,8 @@
 // the browser can call it directly with a BYOK key. This client mirrors the
 // subset of the Go server's Meshy wrapper that `ModelGeneratorProvider` needs.
 //
-// Local / integrated builds keep using the Go server — this client is only
-// reached on the playground code path.
+// The desktop editor can use the Go server; this client is reached on the
+// playground code path where no local server is available.
 
 import {getBYOKKeyStore} from "./aiBackendFactory";
 

@@ -1,4 +1,4 @@
-import { InstancedMesh, Matrix4, Object3D, Vector3Like, Mesh, BufferGeometry } from 'three/webgpu';
+import {BufferGeometry, InstancedMesh, Matrix4, Mesh, Object3D, type Vector3Like} from "three";
 
 import { CollisionType } from '../../../physics/common/physicsConfig';
 import { getPhysics } from '../../../physics/common/getPhysics';
@@ -210,13 +210,14 @@ export class EndlessTerrainPhysics {
      * @param playerPosition - The player position in the terrain's local space
      */
     update(playerPosition: Vector3Like) {
+        const distanceThresholdSq = this.distanceThreshold * this.distanceThreshold;
         for (const instanceData of this.instanceDataMap.values()) {
-            const distance = instanceData.object.position.distanceTo(playerPosition);
+            const distanceSq = instanceData.object.position.distanceToSquared(playerPosition);
 
             // Only add physics if shape is ready (computed async)
-            if (!instanceData.addedToPhysics && instanceData.shapeReady && distance < this.distanceThreshold) {
+            if (!instanceData.addedToPhysics && instanceData.shapeReady && distanceSq < distanceThresholdSq) {
                 this.addCollisionShape(instanceData);
-            } else if (instanceData.addedToPhysics && distance >= this.distanceThreshold) {
+            } else if (instanceData.addedToPhysics && distanceSq >= distanceThresholdSq) {
                 this.removeCollisionShape(instanceData);
             }
         }

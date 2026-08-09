@@ -23,10 +23,6 @@ export class PerformanceMonitor extends EventEmitter {
     private budgetExhaustionCount = 0;
     private budgetCheckCount = 0;
 
-    public initialize(): void {
-        // No-op: kept for interface compatibility
-    }
-
     public dispose(): void {
         this.removeAllListeners();
     }
@@ -48,7 +44,7 @@ export class PerformanceMonitor extends EventEmitter {
 
     /**
      * Report whether the frame budget was exhausted this frame.
-     * Called from FrameOrchestrator or LambdaManager each tick.
+     * Called from LambdaManager or other budgeted runtime systems each tick.
      * @param exhausted whether budget was hit
      */
     public recordBudgetStatus(exhausted: boolean): void {

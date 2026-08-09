@@ -1,5 +1,4 @@
-import {Object3D, Scene, Vector3} from "three";
-import {QuaternionLike, Vector3Like} from "three/webgpu";
+import {Object3D, Scene, Vector3, type QuaternionLike, type Vector3Like} from "three";
 
 import {MultiplayerUtils} from "./MultiplayerUtils";
 import {markLocalPlayerAvatar} from "@stem/editor-oss/core/budget/AvatarBudgetPolicy";
@@ -7,6 +6,7 @@ import global from "@stem/editor-oss/global";
 import SimpleMultiplayerClient from "@stem/editor-oss/multiplayer/worker/SimpleMultiplayerClient";
 import SimpleMultiplayerCollaborativeClient from "@stem/editor-oss/multiplayer/worker/SimpleMultiplayerCollaborativeClient";
 import {getObjectTemplate, getObjectTemplateType} from '@stem/editor-oss/utils/ObjectUtils';
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {
     BoxData,
     CapsuleData,
@@ -20,14 +20,13 @@ import {
     IDispatcher,
     IPhysics,
     IPlayerOptions,
-    ModelData,
     SphereData,
     TerrainData,
     VehicleInput,
     VehicleOptions,
     VehicleSpec,
 } from "../common/types";
-import {PhysicsUtil} from "../PhysicsUtil";
+import {PhysicsRuntimeUtil as PhysicsUtil} from "../PhysicsRuntimeUtil";
 
 export class PhysicsWrapper implements IPhysics {
     physics: IPhysics;
@@ -125,7 +124,7 @@ export class PhysicsWrapper implements IPhysics {
         });
         //FIXME: temp hack - remember original player children
         let count = 0;
-        newPlayer.traverse((child) => {
+        traverseObjectDepthFirst(newPlayer, child => {
             child.userData.originalPlayerObject = true;
             count++;
         });
@@ -144,16 +143,16 @@ export class PhysicsWrapper implements IPhysics {
         return this.physics.getGravity();
     }
 
+    setSolverIterations(solverIterations: number): void {
+        this.physics.setSolverIterations?.(solverIterations);
+    }
+
     setPlayerGravity(uuid: string, acceleration: Vector3Like): void {
         this.physics.setPlayerGravity(uuid, acceleration);
     }
 
     addCollidableObject(uuid: string): void {
         this.physics.addCollidableObject(uuid);
-    }
-
-    addModel(object: Object3D, data: ModelData): void {
-        this.physics.addModel(object, data);
     }
 
     addObject(uuid: string, mass: number, collisionFlag: CollisionFlag, object: Object3D): CollisionFlag {
@@ -295,6 +294,10 @@ export class PhysicsWrapper implements IPhysics {
 
     simulate(deltaTime: number): void {
         this.physics.simulate(deltaTime);
+    }
+
+    simulateFixedStep(deltaTime: number, substeps: number): boolean {
+        return this.physics.simulateFixedStep?.(deltaTime, substeps) ?? false;
     }
 
     removePrefab(uuid: string): void {

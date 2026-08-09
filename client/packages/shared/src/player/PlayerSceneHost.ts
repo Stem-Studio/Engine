@@ -5,6 +5,13 @@ import type EngineRuntime from "../EngineRuntime";
 import type {AssetSource} from "../asset-management/SceneAssetSource";
 import {SceneConfig} from "../scene/SceneConfig";
 import {CAMERA_EFFECTS, CAMERA_OBJECT_INTERACTION, CAMERA_TYPES_NEW} from "../types/editor";
+import {
+    findObjectByNameDepthFirst,
+    findObjectDepthFirst,
+    traverseObjectDepthFirst,
+    traverseObjectReversePostOrder,
+    updateObjectMatrixWorldDepthFirst,
+} from "../utils/SceneTraverser";
 
 const GLOBAL_BEHAVIOR_HOST_NAME = "GlobalBehaviorsHost";
 
@@ -143,16 +150,19 @@ export class PlayerSceneHost {
 
     async setScene(scene: THREE.Scene): Promise<void> {
         this.engine.scene = scene;
+        if (!findObjectDepthFirst(scene, object => object.type === "BatchedRenderer")) {
+            scene.add(this.engine.batchedRenderer);
+        }
 
-        let globalHost = scene.getObjectByName(GLOBAL_BEHAVIOR_HOST_NAME);
+        let globalHost = findObjectByNameDepthFirst(scene, GLOBAL_BEHAVIOR_HOST_NAME);
         if (!globalHost) {
             globalHost = new THREE.Object3D();
             globalHost.name = GLOBAL_BEHAVIOR_HOST_NAME;
             scene.add(globalHost);
         }
 
-        scene.traverse(object => {
-            object.updateMatrixWorld();
+        updateObjectMatrixWorldDepthFirst(scene, true);
+        traverseObjectDepthFirst(scene, object => {
             (object as {target?: {updateMatrixWorld?: () => void}}).target?.updateMatrixWorld?.();
         });
     }
@@ -170,13 +180,11 @@ export class PlayerSceneHost {
     }
 
     traverseSceneObjects(callback: (object: THREE.Object3D) => void) {
-        this.scene.traverse(callback);
+        traverseObjectDepthFirst(this.scene, callback);
     }
 
     reverseTraverseSceneObjects(callback: (object: THREE.Object3D) => void) {
-        const objects: THREE.Object3D[] = [];
-        this.scene.traverse(object => objects.push(object));
-        objects.reverse().forEach(callback);
+        traverseObjectReversePostOrder(this.scene, callback);
     }
 
     removeObject(object: THREE.Object3D) {

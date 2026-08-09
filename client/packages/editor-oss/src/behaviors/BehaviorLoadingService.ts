@@ -4,8 +4,7 @@
  * previously duplicated between Editor and GameManager.
  */
 
-import * as THREE from "three";
-
+import {Scene} from "three";
 import {BehaviorConstructor} from "./Behavior";
 import BehaviorClassConfig from "./BehaviorClassConfig";
 import {BehaviorFileLoader} from "./BehaviorFileLoader";
@@ -28,13 +27,75 @@ import type {AssetSource} from "@stem/editor-oss/editor/asset-management/AssetSo
 import {BehaviorConfig} from "@stem/editor-oss/editor/behaviors/BehaviorConfig";
 import {isSceneBehaviorsMigrated} from "@stem/editor-oss/editor/behaviors/LegacyBehaviorMigration";
 import global from "../global";
-import {loadScriptImportRevisionMap, type ScriptImportRevisionMap} from "../script-runtime/scriptImports";
+import {loadReferencedScriptImportRevisionMap, type ScriptImportRevisionMap} from "../script-runtime/scriptImportCore";
 
 const DEFAULT_BATCH_SIZE = 8;
+const LOAD_CLASS_FRAME_BUDGET_MS = 8;
+const LOAD_CLASS_SCRIPT_BATCH_SIZE = 4;
+const SCRIPT_IMPORT_REVISION_MAP_CACHE_LIMIT = 256;
+
+const nowForClassLoading = (): number =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+
+const yieldClassLoadingToPaint = (): Promise<void> =>
+    new Promise(resolve => {
+        const finish = () => setTimeout(() => resolve(), 0);
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => finish());
+        } else {
+            finish();
+        }
+    });
+
+const hashString = (value: string): string => {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+};
+
+const getRecordSignature = (record?: Readonly<Record<string, string>>): string => {
+    if (!record) {
+        return "";
+    }
+
+    return Object.keys(record)
+        .sort()
+        .map(key => `${key}:${record[key]}`)
+        .join("|");
+};
+
+const getContextSignature = (context?: ReadonlyAssetResolutionContext): string =>
+    [
+        getRecordSignature(context?.logicalIdToAssetId),
+        getRecordSignature(context?.assetIdToRevisionId),
+        getRecordSignature(context?.nameToAssetId),
+    ].join("||");
+
+const rememberCacheEntry = <T>(cache: Map<string, T>, key: string, value: T, limit: number): T => {
+    cache.set(key, value);
+    if (cache.size > limit) {
+        const oldestKey = cache.keys().next().value;
+        if (oldestKey !== undefined) {
+            cache.delete(oldestKey);
+        }
+    }
+    return value;
+};
 
 type SceneConfigsResult = {configs: BehaviorClassConfig[]; scripts: Record<string, string>};
 
 type BundleResult = Awaited<ReturnType<typeof getBehaviorsFromScriptBundle>>;
+
+interface LoadClassesProgressOptions {
+    batchSize?: number;
+    frameBudgetMs?: number;
+    yieldToFrame?: () => Promise<void>;
+}
 
 export class BehaviorLoadingService {
     private fileLoader: BehaviorFileLoader;
@@ -45,11 +106,51 @@ export class BehaviorLoadingService {
     private scriptBundleLoading: Promise<ScriptBundle | null> | null = null;
     private scriptBundleCache: ScriptBundle | null = null;
     private sceneConfigsLoading: Promise<SceneConfigsResult> | null = null;
+    private fileClassCache: Map<string, BehaviorConstructor> = new Map();
+    private scriptImportRevisionMapCache: Map<string, ScriptImportRevisionMap> = new Map();
     private builtInIds: Set<string> = new Set();
 
     constructor(useEditorPath: boolean, assetLoader: AssetLoader) {
         this.fileLoader = new BehaviorFileLoader(useEditorPath);
         this.assetLoader = assetLoader;
+    }
+
+    private getFileClassCacheKey(config: BehaviorClassConfig): string {
+        return `${config.id}:${config.main ?? ""}`;
+    }
+
+    private getScriptImportRevisionMapCacheKey(
+        source: string,
+        context?: ReadonlyAssetResolutionContext,
+    ): string {
+        return [
+            source.length,
+            hashString(source),
+            getContextSignature(context),
+        ].join("::");
+    }
+
+    async resolveScriptImportRevisionMap(
+        source: string,
+        context?: ReadonlyAssetResolutionContext,
+        existing: ScriptImportRevisionMap = {},
+    ): Promise<ScriptImportRevisionMap> {
+        // `existing` is a fetch shortcut, not a semantic input. The script
+        // source plus resolved import context determines which immutable
+        // revision ids are reachable.
+        const cacheKey = this.getScriptImportRevisionMapCacheKey(source, context);
+        const cached = this.scriptImportRevisionMapCache.get(cacheKey);
+        if (cached) {
+            return cached;
+        }
+
+        const resolved = await loadReferencedScriptImportRevisionMap(source, context, existing);
+        return rememberCacheEntry(
+            this.scriptImportRevisionMapCache,
+            cacheKey,
+            resolved,
+            SCRIPT_IMPORT_REVISION_MAP_CACHE_LIMIT,
+        );
     }
 
     /**
@@ -135,7 +236,7 @@ export class BehaviorLoadingService {
      *   scene.userData.
      */
     async loadSceneConfigs(
-        scene: THREE.Scene,
+        scene: Scene,
         opts: {assetSource?: AssetSource; assetId?: string},
     ): Promise<SceneConfigsResult> {
         if (!this.sceneConfigsLoading) {
@@ -189,10 +290,33 @@ export class BehaviorLoadingService {
         options?: {
             context?: ReadonlyAssetResolutionContext;
             importRevisionMap?: ScriptImportRevisionMap;
+            progress?: LoadClassesProgressOptions;
         },
     ): Promise<Map<string, BehaviorConstructor>> {
         const loaded = new Map<string, BehaviorConstructor>();
         const fileBehaviors: BehaviorClassConfig[] = [];
+        const sharedImportRevisionMap: ScriptImportRevisionMap = {
+            ...options?.importRevisionMap,
+        };
+        const scriptBatchSize = Math.max(1, Math.floor(options?.progress?.batchSize ?? LOAD_CLASS_SCRIPT_BATCH_SIZE));
+        const frameBudgetMs = Math.max(1, options?.progress?.frameBudgetMs ?? LOAD_CLASS_FRAME_BUDGET_MS);
+        const yieldToFrame = options?.progress?.yieldToFrame ?? yieldClassLoadingToPaint;
+        let sliceStart = nowForClassLoading();
+        let scriptsParsedThisSlice = 0;
+        const maybeYield = async (force = false): Promise<void> => {
+            scriptsParsedThisSlice += 1;
+            if (
+                !force &&
+                scriptsParsedThisSlice < scriptBatchSize &&
+                nowForClassLoading() - sliceStart < frameBudgetMs
+            ) {
+                return;
+            }
+
+            await yieldToFrame();
+            sliceStart = nowForClassLoading();
+            scriptsParsedThisSlice = 0;
+        };
 
         for (const config of configs) {
             if (loaded.has(config.id)) continue;
@@ -200,23 +324,31 @@ export class BehaviorLoadingService {
             if (config.isScript && scriptInjector) {
                 const script = scripts[config.id];
                 if (script) {
-                    const importRevisionMap = await loadScriptImportRevisionMap(
+                    const importRevisionMap = await this.resolveScriptImportRevisionMap(
                         script,
                         options?.context,
-                        options?.importRevisionMap,
+                        sharedImportRevisionMap,
                     );
+                    Object.assign(sharedImportRevisionMap, importRevisionMap);
                     const cls = scriptInjector.parse(config.id, script, config.name, {
                         context: options?.context,
                         importRevisionMap,
                     });
                     if (cls) loaded.set(config.id, cls);
                 }
+                await maybeYield();
             } else if (!config.isScript) {
+                const cached = this.fileClassCache.get(this.getFileClassCacheKey(config));
+                if (cached) {
+                    loaded.set(config.id, cached);
+                    continue;
+                }
                 fileBehaviors.push(config);
             }
         }
 
         if (fileBehaviors.length > 0) {
+            await maybeYield(true);
             const paths = fileBehaviors.map(c => ({folder: c.id, main: c.main}));
             const classes = await this.fileLoader.loadBehaviorsBatch(paths, DEFAULT_BATCH_SIZE);
 
@@ -225,6 +357,7 @@ export class BehaviorLoadingService {
                 const config = fileBehaviors[i];
                 if (cls && config) {
                     loaded.set(config.id, cls);
+                    this.fileClassCache.set(this.getFileClassCacheKey(config), cls);
                 }
             }
         }
@@ -238,7 +371,7 @@ export class BehaviorLoadingService {
     }
 
     private async doLoadSceneConfigs(
-        scene: THREE.Scene,
+        scene: Scene,
         opts: {assetSource?: AssetSource; assetId?: string},
     ): Promise<SceneConfigsResult> {
         const {configs, scripts} = await this.loadBackendBehaviors(scene, opts);
@@ -286,7 +419,7 @@ export class BehaviorLoadingService {
     }
 
     private async loadBackendBehaviors(
-        scene: THREE.Scene,
+        scene: Scene,
         opts: {assetSource?: AssetSource; assetId?: string},
     ): Promise<SceneConfigsResult> {
         const {assetSource, assetId} = opts;
@@ -316,13 +449,13 @@ export class BehaviorLoadingService {
             behaviors = [];
         }
 
-        // In OSS, behavior assets are minted with `oss-asset-<ts>-<rand>` ids
-        // (network/asset/index.ts), which fail the integrated build's 24-hex
+        // Locally created behavior assets use `oss-asset-<ts>-<rand>` ids
+        // (network/asset/index.ts), which fail the legacy 24-hex
         // legacy-id heuristic. The downstream `GameManager.addBehaviorToObject`
         // also treats them as legacy and looks them up by bare id, so register
         // them under the bare id here too. Dropping them through the legacy
-        // filter (the integrated path) leaves the runtime with no class for
-        // every custom behavior in an OSS-imported game.
+        // filter leaves the runtime with no class for every custom behavior
+        // in an imported game.
         const isOssAssetId = (id: string) => id.startsWith("oss-asset-");
         const filteredBehaviors = (behaviors ?? []).filter(behavior =>
             !isLegacyBehaviorId(behavior.ID) || isOssAssetId(behavior.ID),
@@ -351,7 +484,7 @@ export class BehaviorLoadingService {
         return {configs, scripts};
     }
 
-    private loadSceneBehaviors(scene: THREE.Scene): {
+    private loadSceneBehaviors(scene: Scene): {
         configs: BehaviorClassConfig[];
         scripts: Record<string, string>;
     } {

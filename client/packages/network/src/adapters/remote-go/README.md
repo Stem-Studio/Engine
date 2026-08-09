@@ -1,9 +1,11 @@
-# Remote-Go Adapter
+# Remote-Go Compatibility Modules
 
-The default backend adapter — wraps the canonical Go server's REST
-endpoints. These modules used to live at `web/packages/shared/src/api/`
-and were physically relocated here so the network library's adapter
-structure is visible in the filesystem.
+These API-shaped modules retain the canonical Go server's REST contracts and
+the legacy `remote-go` directory name. They are not the default deployment
+mode: no-flag OSS and Playground sessions select local mode, and scene
+load/save/list operations use the browser-backed `ProjectStore`. A deployment
+must opt in with `?backend=remote` before treating the remote service contracts
+as available.
 
 35 domains live here, each as its own subdirectory: `asset/`, `scene/`,
 `behavior/`, `lambda/`, `audio/`, `image/`, etc. Public exports go

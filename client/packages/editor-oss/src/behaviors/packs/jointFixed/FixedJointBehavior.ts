@@ -6,6 +6,7 @@ import GameManager from "../../game/GameManager";
 class FixedJointBehavior extends BehaviorBase {
 
     game: GameManager | null = null;
+    private jointObjectBUuid?: string;
 
     init(game: GameManager) {
         this.game = game;
@@ -13,7 +14,7 @@ class FixedJointBehavior extends BehaviorBase {
 
     onStart(): void {
         const objectA = this.target;
-        const objectB = this.game?.scene?.getObjectByProperty("uuid", this.attributes.objectB);
+        const objectB = this.game?.getObjectByUUID(this.attributes.objectB);
 
         if (!objectB) {
             console.warn("FixedJointBehavior: object B is not found in the scene: "+this.attributes.objectB);
@@ -30,11 +31,16 @@ class FixedJointBehavior extends BehaviorBase {
             frameInBPosition,
             frameInBRotation,
         );
+        this.jointObjectBUuid = objectB.uuid;
     }
 
     onStop(): void {
-        //TODO: we don't support removing individual constraints
-        //  and physics engine will destroy all constraints when stopped
+        if (!this.jointObjectBUuid) {
+            return;
+        }
+
+        this.game?.physics?.removeJoint(this.target.uuid, this.jointObjectBUuid);
+        this.jointObjectBUuid = undefined;
     }
 
 

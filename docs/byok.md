@@ -1,6 +1,6 @@
 # Bring Your Own Keys (BYOK)
 
-StemStudio OSS does not ship with managed API keys. AI features work only when you provide your own provider credentials. This page explains how that works, what the supported providers are, and where your keys live.
+StemStudio does not ship with managed API keys. AI features work only when you provide your own provider credentials. This page explains how that works, what the supported providers are, and where your keys live.
 
 ## Supported providers
 
@@ -47,11 +47,11 @@ The key never touches the server's disk and is not shared with other browsers or
 
 ### Precedence
 
-If a key is configured both ways, the **environment variable wins**. This makes it easy to override a saved BYOK key by setting an env var, and it means production-style deployments can pin keys without UI interference.
+If a key is configured both ways, the **environment variable wins**. This makes it easy to override a saved BYOK key by setting an env var, and it means self-hosted deployments can pin keys without UI interference.
 
 ## How requests flow
 
-In the hosted/local editor path, BYOK requests go through the AI server:
+In the local editor path, BYOK requests go through the AI server:
 
 ```
 Editor                AI server                Provider (Anthropic, etc.)

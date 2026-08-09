@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 import {useMediaQuery} from "usehooks-ts";
 
-import {useHomepageContext} from "@stem/editor-oss/context";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import {FileData} from "../../../types/file";
 import {SceneListItem} from "../SceneListItem";
 import {EmptyInfo, HorizontalSceneList, SectionWrapper} from "./GamesSections.style";

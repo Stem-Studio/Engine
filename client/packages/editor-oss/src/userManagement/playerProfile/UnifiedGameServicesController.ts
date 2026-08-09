@@ -7,16 +7,16 @@
 
 import {uuid} from "@gltf-transform/core";
 
-import {DiscordController, getGuestPlayer, registerAnonymousPlayer} from "./game-service-controllers";
 import EngineRuntime from "../../EngineRuntime";
 import EventBus from "../../behaviors/event/EventBus";
 import {showToast} from "../../showToast";
 import {IUser} from "../types";
 import PlatformDetector, {GameServiceType, PlatformInfo, PlatformType} from "../utils/PlatformDetector";
-import CrazyGamesController from "./game-service-controllers/CrazyGamesController";
-import EmailPasswordController from "./game-service-controllers/EmailPasswordController";
-import {MobileGameServicesController} from "./game-service-controllers/MobileGameServicesController";
-import SteamController from "./game-service-controllers/SteamController";
+import type {DiscordController as DiscordControllerType} from "./game-service-controllers/DiscordController";
+import type CrazyGamesControllerType from "./game-service-controllers/CrazyGamesController";
+import type EmailPasswordControllerType from "./game-service-controllers/EmailPasswordController";
+import type {MobileGameServicesController as MobileGameServicesControllerType} from "./game-service-controllers/MobileGameServicesController";
+import type SteamControllerType from "./game-service-controllers/SteamController";
 
 export interface UnifiedGameUser {
     id: string;
@@ -72,11 +72,11 @@ export interface UnifiedGameServicesSettings {
  */
 export class UnifiedGameServicesController {
     private engine: EngineRuntime;
-    private discordController: DiscordController | null = null;
-    private mobileController: MobileGameServicesController | null = null;
-    private crazyGamesController: CrazyGamesController | null = null;
-    private steamController: SteamController | null = null;
-    private emailPasswordController: EmailPasswordController | null = null;
+    private discordController: DiscordControllerType | null = null;
+    private mobileController: MobileGameServicesControllerType | null = null;
+    private crazyGamesController: CrazyGamesControllerType | null = null;
+    private steamController: SteamControllerType | null = null;
+    private emailPasswordController: EmailPasswordControllerType | null = null;
     private activeService: GameServiceType = GameServiceType.NONE;
     private isInitialized = false;
     private currentUser: UnifiedGameUser | null = null;
@@ -174,6 +174,7 @@ export class UnifiedGameServicesController {
         const shouldInitializeDiscord = this.platformInfo.isDiscord || settings.discord?.isRequiredToPlay;
         if (settings.discord?.enabled && shouldInitializeDiscord) {
             try {
+                const {DiscordController} = await import("./game-service-controllers/DiscordController");
                 this.discordController = new DiscordController(this.engine, {
                     isRequiredToPlay: settings.discord.isRequiredToPlay,
                     scopes: settings.discord.scopes as any[],
@@ -194,6 +195,7 @@ export class UnifiedGameServicesController {
                 PlatformDetector.isGooglePlayAvailable(this.platformInfo.type))
         ) {
             try {
+                const {MobileGameServicesController} = await import("./game-service-controllers/MobileGameServicesController");
                 const activeService = PlatformDetector.isGameCenterAvailable(this.platformInfo.type)
                     ? GameServiceType.GAME_CENTER
                     : GameServiceType.GOOGLE_PLAY;
@@ -216,6 +218,7 @@ export class UnifiedGameServicesController {
         // Initialize CrazyGames controller if available and enabled
         if (settings.crazyGames?.enabled && PlatformDetector.isCrazyGamesAvailable(this.platformInfo.type)) {
             try {
+                const {default: CrazyGamesController} = await import("./game-service-controllers/CrazyGamesController");
                 this.crazyGamesController = new CrazyGamesController(this.engine, {
                     gameId: settings.crazyGames.gameId,
                     gameSecret: settings.crazyGames.gameSecret,
@@ -229,12 +232,15 @@ export class UnifiedGameServicesController {
         }
 
         // Initialize Steam controller if available and enabled
-        if (settings.steam?.enabled && SteamController.isAvailable()) {
+        if (settings.steam?.enabled) {
             try {
-                this.steamController = new SteamController(this.engine, {
-                    sceneId: sceneId, // Pass sceneId
-                });
-                // Steam controller initialized
+                const {default: SteamController} = await import("./game-service-controllers/SteamController");
+                if (SteamController.isAvailable()) {
+                    this.steamController = new SteamController(this.engine, {
+                        sceneId: sceneId, // Pass sceneId
+                    });
+                    // Steam controller initialized
+                }
             } catch {
                 // Failed to initialize Steam controller
             }
@@ -243,6 +249,7 @@ export class UnifiedGameServicesController {
         // Initialize Email/Password controller if enabled
         if (settings.emailPassword?.enabled) {
             try {
+                const {default: EmailPasswordController} = await import("./game-service-controllers/EmailPasswordController");
                 this.emailPasswordController = new EmailPasswordController(this.engine, {
                     allowRegistration: settings.emailPassword.allowRegistration,
                     requireEmailVerification: settings.emailPassword.requireEmailVerification,
@@ -419,6 +426,7 @@ export class UnifiedGameServicesController {
             //if firebase was enabled and there is no existing user which should not happen, we should follow through to anonymous
             // eslint-disable-next-line no-fallthrough
             case GameServiceType.FIREBASE_ANONYMOUS: {
+                const {registerAnonymousPlayer} = await import("./game-service-controllers/GuestController");
                 const user = await registerAnonymousPlayer();
                 if (user) {
                     this.handleAnonymousAuthSuccess(user);
@@ -428,7 +436,7 @@ export class UnifiedGameServicesController {
             }
 
             case GameServiceType.PERSISTENT_GUEST:
-                this.createPersistentGuestUser();
+                await this.createPersistentGuestUser();
                 return;
 
             default:
@@ -571,8 +579,9 @@ export class UnifiedGameServicesController {
     /**
      * Create a persistent guest user as final fallback
      */
-    private createPersistentGuestUser(): void {
+    private async createPersistentGuestUser(): Promise<void> {
         // Use the centralized guest user data from AuthUtils
+        const {getGuestPlayer} = await import("./game-service-controllers/GuestController");
         const guestData = getGuestPlayer();
 
         this.currentUser = {
@@ -1153,7 +1162,7 @@ export class UnifiedGameServicesController {
     /**
      * Get CrazyGames controller
      */
-    getCrazyGamesController(): CrazyGamesController | null {
+    getCrazyGamesController(): CrazyGamesControllerType | null {
         return this.crazyGamesController;
     }
 

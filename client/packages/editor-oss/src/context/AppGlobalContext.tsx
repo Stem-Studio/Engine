@@ -7,19 +7,19 @@ import type {IGameMapping} from "@stem/network/api/gameMapping";
 import {PAGES} from "../editor/assets/v2/CreateDashboard/constants";
 import global from "../global";
 import i18n from "../i18n/config";
-import {IS_OSS} from "../mode/buildMode";
 import type {SceneConfig} from "../scene/SceneConfig";
 import {getGameUrl} from "../v2/pages/links";
 import {estimateSceneObjectBytes} from "../utils/estimateSceneObjectBytes";
 import {ActivePage, RIGHT_PANEL_VERSIONS} from "./appStateTypes";
 import {ROUTES} from "@web-shared/routes";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {hasCopilotKeysSync} from "../copilot";
+import {hasCopilotKeysSync} from "../copilot/playgroundCopilotKeyMarker";
 import {
     readInitialAdvancedModePreference,
     resolveAdvancedModePreferenceForProject,
     writeAdvancedModePreference,
 } from "./advancedModeStorage";
+import {collectObjectSizeMap, deleteObjectSizesFromMap, writeObjectSizesToMap} from "./sceneSizeTracker";
 
 const SCENE_HISTORY_MODAL_STATE_KEY = "__sceneHistoryModal";
 
@@ -77,6 +77,7 @@ type SceneAwareApp = NonNullable<typeof global.app> & {
 };
 
 export const AppGlobalContext = React.createContext<AppGlobalContextValue>(null!);
+export const useAppGlobalContext = () => React.useContext(AppGlobalContext);
 
 export interface AppGlobalContextProviderProps {
     children: React.ReactNode;
@@ -130,7 +131,6 @@ const AppGlobalContextProvider: React.FC<AppGlobalContextProviderProps> = ({chil
         const resolved = resolveAdvancedModePreferenceForProject({
             sceneID: editorSceneID,
             aiPromptMode: editorAiPromptMode,
-            isOSS: IS_OSS,
             isPlayground: isPlaygroundMode(),
             hasCopilotKeys: hasCopilotKeysSync(),
         });
@@ -175,14 +175,7 @@ const AppGlobalContextProvider: React.FC<AppGlobalContextProviderProps> = ({chil
     const initializeSceneSize = useCallback(() => {
         if (!app?.scene || app.isPlaying) return;
 
-        const newSizeMap = new Map<string, number>();
-
-        app.scene.traverse((object: Object3D) => {
-            if (object.uuid && object !== app.scene) {
-                const objectSize = calculateObjectSize(object);
-                newSizeMap.set(object.uuid, objectSize);
-            }
-        });
+        const newSizeMap = collectObjectSizeMap(app.scene, calculateObjectSize, {includeRoot: false});
 
         setObjectSizeMap(newSizeMap);
     }, [calculateObjectSize]);
@@ -193,10 +186,7 @@ const AppGlobalContextProvider: React.FC<AppGlobalContextProviderProps> = ({chil
 
             setObjectSizeMap(prev => {
                 const newMap = new Map(prev);
-                object.traverse((child: Object3D) => {
-                    const objectSize = calculateObjectSize(child);
-                    newMap.set(child.uuid, objectSize);
-                });
+                writeObjectSizesToMap(newMap, object, calculateObjectSize);
                 return newMap;
             });
         },
@@ -211,10 +201,7 @@ const AppGlobalContextProvider: React.FC<AppGlobalContextProviderProps> = ({chil
             if (object.isObject3D) {
                 setObjectSizeMap(prev => {
                     const newMap = new Map(prev);
-                    object.traverse((child: Object3D) => {
-                        const objectSize = calculateObjectSize(child);
-                        newMap.set(child.uuid, objectSize);
-                    });
+                    writeObjectSizesToMap(newMap, object, calculateObjectSize);
                     return newMap;
                 });
             }
@@ -227,9 +214,7 @@ const AppGlobalContextProvider: React.FC<AppGlobalContextProviderProps> = ({chil
 
         setObjectSizeMap(prev => {
             const newMap = new Map(prev);
-            object.traverse((child: Object3D) => {
-                newMap.delete(child.uuid);
-            });
+            deleteObjectSizesFromMap(newMap, object);
             return newMap;
         });
     }, [app]);

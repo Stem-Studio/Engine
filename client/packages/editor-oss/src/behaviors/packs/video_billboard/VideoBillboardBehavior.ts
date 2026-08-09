@@ -191,15 +191,17 @@ class VideoBillboardBehavior extends BehaviorBase {
         }
 
         if (this.game?.player && this.proximityDistance > 0) {
-            const distanceToPlayer = this.game.player.position.distanceTo(this.target.position);
+            const proximityDistanceSq = this.proximityDistance * this.proximityDistance;
+            const distanceToPlayerSq = this.game.player.position.distanceToSquared(this.target.position);
 
-            const distanceRatio = Math.max(0, Math.min(1, 1 - distanceToPlayer / this.proximityDistance));
-            const calculatedVolume = distanceRatio * this.initialVolume;
-            this.videoSource.setVolume(calculatedVolume);
-
-            if (distanceToPlayer < this.proximityDistance) {
+            if (distanceToPlayerSq < proximityDistanceSq) {
+                const distanceToPlayer = Math.sqrt(distanceToPlayerSq);
+                const distanceRatio = Math.max(0, Math.min(1, 1 - distanceToPlayer / this.proximityDistance));
+                const calculatedVolume = distanceRatio * this.initialVolume;
+                this.videoSource.setVolume(calculatedVolume);
                 this.play();
             } else {
+                this.videoSource.setVolume(0);
                 this.pause();
             }
         }
@@ -308,15 +310,7 @@ class VideoBillboardBehavior extends BehaviorBase {
             this.target.material = this.originalMaterial;
         }
 
-        // TODO: find correct way to release video resources
-        // if (this.videoSource) {
-        //     if (this.videoSource.isReady()) {
-        //         this.videoSource.release();
-        //     } else {
-        //         this.videoElem?.addEventListener("loadeddata", () => this.videoSource?.release(), {once: true});
-        //     }
-        // }
-
+        this.videoSource?.release();
         this.videoElem = undefined;
         this.videoSource = undefined;
     }

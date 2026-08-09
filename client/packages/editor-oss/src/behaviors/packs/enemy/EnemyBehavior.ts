@@ -5,6 +5,7 @@ import {IPhysics} from "../../../physics/common/types";
 import {COLLISION_TYPE, GAME_STATE} from "@stem/editor-oss/types/editor";
 import CameraUtils from "@stem/editor-oss/utils/CameraUtils";
 import {setManagedTimeout} from "@stem/editor-oss/utils/ModeExitCleaner";
+import {parseTransformVectorState, serializeTransformVectorState} from "@stem/editor-oss/utils/transformStateSerialization";
 import {BehaviorBase} from "../../Behavior";
 import EventBus, {IN_GAME_EVENTS} from "../../event/EventBus";
 import GameManager from "../../game/GameManager";
@@ -15,6 +16,11 @@ enum EnemyState {
     RETREATING = "retreating",
     ATTACKING = "attacking",
 }
+
+const DEFAULT_ENGAGE_DISTANCE = 10;
+const DEFAULT_STRIKE_DISTANCE = 3;
+const DEFAULT_IDLE_RETREAT_DELAY = 5;
+const DEFAULT_RETREAT_DURATION = 2;
 
 class EnemyBehavior extends BehaviorBase {
     // attributes
@@ -36,8 +42,8 @@ class EnemyBehavior extends BehaviorBase {
     private playerPosition: THREE.Vector3 = new THREE.Vector3();
     private prevPlayerPosition: THREE.Vector3 = new THREE.Vector3();
     private lastPlayerMoveTime: number = 0;
-    private distanceToPlayer: number = 0;
-    private distanceToOriginalPosition: number = 0;
+    private distanceToPlayerSq: number = 0;
+    private distanceToOriginalPositionSq: number = 0;
     private stateTimer: number = 0;
     private state: EnemyState = EnemyState.STANDING;
     private deathAnimationStarted: boolean = false;
@@ -45,6 +51,14 @@ class EnemyBehavior extends BehaviorBase {
     private standingDuration: number = Math.random() * 3 + 2;
     private smoothingFactor: number = 0.05;
     private playerDetected: boolean = false;
+    private readonly yAxis = new THREE.Vector3(0, 1, 0);
+    private readonly forwardDirection = new THREE.Vector3();
+    private readonly targetDirection = new THREE.Vector3();
+    private readonly statePosition = new THREE.Vector3();
+    private readonly stateEuler = new THREE.Euler();
+    private readonly stateQuaternion = new THREE.Quaternion();
+    private readonly roamBounds = new THREE.Box3();
+    private readonly roamCenter = new THREE.Vector3();
 
     init(gameManager: GameManager) {
         this.game = gameManager;
@@ -90,6 +104,44 @@ class EnemyBehavior extends BehaviorBase {
         }
     }
 
+    private getNumberAttribute(key: string, fallback: number): number {
+        const value = Number(this.attributes[key]);
+        return Number.isFinite(value) && value >= 0 ? value : fallback;
+    }
+
+    private getEngageDistance(): number {
+        return this.getNumberAttribute("engageDistance", DEFAULT_ENGAGE_DISTANCE);
+    }
+
+    private getStrikeDistance(): number {
+        return this.getNumberAttribute("strikeDistance", DEFAULT_STRIKE_DISTANCE);
+    }
+
+    private getIdleRetreatDelay(): number {
+        return this.getNumberAttribute("idleRetreatDelay", DEFAULT_IDLE_RETREAT_DELAY);
+    }
+
+    private getRetreatDuration(): number {
+        return this.getNumberAttribute("retreatDuration", DEFAULT_RETREAT_DURATION);
+    }
+
+    private isDistanceLessThan(distanceSq: number, threshold: unknown): boolean {
+        const value = Number(threshold);
+        if (!Number.isFinite(value) || value < 0) return false;
+        return distanceSq < value * value;
+    }
+
+    private isDistanceGreaterThan(distanceSq: number, threshold: unknown): boolean {
+        const value = Number(threshold);
+        if (!Number.isFinite(value)) return false;
+        if (value < 0) return true;
+        return distanceSq > value * value;
+    }
+
+    private getDistanceToPlayer(): number {
+        return Math.sqrt(this.distanceToPlayerSq);
+    }
+
     private initEnemies() {
         if (!this.game || !this.game.player || !this.game.scene) return;
         const sceneHelpers = this.game.engine.sceneHelpers;
@@ -101,12 +153,12 @@ class EnemyBehavior extends BehaviorBase {
         });
 
         if (this.target) {
-            this.originalPosition = this.target.position.clone();
+            this.originalPosition.copy(this.target.position);
 
             if (!!this.enemyEnabled && !!this.attributes.showRoamArea) {
-                const bbox = new THREE.Box3().setFromObject(this.target);
-                const center = new THREE.Vector3();
-                bbox.getCenter(center);
+                this.roamBounds.setFromObject(this.target);
+                const center = this.roamCenter;
+                this.roamBounds.getCenter(center);
                 const geometry = new THREE.CircleGeometry(this.attributes.roamDistance, 32);
                 const circle = new THREE.Mesh(geometry, circleMaterial);
                 circle.position.set(center.x, center.y, center.z);
@@ -179,7 +231,7 @@ class EnemyBehavior extends BehaviorBase {
             EventBus.instance.send(IN_GAME_EVENTS.GAME_HEALTH_DEC, this.attributes.attackDamage);
             EventBus.instance.send(IN_GAME_EVENTS.ENEMY_ATTACK, {
                 target: this.target,
-                targetDistance: this.distanceToPlayer,
+                targetDistance: this.getDistanceToPlayer(),
                 position: this.target.position.clone(),
             });
             this.game!.collisionDetector!.deleteListener(this.target, this.playerCollisionListenerId);
@@ -209,7 +261,7 @@ class EnemyBehavior extends BehaviorBase {
     private moveInRandomDirection = (directionDuration: number) => {
         if (this.moveTimer <= 0) {
             this.moveTimer = Math.random() * directionDuration + directionDuration;
-            this.moveDirection = new THREE.Vector3(Math.random() * 2 - 1, 0, Math.random() * 2 - 1).normalize();
+            this.moveDirection.set(Math.random() * 2 - 1, 0, Math.random() * 2 - 1).normalize();
         }
         this.moveTimer -= this.deltaTime;
     };
@@ -234,75 +286,79 @@ class EnemyBehavior extends BehaviorBase {
         const player = this.game.player;
         player.getWorldPosition(this.playerPosition);
         //avoiding excessive copying
-        const playerMoved = this.playerPosition.distanceTo(this.prevPlayerPosition) > 0.1;
+        const playerMoved = this.playerPosition.distanceToSquared(this.prevPlayerPosition) > 0.01;
 
         if (playerMoved) {
             this.prevPlayerPosition.copy(this.playerPosition);
             this.lastPlayerMoveTime = Date.now();
         }
-        const distanceToPlayer = this.target.position.distanceTo(this.playerPosition);
+        const distanceToPlayerSq = this.target.position.distanceToSquared(this.playerPosition);
 
         this.deltaTime = delta; // ?
 
         if (this.target && !this.isDead() && this.enemyEnabled) {
-            this.distanceToPlayer = this.target.position.distanceTo(this.playerPosition);
-            this.distanceToOriginalPosition = this.target.position.distanceTo(this.originalPosition);
+            this.distanceToPlayerSq = distanceToPlayerSq;
+            this.distanceToOriginalPositionSq = this.target.position.distanceToSquared(this.originalPosition);
 
             // Handle player detection
-            const playerInRange = this.distanceToPlayer < this.attributes.roamDistance; // Detection range
+            const playerInRange = this.isDistanceLessThan(this.distanceToPlayerSq, this.attributes.roamDistance); // Detection range
             if (playerInRange && !this.playerDetected) {
                 this.playerDetected = true;
                 EventBus.instance.send(IN_GAME_EVENTS.ENEMY_PLAYER_DETECTED, {
                     target: this.target,
-                    playerDistance: this.distanceToPlayer,
+                    playerDistance: this.getDistanceToPlayer(),
                     position: this.target.position.clone(),
                 });
             } else if (!playerInRange && this.playerDetected) {
                 this.playerDetected = false;
                 EventBus.instance.send(IN_GAME_EVENTS.ENEMY_PLAYER_LOST, {
                     target: this.target,
-                    playerDistance: this.distanceToPlayer,
+                    playerDistance: this.getDistanceToPlayer(),
                     position: this.target.position.clone(),
                 });
             }
 
             this.stateTimer += this.deltaTime;
 
-            //FIXME: make distances and timers a part of behavior params
+            const engageDistance = this.getEngageDistance();
+            const strikeDistance = this.getStrikeDistance();
+            const idleRetreatDelay = this.getIdleRetreatDelay();
+            const retreatDuration = this.getRetreatDuration();
+
             switch (this.state) {
                 case EnemyState.STANDING:
                     this.enemyStand();
-                    if (distanceToPlayer < 10) {
+                    if (this.isDistanceLessThan(distanceToPlayerSq, engageDistance)) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
-                    } else if (this.stateTimer > 5) {
+                    } else if (this.stateTimer > idleRetreatDelay) {
                         this.changeState(EnemyState.RETREATING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.APPROACHING:
                     this.enemyApproach();
-                    if (distanceToPlayer < 3) {
+                    if (this.isDistanceLessThan(distanceToPlayerSq, strikeDistance)) {
                         this.changeState(EnemyState.ATTACKING);
                         this.stateTimer = 0;
-                    } else if (distanceToPlayer > 10) {
+                    } else if (this.isDistanceGreaterThan(distanceToPlayerSq, engageDistance)) {
                         this.changeState(EnemyState.RETREATING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.RETREATING:
                     this.enemyRetreat();
-                    if (distanceToPlayer < 10) {
+                    if (this.isDistanceLessThan(distanceToPlayerSq, engageDistance)) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
-                    } else if (this.stateTimer > 2) {
+                    } else if (this.stateTimer > retreatDuration) {
                         this.changeState(EnemyState.STANDING);
                         this.stateTimer = 0;
                     }
                     break;
                 case EnemyState.ATTACKING:
                     this.enemyAttack();
-                    if (distanceToPlayer > 3) {
+                    if (this.isDistanceGreaterThan(distanceToPlayerSq, strikeDistance)) {
                         this.changeState(EnemyState.APPROACHING);
                         this.stateTimer = 0;
                     }
@@ -339,26 +395,25 @@ class EnemyBehavior extends BehaviorBase {
             );
         }
 
-        this.currentRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), targetRotation);
+        this.currentRotation.setFromAxisAngle(this.yAxis, targetRotation);
 
-        if (this.distanceToPlayer > this.attributes.fightDistance) {
+        if (this.isDistanceGreaterThan(this.distanceToPlayerSq, this.attributes.fightDistance)) {
             this.physics!.setRotation(this.target.uuid, this.currentRotation);
 
-            const forwardDirection = new THREE.Vector3(0, 0, 1);
-            forwardDirection.applyQuaternion(this.currentRotation);
-            forwardDirection.normalize();
+            const forwardDirection = this.forwardDirection
+                .set(0, 0, 1)
+                .applyQuaternion(this.currentRotation)
+                .normalize();
 
             let speed = this.attributes.movementSpeed;
             if (this.state === EnemyState.STANDING) {
                 speed = 0;
             }
 
-            const forwardVelocity = forwardDirection.multiplyScalar(speed);
+            forwardDirection.multiplyScalar(speed);
+            forwardDirection.y -= this.attributes.movementSpeed / 2;
 
-            const downwardVelocity = new THREE.Vector3(0, -this.attributes.movementSpeed / 2, 0);
-            const totalVelocity = forwardVelocity.add(downwardVelocity);
-
-            this.physics!.setLinearVelocity(this.target.uuid, totalVelocity);
+            this.physics!.setLinearVelocity(this.target.uuid, forwardDirection);
         }
 
         // Sync multiplayer state (host only)
@@ -372,8 +427,8 @@ class EnemyBehavior extends BehaviorBase {
     private enemyApproach() {
         this.playAnimation(this.target, this.attributes.runAnimation);
 
-        if (this.distanceToOriginalPosition > this.attributes.roamDistance) {
-            this.moveDirection = this.originalPosition.clone().sub(this.target.position).normalize();
+        if (this.isDistanceGreaterThan(this.distanceToOriginalPositionSq, this.attributes.roamDistance)) {
+            this.moveDirection.copy(this.originalPosition).sub(this.target.position).normalize();
         } else {
             this.moveInRandomDirection(this.attributes.directionDuration);
         }
@@ -382,7 +437,7 @@ class EnemyBehavior extends BehaviorBase {
     private enemyRetreat() {
         this.playAnimation(this.target, this.attributes.walkAnimation);
 
-        this.moveDirection = new THREE.Vector3(
+        this.moveDirection.set(
             this.target.position.x - this.playerPosition.x,
             0,
             this.target.position.z - this.playerPosition.z,
@@ -396,14 +451,14 @@ class EnemyBehavior extends BehaviorBase {
         if (this.state !== EnemyState.ATTACKING) {
             EventBus.instance.send(IN_GAME_EVENTS.ENEMY_ATTACK_STARTED, {
                 target: this.target,
-                targetDistance: this.distanceToPlayer,
+                targetDistance: this.getDistanceToPlayer(),
                 position: this.target.position.clone(),
             });
         }
 
         this.playAnimation(this.target, this.attributes.attackAnimation);
 
-        const targetDirection = new THREE.Vector3(
+        const targetDirection = this.targetDirection.set(
             this.playerPosition.x - this.target.position.x,
             0,
             this.playerPosition.z - this.target.position.z,
@@ -411,7 +466,7 @@ class EnemyBehavior extends BehaviorBase {
 
         this.smoothDirectionChange(targetDirection);
 
-        if (this.distanceToPlayer > this.attributes.attackDistance) {
+        if (this.isDistanceGreaterThan(this.distanceToPlayerSq, this.attributes.attackDistance)) {
             // Send attack ended event
             EventBus.instance.send(IN_GAME_EVENTS.ENEMY_ATTACK_ENDED, {
                 target: this.target,
@@ -427,7 +482,7 @@ class EnemyBehavior extends BehaviorBase {
 
     private smoothDirectionChange(targetDirection: THREE.Vector3) {
         const smoothingFactor = this.smoothingFactor;
-        this.moveDirection = this.moveDirection.lerp(targetDirection, smoothingFactor);
+        this.moveDirection.lerp(targetDirection, smoothingFactor);
 
         const targetRotation = Math.atan2(this.moveDirection.x, this.moveDirection.z);
         this.target.rotation.y = THREE.MathUtils.lerp(this.target.rotation.y, targetRotation, smoothingFactor);
@@ -441,8 +496,8 @@ class EnemyBehavior extends BehaviorBase {
         switch (key) {
             case "position":
                 if (value && this.physics) {
-                    const pos = JSON.parse(value) as {x: number; y: number; z: number};
-                    const targetPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+                    const pos = parseTransformVectorState(value);
+                    const targetPos = this.statePosition.set(pos.x, pos.y, pos.z);
 
                     // Update physics engine - this will automatically sync the visual position
                     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -456,10 +511,10 @@ class EnemyBehavior extends BehaviorBase {
                 break;
             case "rotation":
                 if (value && this.physics) {
-                    const rot = JSON.parse(value) as {x: number; y: number; z: number};
+                    const rot = parseTransformVectorState(value);
 
-                    const euler = new THREE.Euler(rot.x, rot.y, rot.z);
-                    const quaternion = new THREE.Quaternion().setFromEuler(euler);
+                    const euler = this.stateEuler.set(rot.x, rot.y, rot.z);
+                    const quaternion = this.stateQuaternion.setFromEuler(euler);
 
                     // Update physics engine - this will automatically sync the visual rotation
                     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -492,13 +547,13 @@ class EnemyBehavior extends BehaviorBase {
                 this.target,
                 this.id,
                 "position",
-                JSON.stringify(this.target?.position),
+                serializeTransformVectorState(this.target.position),
             );
             this.multiplayerState.setBehaviorData(
                 this.target,
                 this.id,
                 "rotation",
-                JSON.stringify(this.target?.rotation),
+                serializeTransformVectorState(this.target.rotation),
             );
             this.multiplayerState.setBehaviorData(this.target, this.id, "state", this.state);
             this.multiplayerState.setBehaviorData(this.target, this.id, "lives", this.lives.toString());

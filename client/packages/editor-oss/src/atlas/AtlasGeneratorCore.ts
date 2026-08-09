@@ -44,23 +44,27 @@ function packTextures(
     let atlasHeight = 0;
 
     for (const tex of sorted) {
-        const texWidth = tex.width + padding;
-        const texHeight = tex.height + padding;
-
-        if (currentX + texWidth > maxSize) {
-            currentX = 0;
-            currentY += rowHeight;
-            rowHeight = 0;
+        if (tex.width <= 0 || tex.height <= 0 || tex.width > maxSize || tex.height > maxSize) {
+            console.warn(`AtlasGenerator: Texture "${tex.name}" doesn't fit in atlas (${maxSize}x${maxSize})`);
+            return null;
         }
 
-        if (currentY + texHeight > maxSize) {
+        let regionX = currentX === 0 ? 0 : currentX + padding;
+        if (regionX + tex.width > maxSize) {
+            currentX = 0;
+            currentY += rowHeight + padding;
+            rowHeight = 0;
+            regionX = 0;
+        }
+
+        if (currentY + tex.height > maxSize) {
             console.warn(`AtlasGenerator: Texture "${tex.name}" doesn't fit in atlas (${maxSize}x${maxSize})`);
             return null;
         }
 
         regions.push({
             name: tex.name,
-            x: currentX,
+            x: regionX,
             y: currentY,
             width: tex.width,
             height: tex.height,
@@ -69,8 +73,8 @@ function packTextures(
             textureIndex: tex.originalIndex,
         });
 
-        currentX += texWidth;
-        rowHeight = Math.max(rowHeight, texHeight);
+        currentX = regionX + tex.width;
+        rowHeight = Math.max(rowHeight, tex.height);
         atlasWidth = Math.max(atlasWidth, currentX);
         atlasHeight = Math.max(atlasHeight, currentY + rowHeight);
     }
@@ -100,8 +104,8 @@ export async function generateAtlas(
     textures: TextureInfo[],
     options: AtlasGenerationOptions = {},
 ): Promise<AtlasGenerationResult | null> {
-    const maxSize = options.maxAtlasSize ?? 4096;
-    const padding = options.padding ?? 2;
+    const maxSize = Math.max(1, Math.floor(options.maxAtlasSize ?? 4096));
+    const padding = Math.max(0, Math.floor(options.padding ?? 2));
 
     if (textures.length === 0) {
         console.warn("AtlasGenerator: No textures provided");
@@ -185,21 +189,31 @@ export async function generateAtlasFromBlobs(
     textureBlobs: Map<string, Blob>,
     options: AtlasGenerationOptions = {},
 ): Promise<AtlasGenerationResult | null> {
-    const textures: TextureInfo[] = [];
+    const decoded = await Promise.all(
+        Array.from(textureBlobs, async ([name, blob]): Promise<TextureInfo | null> => {
+            try {
+                const imageData = await loadImageFromBlob(blob);
+                return {
+                    name,
+                    width: imageData.width,
+                    height: imageData.height,
+                    imageData,
+                };
+            } catch (error) {
+                console.warn(`AtlasGenerator: Failed to load texture "${name}"`, error);
+                return null;
+            }
+        }),
+    );
+    const textures = decoded.filter((texture): texture is TextureInfo => texture !== null);
 
-    for (const [name, blob] of textureBlobs) {
-        try {
-            const imageData = await loadImageFromBlob(blob);
-            textures.push({
-                name,
-                width: imageData.width,
-                height: imageData.height,
-                imageData,
-            });
-        } catch (error) {
-            console.warn(`AtlasGenerator: Failed to load texture "${name}"`, error);
+    try {
+        return await generateAtlas(textures, options);
+    } finally {
+        for (const texture of textures) {
+            if ('close' in texture.imageData && typeof texture.imageData.close === 'function') {
+                texture.imageData.close();
+            }
         }
     }
-
-    return generateAtlas(textures, options);
 }

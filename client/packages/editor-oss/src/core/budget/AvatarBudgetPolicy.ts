@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 import {DetectDevice} from "@stem/editor-oss/utils/DetectDevice";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {getRuntimeBudgetCoordinatorFromEngine, type RuntimeBudgetPressure} from "./RuntimeBudgetCoordinator";
 import type {IQualitySettings} from "../quality/interfaces/IQualityManager";
 
@@ -137,6 +138,8 @@ export class AvatarBudgetPolicy {
     private readonly objectWorldPosition = new THREE.Vector3();
     private readonly cameraWorldPosition = new THREE.Vector3();
     private readonly visibilitySphere = new THREE.Sphere();
+    private preparedCamera: THREE.Camera | null = null;
+    private preparedCameraLocked = false;
 
     constructor(options: AvatarBudgetPolicyOptions = {}) {
         this.configuredOverrides = {...options};
@@ -182,18 +185,30 @@ export class AvatarBudgetPolicy {
         return getAvatarBudgetMetadata(object)?.enabled === true;
     }
 
+    beginFrame(camera: THREE.Camera): void {
+        this.prepareCamera(camera);
+        this.preparedCameraLocked = true;
+    }
+
+    endFrame(): void {
+        this.preparedCamera = null;
+        this.preparedCameraLocked = false;
+    }
+
     decide(
         object: THREE.Object3D,
         camera: THREE.Camera,
         overrides: {isLocal?: boolean; visible?: boolean} = {},
     ): AvatarBudgetDecision {
+        this.ensureCameraPrepared(camera);
         const metadata = ensureAvatarBudgetMetadata(object);
         const isLocal = overrides.isLocal ?? metadata.isLocal === true;
+        const distanceSq = this.getDistanceSq(object);
 
         if (!this.isEnabled(object) || isLocal) {
             return this.storeDecision(object, {
                 state: "full",
-                distanceSq: this.getDistanceSq(object, camera),
+                distanceSq,
                 visible: true,
                 isLocal,
                 animationIntervalSec: 0,
@@ -204,8 +219,7 @@ export class AvatarBudgetPolicy {
             });
         }
 
-        const distanceSq = this.getDistanceSq(object, camera);
-        const visible = overrides.visible ?? this.isVisible(object, camera);
+        const visible = overrides.visible ?? this.isVisibleAtPreparedPosition(object);
         const thresholds = this.getCostAdjustedThresholds(object);
         const distance = Math.sqrt(distanceSq);
         let state: AvatarBudgetState = "full";
@@ -286,24 +300,31 @@ export class AvatarBudgetPolicy {
         return decision;
     }
 
-    private getDistanceSq(object: THREE.Object3D, camera: THREE.Camera): number {
+    private getDistanceSq(object: THREE.Object3D): number {
         object.getWorldPosition(this.objectWorldPosition);
-        camera.getWorldPosition(this.cameraWorldPosition);
         return this.objectWorldPosition.distanceToSquared(this.cameraWorldPosition);
     }
 
-    private isVisible(object: THREE.Object3D, camera: THREE.Camera): boolean {
+    private isVisibleAtPreparedPosition(object: THREE.Object3D): boolean {
         const metadata = ensureAvatarBudgetMetadata(object);
         if (!object.visible && !metadata.visibilityManaged) return false;
 
-        camera.updateMatrixWorld();
-        this.frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-        this.frustum.setFromProjectionMatrix(this.frustumMatrix);
-
-        object.getWorldPosition(this.objectWorldPosition);
         this.visibilitySphere.center.copy(this.objectWorldPosition);
         this.visibilitySphere.radius = getAvatarBoundsRadius(object);
         return this.frustum.intersectsSphere(this.visibilitySphere);
+    }
+
+    private ensureCameraPrepared(camera: THREE.Camera): void {
+        if (this.preparedCameraLocked && this.preparedCamera === camera) return;
+        this.prepareCamera(camera);
+    }
+
+    private prepareCamera(camera: THREE.Camera): void {
+        camera.updateMatrixWorld();
+        camera.getWorldPosition(this.cameraWorldPosition);
+        this.frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        this.frustum.setFromProjectionMatrix(this.frustumMatrix);
+        this.preparedCamera = camera;
     }
 
     private getCostAdjustedThresholds(object: THREE.Object3D) {
@@ -492,6 +513,7 @@ export function collectAvatarBudgetStats(root: THREE.Object3D): AvatarBudgetStat
     const bones = new Set<string>();
     const bounds = new THREE.Vector3();
     const box = new THREE.Box3();
+    const geometryBox = new THREE.Box3();
     const stats: AvatarBudgetStats = {
         triangles: 0,
         drawCalls: 0,
@@ -501,21 +523,35 @@ export function collectAvatarBudgetStats(root: THREE.Object3D): AvatarBudgetStat
         textureCount: 0,
     };
 
-    root.traverse(child => {
+    traverseObjectDepthFirst(root, child => {
+        updateMatrixWorldForAvatarStats(child);
         const mesh = child as THREE.Mesh;
         const geometry = mesh.geometry;
         const material = mesh.material;
 
-        if (geometry && !geometries.has(geometry.uuid)) {
-            geometries.add(geometry.uuid);
-            stats.triangles += getGeometryTriangleCount(geometry);
+        if (geometry) {
+            if (!geometries.has(geometry.uuid)) {
+                geometries.add(geometry.uuid);
+                stats.triangles += getGeometryTriangleCount(geometry);
+            }
+            if (!geometry.boundingBox) {
+                geometry.computeBoundingBox();
+            }
+            if (geometry.boundingBox) {
+                geometryBox.copy(geometry.boundingBox).applyMatrix4(child.matrixWorld);
+                box.union(geometryBox);
+            }
         }
 
         if (material) {
-            const materials = Array.isArray(material) ? material : [material];
-            stats.drawCalls += Math.max(1, materials.length);
-            for (const item of materials) {
-                addMaterialTextureBytes(item, textures, stats);
+            if (Array.isArray(material)) {
+                stats.drawCalls += Math.max(1, material.length);
+                for (const item of material) {
+                    addMaterialTextureBytes(item, textures, stats);
+                }
+            } else {
+                stats.drawCalls++;
+                addMaterialTextureBytes(material, textures, stats);
             }
         }
 
@@ -526,13 +562,27 @@ export function collectAvatarBudgetStats(root: THREE.Object3D): AvatarBudgetStat
         }
     });
 
-    box.setFromObject(root);
     if (!box.isEmpty()) {
         box.getSize(bounds);
     }
     stats.bones = bones.size;
     stats.textureCount = textures.size;
     return stats;
+}
+
+function updateMatrixWorldForAvatarStats(object: THREE.Object3D): void {
+    if (object.matrixAutoUpdate) {
+        object.updateMatrix();
+    }
+    if (object.matrixWorldAutoUpdate !== true) {
+        return;
+    }
+
+    if (object.parent === null) {
+        object.matrixWorld.copy(object.matrix);
+    } else {
+        object.matrixWorld.multiplyMatrices(object.parent.matrixWorld, object.matrix);
+    }
 }
 
 export function estimateTextureBytes(texture: THREE.Texture): number {

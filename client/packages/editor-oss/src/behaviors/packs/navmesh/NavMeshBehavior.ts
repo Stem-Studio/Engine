@@ -4,8 +4,18 @@ import { generateSoloNavMesh } from 'navcat/blocks';
 import * as THREE from 'three';
 
 import Editor from '@stem/editor-oss/editor/Editor';
+import {traverseObjectDepthFirst} from '@stem/editor-oss/utils/SceneTraverser';
 import { BehaviorBase } from '../../Behavior';
 import GameManager from '../../game/GameManager';
+
+const DEFAULT_NAV_QUERY_HALF_EXTENTS = new THREE.Vector3(1, 1, 1);
+
+const writeNavVec3 = (target: Nav.Vec3, source: THREE.Vector3): Nav.Vec3 => {
+    target[0] = source.x;
+    target[1] = source.y;
+    target[2] = source.z;
+    return target;
+};
 
 class NavMeshBehavior extends BehaviorBase {
     private navMesh: Nav.NavMesh | null = null;
@@ -17,6 +27,15 @@ class NavMeshBehavior extends BehaviorBase {
     private scene: THREE.Scene | null = null;
     private previewScene: THREE.Scene | THREE.Group | null = null;
     private regenerationTimeout: NodeJS.Timeout | null = null;
+    private readonly queryStartVec: Nav.Vec3 = [0, 0, 0];
+    private readonly queryEndVec: Nav.Vec3 = [0, 0, 0];
+    private readonly queryHalfExtentsVec: Nav.Vec3 = [1, 1, 1];
+    private readonly nearestPositionVec: Nav.Vec3 = [0, 0, 0];
+    private readonly nearestHalfExtentsVec: Nav.Vec3 = [1, 1, 1];
+    private readonly randomPositionVec: Nav.Vec3 = [0, 0, 0];
+    private readonly randomHalfExtentsVec: Nav.Vec3 = [1, 1, 1];
+    private readonly nearestPolyResult = createFindNearestPolyResult();
+    private readonly randomNearestPolyResult = createFindNearestPolyResult();
 
     async init(game: GameManager): Promise<void> {
         this.game = game;
@@ -131,7 +150,7 @@ class NavMeshBehavior extends BehaviorBase {
         }
 
         const onlyPhysics = this.attributes.onlyPhysicsMeshes || false;
-        if (onlyPhysics && !object.userData?.physics?.enabled) {
+        if (onlyPhysics && !this.isPhysicsRelevantObject(object)) {
             return;
         }
 
@@ -171,18 +190,28 @@ class NavMeshBehavior extends BehaviorBase {
         try {
             console.info('[NavMeshBehavior]: Starting NavMesh generation...');
             
-            // Collect meshes from the scene
-            const meshes: (THREE.Mesh | THREE.Group)[] = [];
+            // Collect unique meshes from the scene. The previous Group+Mesh collection
+            // could process child meshes twice when a group and its descendants were
+            // both visited by Scene.traverse.
+            const meshes: THREE.Mesh[] = [];
+            const seenMeshes = new Set<THREE.Mesh>();
             const onlyPhysics = this.attributes.onlyPhysicsMeshes || false;
             
-            this.scene!.traverse((child) => {
-                if ((child instanceof THREE.Mesh && child.geometry) || child instanceof THREE.Group) {
-                    if (onlyPhysics && !child.userData?.physics?.enabled) {
-                        return;
-                    }
-
-                    meshes.push(child);
+            traverseObjectDepthFirst(this.scene!, (child) => {
+                if (!(child instanceof THREE.Mesh) || !child.geometry) {
+                    return;
                 }
+
+                if (onlyPhysics && !this.hasPhysicsEnabledInHierarchy(child)) {
+                    return;
+                }
+
+                if (seenMeshes.has(child)) {
+                    return;
+                }
+
+                seenMeshes.add(child);
+                meshes.push(child);
             });
             
             if (meshes.length === 0) {
@@ -276,7 +305,7 @@ class NavMeshBehavior extends BehaviorBase {
      * @param to
      * @param halfExtents
      */
-    findPath(from: THREE.Vector3, to: THREE.Vector3, halfExtents: THREE.Vector3 = new THREE.Vector3(1, 1, 1)): THREE.Vector3[] | null {
+    findPath(from: THREE.Vector3, to: THREE.Vector3, halfExtents: THREE.Vector3 = DEFAULT_NAV_QUERY_HALF_EXTENTS): THREE.Vector3[] | null {
         if (!this.isReady || !this.navMesh) {
             console.warn('[NavMeshBehavior]: NavMesh not ready for pathfinding');
             return null;
@@ -284,9 +313,9 @@ class NavMeshBehavior extends BehaviorBase {
 
         try {
             // Convert THREE.Vector3 to navcat Vec3 format [x, y, z]
-            const startVec: Nav.Vec3 = [from.x, from.y, from.z];
-            const endVec: Nav.Vec3 = [to.x, to.y, to.z];
-            const halfExtentsVec: Nav.Vec3 = [halfExtents.x, halfExtents.y, halfExtents.z];
+            const startVec = writeNavVec3(this.queryStartVec, from);
+            const endVec = writeNavVec3(this.queryEndVec, to);
+            const halfExtentsVec = writeNavVec3(this.queryHalfExtentsVec, halfExtents);
             
             // Use navcat findPath function
             const pathResult = findPath(
@@ -302,10 +331,13 @@ class NavMeshBehavior extends BehaviorBase {
                 return null;
             }
             
-            // Convert path points from [x,y,z] arrays to THREE.Vector3
-            const path = pathResult.path.map(point => 
-                new THREE.Vector3(point.position[0], point.position[1], point.position[2]),
-            );
+            const path: THREE.Vector3[] = [];
+            for (let i = 0; i < pathResult.path.length; i += 1) {
+                const point = pathResult.path[i];
+                if (!point) continue;
+
+                path.push(new THREE.Vector3(point.position[0], point.position[1], point.position[2]));
+            }
             
             return path;
             
@@ -321,18 +353,19 @@ class NavMeshBehavior extends BehaviorBase {
      * @param position
      * @param halfExtents
      */
-    findNearestPoint(position: THREE.Vector3, halfExtents: THREE.Vector3 = new THREE.Vector3(1, 1, 1)): THREE.Vector3 | null {
+    findNearestPoint(position: THREE.Vector3, halfExtents: THREE.Vector3 = DEFAULT_NAV_QUERY_HALF_EXTENTS): THREE.Vector3 | null {
         if (!this.isReady || !this.navMesh) {
             return null;
         }
 
         try {
             // Convert THREE.Vector3 to navcat Vec3 format
-            const positionVec: Nav.Vec3 = [position.x, position.y, position.z];
-            const halfExtentsVec: Nav.Vec3 = [halfExtents.x, halfExtents.y, halfExtents.z];
+            const positionVec = writeNavVec3(this.nearestPositionVec, position);
+            const halfExtentsVec = writeNavVec3(this.nearestHalfExtentsVec, halfExtents);
             
             // Use navcat findNearestPoly function
-            const result = createFindNearestPolyResult();
+            const result = this.nearestPolyResult;
+            result.success = false;
             findNearestPoly(
                 result,
                 this.navMesh,
@@ -367,11 +400,15 @@ class NavMeshBehavior extends BehaviorBase {
 
         try {
             // Convert THREE.Vector3 to navcat Vec3 format
-            const positionVec: Nav.Vec3 = [position.x, position.y, position.z];
-            const halfExtents: Nav.Vec3 = [1, 1, 1];
+            const positionVec = writeNavVec3(this.randomPositionVec, position);
+            const halfExtents = this.randomHalfExtentsVec;
+            halfExtents[0] = 1;
+            halfExtents[1] = 1;
+            halfExtents[2] = 1;
             
             // First find nearest poly to get a nodeRef
-            const nearestPolyResult = createFindNearestPolyResult();
+            const nearestPolyResult = this.randomNearestPolyResult;
+            nearestPolyResult.success = false;
             findNearestPoly(
                 nearestPolyResult,
                 this.navMesh,
@@ -487,7 +524,7 @@ class NavMeshBehavior extends BehaviorBase {
             this.previewScene?.remove(this.debugGroup);
             
             // Dispose all geometries and materials
-            this.debugGroup.traverse((child) => {
+            traverseObjectDepthFirst(this.debugGroup, (child) => {
                 if (child instanceof THREE.Mesh) {
                     child.geometry?.dispose();
                     if (Array.isArray(child.material)) {
@@ -522,21 +559,24 @@ class NavMeshBehavior extends BehaviorBase {
     private getSafePositionsAndIndices(objects: (THREE.Mesh | THREE.Group)[]): [number[], number[]] {
         const mergedPositions: number[] = [];
         const mergedIndices: number[] = [];
-        const positionToIndex: { [hash: string]: number } = {};
+        const positionToIndex = new Map<string, number>();
         let indexCounter = 0;
 
         const _v = new THREE.Vector3();
 
         // Flatten groups into their constituent meshes
         const meshes: THREE.Mesh[] = [];
+        const seenMeshes = new Set<THREE.Mesh>();
         for (const obj of objects) {
             if (obj instanceof THREE.Group) {
-                obj.traverse((child) => {
-                    if (child instanceof THREE.Mesh && child.geometry) {
+                traverseObjectDepthFirst(obj, (child) => {
+                    if (child instanceof THREE.Mesh && child.geometry && !seenMeshes.has(child)) {
+                        seenMeshes.add(child);
                         meshes.push(child);
                     }
                 });
-            } else {
+            } else if (!seenMeshes.has(obj)) {
+                seenMeshes.add(obj);
                 meshes.push(obj);
             }
         }
@@ -559,11 +599,11 @@ class NavMeshBehavior extends BehaviorBase {
                 
                 // Deduplicate vertices using string hash (same as navcat)
                 const key = `${_v.x}_${_v.y}_${_v.z}`;
-                let globalIndex = positionToIndex[key];
+                let globalIndex = positionToIndex.get(key);
 
                 if (globalIndex === undefined) {
                     globalIndex = indexCounter;
-                    positionToIndex[key] = indexCounter;
+                    positionToIndex.set(key, indexCounter);
                     mergedPositions.push(_v.x, _v.y, _v.z);
                     indexCounter++;
                 }
@@ -602,6 +642,37 @@ class NavMeshBehavior extends BehaviorBase {
         }
 
         return [mergedPositions, mergedIndices];
+    }
+
+    private hasPhysicsEnabledInHierarchy(object: THREE.Object3D): boolean {
+        let current: THREE.Object3D | null = object;
+        while (current && current !== this.scene) {
+            if (current.userData?.physics?.enabled) {
+                return true;
+            }
+            current = current.parent;
+        }
+
+        return false;
+    }
+
+    private isPhysicsRelevantObject(object: THREE.Object3D): boolean {
+        if (this.hasPhysicsEnabledInHierarchy(object)) {
+            return true;
+        }
+
+        let hasPhysicsDescendant = false;
+        traverseObjectDepthFirst(object, (child) => {
+            if (hasPhysicsDescendant || child === object) {
+                return;
+            }
+
+            if (child.userData?.physics?.enabled) {
+                hasPhysicsDescendant = true;
+            }
+        });
+
+        return hasPhysicsDescendant;
     }
 }
 

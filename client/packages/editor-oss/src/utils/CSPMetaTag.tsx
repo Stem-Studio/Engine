@@ -9,6 +9,15 @@ export const DIRECT_AI_PROVIDER_CONNECT_SOURCES = [
     "https://generativelanguage.googleapis.com/*",
 ];
 
+export const PASCAL_ASSET_CONNECT_SOURCES = [
+    "https://byrpxoiotywskoojsrzd.supabase.co",
+    "https://byrpxoiotywskoojsrzd.supabase.co/*",
+    "https://raw.githubusercontent.com",
+    "https://raw.githubusercontent.com/*",
+    "https://api.github.com",
+    "https://api.github.com/*",
+];
+
 // Define the base type for CSP directives
 type CSPDirective =
     | "default-src"
@@ -54,6 +63,7 @@ const CSPMetaTag = ({customPolicies = {}}) => {
             "https://unpkg.com",
             "https://cdn.discordapp.com",
             "https://discord.com",
+            ...PASCAL_ASSET_CONNECT_SOURCES,
             "blob:",
             // Asset uploads / downloads
             "https://s3.us-east-1.amazonaws.com",
@@ -177,6 +187,7 @@ export const customCSPPolicies = {
         "https://unpkg.com",
         "https://cdn.discordapp.com",
         "https://discord.com",
+        ...PASCAL_ASSET_CONNECT_SOURCES,
         "blob:",
         "https://cdn.cloud.scenario.com",
         "https://tripo-data.cdn.bcebos.com",

@@ -188,7 +188,8 @@ The code editor includes a built-in keyboard shortcuts panel. Click the keyboard
 ## Practical Tips
 
 - **Learn W, E, R, and F first.** These four shortcuts cover the most common viewport operations and will save you the most time.
-- **Use Ctrl+S (Cmd+S) constantly.** There is no auto-save. Build the habit of saving after every meaningful change.
+- **Use Ctrl+S (Cmd+S) at clear checkpoints.** The editor auto-saves, but an
+  explicit save before a risky change makes failures easier to notice.
 - **Use Ctrl+Z (Cmd+Z) fearlessly.** Undo is reliable and tracks most editor operations. If something goes wrong, undo immediately.
 - **Use F to re-orient yourself.** If you get lost in the viewport, select any object from the Project tab in the left panel and press F to snap the camera to it.
 - **Practice orbit and pan together.** Fluid camera control comes from combining right-click orbit and middle-click pan smoothly.

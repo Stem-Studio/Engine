@@ -5,7 +5,7 @@ import { GameObjectPhysics } from './GameObjectPhysics';
 import { PhysicsSettings } from './PhysicsSettings';
 import { configToSettings, settingsToConfig } from './util';
 import GameManager from '../../../behaviors/game/GameManager';
-import { PhysicsUtil } from '../../../physics/PhysicsUtil';
+import { PhysicsRuntimeUtil as PhysicsUtil } from '../../../physics/PhysicsRuntimeUtil';
 
 export const createGameObjectPhysics = (object: Object3D, game?: GameManager): GameObjectPhysics => {
   return {

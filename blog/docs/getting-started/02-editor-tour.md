@@ -9,6 +9,9 @@ prerequisites: [getting-started/01-what-is-stemstudio]
 
 # Editor Tour
 
+On phones, use the editor in landscape. Portrait intentionally displays the
+rotate-device gate. The supported phone QA floor is `844 × 390` CSS pixels.
+
 If you are new to the editor, this is the workflow to remember:
 
 1. Add or find assets in the **left panel**.
@@ -25,7 +28,7 @@ If you are new to the editor, this is the workflow to remember:
 | **Left Panel** | Scene hierarchy plus asset/library tools |
 | **Viewport** | 3D scene editing and selection |
 | **Right Panel** | Object properties, behaviors, lambdas, and scene settings |
-| **Top Menu** | Save, publish, account, and project actions |
+| **Top Menu** | Local save and project actions available in the current mode |
 | **Action Bar** | Camera presets, grid snap quick access, debug, AI copilot, code editor, shortcuts, and help |
 
 ## Left Panel
@@ -70,11 +73,8 @@ StemStudio’s top controls are split across two areas.
 
 ### Top Menu
 
-Use this area for:
-
-- saving the scene
-- publish and visibility actions
-- account and profile actions
+Use this area for saving and project actions. Playground mode intentionally
+hides publish, visibility, account, remote collaboration, and admin controls.
 
 ### Action Bar
 
@@ -87,7 +87,7 @@ Use this area for quick runtime/editor tools:
 - unified code editor
 - keyboard shortcuts
 - help/docs
-- collaboration status indicator
+- runtime/editor status
 
 ## Unified Code Editor
 

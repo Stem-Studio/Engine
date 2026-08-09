@@ -7,13 +7,14 @@ import {ClipLoader} from "react-spinners";
 
 import {ActionBar, ActionButton, AdminBadge, FixedActionBar} from "./GameOverview.style";
 import {createTrackedShareUrl} from "@stem/network/api/rewards";
-import {forkScene, getScene, updateScene} from "@stem/network/api/scene/v2";
+import {getScene, updateScene} from "@stem/network/api/scene/v2";
 import {useSetTemplateIds, useTemplateIds} from "@stem/network/api/templates/hooks";
 import {addLikedGame} from "@stem/network/api/updateUser";
 import {ROUTES} from "@web-shared/routes";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {useAppGlobalContext, useAuthorizationContext, useHomepageContext} from "@stem/editor-oss/context";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import global from "@stem/editor-oss/global";
 import {showToast} from "@stem/editor-oss/showToast";
 import Ajax from "@stem/editor-oss/utils/Ajax";
@@ -27,7 +28,7 @@ import {
     usePublishScene,
     useUnpublishScene,
 } from "../../../../asset-management/hooks/publish";
-import {prepareEditCurrentGameCopilotEntry, prepareRemixCopilotEntry} from "../../AiCopilot/copilotWorkspaceEntry";
+import {prepareEditCurrentGameCopilotEntry} from "../../AiCopilot/copilotWorkspaceEntry";
 import adminBadgeIcon from "../../icons/admin.svg";
 import {FileData} from "../../types/file";
 import archiveIcon from "../icons/archive.svg";
@@ -38,7 +39,6 @@ import eyeOpenIcon from "../icons/eye-open.svg";
 import heartOutlineIcon from "../icons/heart-outline.svg";
 import playIcon from "../icons/play.svg";
 import publishedStatusIcon from "../icons/published-status.svg";
-import remixIcon from "../icons/remix.svg";
 import versionIcon from "../icons/time.svg";
 import topPickIcon from "../icons/top-pick.svg";
 import unpublishedStatusIcon from "../icons/unpublished-status.svg";
@@ -55,7 +55,6 @@ interface OverviewActionBarProps {
  *
  * | Button      | Owner/Creator | Collaborator | Admin (not owner) | Player/Visitor |
  * |-------------|---------------|--------------|-------------------|----------------|
- * | Remix       | ✓ (duplicate) | ✓ (clone)    | ✓ (clone)         | ✓ if cloneable |
  * | Play        | ✓ if playable | ✓ if playable| ✓ if playable     | ✓ if playable  |
  * | Edit        | ✓             | ✓            | ✓                 | ✗              |
  * | Publish     | ✓ if unpublished | ✗         | ✓ if unpublished  | ✗              |
@@ -94,7 +93,6 @@ export const OverviewActionBar = ({scene, canEdit, isOwner, onSceneUpdate}: Over
     const isOwnerOrAdmin = isOwner || isAdmin;
     const isTemplate = templateIds.includes(scene.ID);
     const canMarkAsTemplate = isPublished && isPublic && scene.IsCloneable === true;
-    const canRemix = isOwner || scene.IsCloneable === true;
     // A scene is playable whenever it is published — and owners can always
     // launch their own games (including unpublished drafts) so they can
     // preview changes before publishing. IsPublic gates whether the scene's
@@ -227,35 +225,6 @@ export const OverviewActionBar = ({scene, canEdit, isOwner, onSceneUpdate}: Over
 
         prepareEditCurrentGameCopilotEntry(scene);
         openEditorRoute(generateProjectLink(scene.ID, {readOnly: canOpenReadOnly}));
-    };
-
-    const handleRemix = async () => {
-        if (!canRemix || loadingAction === "remix") return;
-        trackProductEvent(PRODUCT_ANALYTICS_EVENTS.GAME_REMIX_CLICKED, {
-            scene_id: scene.ID,
-            source: "game_overview",
-            owner: isOwner,
-        });
-        if (!isAuthorized) {
-            redirectToLogin(navigate, undefined, "game_overview_remix");
-            return;
-        }
-        setLoadingAction("remix");
-        try {
-            const result = await forkScene(scene.ID);
-            showToast({type: "success", title: "Starting a remix"});
-            if (result?.newSceneId) {
-                prepareRemixCopilotEntry({
-                    newSceneId: result.newSceneId,
-                    sourceScene: scene,
-                });
-                openEditorRoute(generateProjectLink(result.newSceneId));
-            }
-        } catch (err: unknown) {
-            showToast({type: "error", title: err instanceof Error ? err.message : "Remix failed"});
-        } finally {
-            setLoadingAction(null);
-        }
     };
 
     const handleUnpublish = async () => {
@@ -478,48 +447,6 @@ export const OverviewActionBar = ({scene, canEdit, isOwner, onSceneUpdate}: Over
                     data-testid="overview-play"
                 >
                     Play
-                </ActionButton>
-            )}
-            <ActionButton
-                $variant="primary"
-                customIcon={remixIcon}
-                onClick={() => void handleRemix()}
-                disabled={!canRemix || loadingAction === "remix"}
-                title={!canRemix ? "This game cannot be remixed" : undefined}
-                data-testid="overview-remix"
-            >
-                {loadingAction === "remix" ? (
-                    <span style={{display: "flex", flexDirection: "column", alignItems: "center", gap: 4}}>
-                        <ClipLoader loading size={14} color="#fff" />
-                        <span>Remixing</span>
-                    </span>
-                ) : "Remix"}
-            </ActionButton>
-            {/* Publishing and public/private visibility require the hosted
-                scene gallery — OSS/playground has no such backend, so the
-                publish + visibility controls are hidden here. */}
-            {!IS_OSS && isOwnerOrAdmin && !scene.IsArchived && (
-                <ActionButton
-                    $variant="secondary"
-                    customIcon={isPublished ? publishedStatusIcon : unpublishedStatusIcon}
-                    onClick={() => void (isPublished ? handleUnpublish() : handlePublish())}
-                    disabled={loadingAction === "publish" || loadingAction === "unpublish"}
-                >
-                    {loadingAction === "publish" || loadingAction === "unpublish" ? (
-                        <ClipLoader loading size={14} color="#fff" />
-                    ) : (
-                        <>{isPublished ? "Published" : "Unpublished"}</>
-                    )}
-                </ActionButton>
-            )}
-            {!IS_OSS && isOwnerOrAdmin && isPublished && (
-                <ActionButton
-                    $variant="secondary"
-                    customIcon={isPublic ? eyeOpenIcon : eyeClosedIcon}
-                    onClick={handleTogglePublic}
-                    disabled={loadingAction === "visibility"}
-                >
-                    {isPublic ? "Public" : "Private"}
                 </ActionButton>
             )}
             {isOwnerOrAdmin &&

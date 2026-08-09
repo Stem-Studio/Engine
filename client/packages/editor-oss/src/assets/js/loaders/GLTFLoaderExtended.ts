@@ -1,14 +1,15 @@
 import {MeshoptDecoder} from "meshoptimizer";
-import {Group, LoaderUtils, LoadingManager, Material, Mesh, MeshStandardMaterial, Object3D, Texture, TextureLoader} from "three";
-import {DRACOLoader} from "three/examples/jsm/loaders/DRACOLoader.js";
-import {GLTFLoader, GLTFParser} from "three/examples/jsm/loaders/GLTFLoader.js";
-import {KTX2Loader} from "three/examples/jsm/loaders/KTX2Loader.js";
+import {Group, LoaderUtils, LoadingManager, Material, Mesh, MeshStandardMaterial, Texture, TextureLoader} from "three";
+import {DRACOLoader} from "three/addons/loaders/DRACOLoader.js";
+import {GLTFLoader, GLTFParser} from "three/addons/loaders/GLTFLoader.js";
+import {KTX2Loader} from "three/addons/loaders/KTX2Loader.js";
 
 import {EARTHAnimationGraphLoaderPlugin} from "../../../animation/extensions/EARTHAnimationGraphLoaderPlugin";
 import {LoadedAtlas} from "../../../atlas/types";
 import {applyAtlasToObject} from "../../../atlas/UVRemapper";
 import global from "../../../global";
-import {TextureOverrides, TextureRef, findTexture, getBaseName} from "../../../texture/TextureMapping";
+import {TextureOverrides, TextureRef, findTexture, getBaseName, isTextureFile} from "../../../texture/TextureMapping";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 import {setTextureResolutionContext} from "../../../utils/TextureUtils";
 
 /**
@@ -20,8 +21,7 @@ class GLTFLoaderExtended {
 
     private createLoader() {
         const dracoLoader = new DRACOLoader(this.loadingManager)
-            .setDecoderPath(`/assets/js/draco/gltf/`)
-            .setDecoderConfig({type: "js"});
+            .setDecoderPath(`/assets/js/draco/gltf/`);
 
         const ktxLoader = new KTX2Loader(this.loadingManager)
             .setTranscoderPath(`/assets/js/basis/`);
@@ -50,6 +50,41 @@ class GLTFLoaderExtended {
         }};
     }
 
+    parseGlb(data: ArrayBuffer) {
+        const { loader, dispose } = this.createLoader();
+
+        return new Promise<Group>((resolve, reject) => {
+            loader.parse(
+                data,
+                "",
+                result => {
+                    const obj3d = result.scene;
+
+                    (obj3d as Group & {_obj?: typeof result; _root?: Group})._obj = result;
+                    (obj3d as Group & {_obj?: typeof result; _root?: Group})._root = result.scene;
+
+                    traverseObjectDepthFirst(obj3d, child => {
+                        if (child instanceof Mesh && child.geometry) {
+                            child.geometry.computeBoundingBox();
+                        }
+                    });
+
+                    setTextureResolutionContext(null);
+                    resolve(obj3d);
+                    dispose();
+                },
+                (error: unknown) => {
+                    setTextureResolutionContext(null);
+                    const message = error instanceof Error ? error.message
+                        : typeof error === 'string' ? error
+                        : 'Unknown error';
+                    reject(new Error(`Failed to parse GLB: ${message}`));
+                    dispose();
+                },
+            );
+        });
+    }
+
     load(
         url: string,
         rootPath: string,
@@ -60,6 +95,7 @@ class GLTFLoaderExtended {
         const baseURL = LoaderUtils.extractUrlBase(url);
         const blobURLs: string[] = [];
         const modelBaseName = getBaseName(url);
+        const hasTextureCandidates = Array.from(assetMap.keys()).some(path => isTextureFile(path));
 
         // CRITICAL: Set global texture resolution context for TextureUtils
         // This allows the patched ImageBitmapLoader to resolve textures from our fileBlobMap
@@ -112,28 +148,27 @@ class GLTFLoaderExtended {
                 ? `${rootPath}/${relativePath}`
                 : relativePath;
 
-            console.warn(`[Pipeline] URLModifier: requested="${relativePath}" → normalized="${normalizedURL}"`);
-
             // First try direct lookup
             const blob = assetMap.get(normalizedURL);
             if (blob) {
                 const blobURL = URL.createObjectURL(blob);
                 blobURLs.push(blobURL);
-                console.warn(`[Pipeline] URLModifier: DIRECT HIT for "${normalizedURL}"`);
                 return blobURL;
             }
 
-            // Use fallback search if direct lookup failed
-            console.warn(`[Pipeline] URLModifier: Direct lookup MISS, trying findTexture fallback...`);
-            const found = findTexture(normalizedURL, assetMap, rootPath, modelBaseName);
-            if (found) {
-                const blobURL = URL.createObjectURL(found.blob);
-                blobURLs.push(blobURL);
-                console.warn(`[Pipeline] URLModifier: findTexture resolved "${normalizedURL}" → "${found.path}"`);
-                return blobURL;
+            // Use fallback texture matching only when loose texture files are
+            // actually present. Raw self-contained GLBs can request embedded
+            // texture identifiers; running the fallback search for those emits
+            // noisy miss logs and burns time without any possible match.
+            if (hasTextureCandidates) {
+                const found = findTexture(normalizedURL, assetMap, rootPath, modelBaseName);
+                if (found) {
+                    const blobURL = URL.createObjectURL(found.blob);
+                    blobURLs.push(blobURL);
+                    return blobURL;
+                }
             }
 
-            console.warn(`[Pipeline] URLModifier: ALL LOOKUPS FAILED for "${normalizedURL}" — returning original URL`);
             return requestedUrl;
         });
 
@@ -149,7 +184,7 @@ class GLTFLoaderExtended {
                     (obj3d as Group & {_obj?: typeof result; _root?: Group})._root = result.scene;
 
                     // Compute bounding boxes for all geometries
-                    obj3d.traverse((child: Object3D) => {
+                    traverseObjectDepthFirst(obj3d, child => {
                         if (child instanceof Mesh && child.geometry) {
                             child.geometry.computeBoundingBox();
                         }
@@ -227,7 +262,7 @@ class GLTFLoaderExtended {
                     applyAtlasToObject(object, config);
 
                     // Apply atlas texture to all meshes with UVs
-                    object.traverse((child) => {
+                    traverseObjectDepthFirst(object, child => {
                         if (!(child instanceof Mesh)) return;
 
                         const mesh = child as Mesh;
@@ -255,7 +290,6 @@ class GLTFLoaderExtended {
 
                     // Store atlas data in userData for later reference
                     object.userData.atlasData = atlasData;
-                    console.log("GLTFLoaderExtended: Applied atlas texture and UV remapping");
                     resolve();
                 },
                 undefined,
@@ -278,9 +312,8 @@ class GLTFLoaderExtended {
     private async applyTextureOverrides(object: Group, overrides: TextureOverrides): Promise<void> {
         const textureLoader = new TextureLoader();
         const loadedTextures: Map<string, Texture> = new Map();
+        const pendingTextures: Map<string, Promise<Texture>> = new Map();
         const blobUrls: string[] = [];
-
-        console.log("GLTFLoaderExtended: Starting texture override application with:", Object.keys(overrides));
 
         // Helper to load a texture from a TextureRef
         const loadTextureFromRef = async (ref: TextureRef): Promise<Texture> => {
@@ -289,15 +322,19 @@ class GLTFLoaderExtended {
                 return loadedTextures.get(ref.path)!;
             }
 
+            const pendingTexture = pendingTextures.get(ref.path);
+            if (pendingTexture) {
+                return pendingTexture;
+            }
+
             const blobUrl = URL.createObjectURL(ref.blob);
             blobUrls.push(blobUrl);
 
-            return new Promise((resolve, reject) => {
+            const texturePromise = new Promise<Texture>((resolve, reject) => {
                 textureLoader.load(
                     blobUrl,
                     (texture) => {
                         loadedTextures.set(ref.path, texture);
-                        console.log(`GLTFLoaderExtended: Loaded override texture: ${ref.path}`);
                         resolve(texture);
                     },
                     undefined,
@@ -306,7 +343,12 @@ class GLTFLoaderExtended {
                         reject(error);
                     },
                 );
+            }).finally(() => {
+                pendingTextures.delete(ref.path);
             });
+
+            pendingTextures.set(ref.path, texturePromise);
+            return texturePromise;
         };
 
         try {
@@ -331,13 +373,12 @@ class GLTFLoaderExtended {
                 return;
             }
 
-            let materialsUpdated = 0;
             // Track processed materials to avoid double-dispose when meshes share materials.
             // Without this, the second mesh iteration disposes the NEW texture we just assigned.
             const processedMaterials = new Set<Material>();
 
             // Apply textures to all meshes - handle ANY material type with a 'map' property
-            object.traverse((child) => {
+            traverseObjectDepthFirst(object, child => {
                 if (!(child instanceof Mesh)) return;
 
                 const mesh = child as Mesh;
@@ -426,8 +467,6 @@ class GLTFLoaderExtended {
                             material.transparent = true;
                         }
                         material.needsUpdate = true;
-                        materialsUpdated++;
-                        console.warn(`[Pipeline] applyTextureOverrides: Updated material "${material.name}" on mesh "${mesh.name}" with: ${Array.from(textureMap.keys()).join(', ')}`);
                     }
                     // Handle any other material type that has a 'map' property (MeshBasicMaterial, MeshPhongMaterial, etc.)
                     else if ('map' in material && textureMap.has('map')) {
@@ -440,8 +479,6 @@ class GLTFLoaderExtended {
                         mat.map?.dispose?.();
                         mat.map = newTex;
                         mat.needsUpdate = true;
-                        materialsUpdated++;
-                        console.warn(`[Pipeline] applyTextureOverrides: Applied texture to non-standard material "${material.name}" (${material.type}) on mesh "${mesh.name}"`);
                     }
                 }
             });
@@ -450,8 +487,6 @@ class GLTFLoaderExtended {
             object.userData.textureOverrides = Object.fromEntries(
                 Array.from(textureMap.entries()).map(([key]) => [key, true]),
             );
-
-            console.log(`GLTFLoaderExtended: Applied texture overrides to ${materialsUpdated} materials:`, Array.from(textureMap.keys()));
         } catch (error) {
             console.warn("GLTFLoaderExtended: Error applying texture overrides:", error);
         } finally {

@@ -63,9 +63,6 @@ export class QualityManager extends EventEmitter implements IQualityManager {
                 this.customPresets.set(preset.id, preset);
             });
 
-            // Initialize performance monitoring
-            this.performanceMonitor.initialize();
-
             // Detect device capabilities and apply as launch baseline
             const recommendedSettings = await this.detectDeviceCapabilities();
             this.currentSettings = recommendedSettings;
@@ -148,11 +145,7 @@ export class QualityManager extends EventEmitter implements IQualityManager {
         await this.setSettings(preset.settings, options);
     }
 
-    /**
-     * Apply a preset for performance reasons (worker-driven adaptive quality).
-     * Emits the change event with reason 'performance'.
-     * @param presetId
-     */
+    /** Apply a preset for an explicit performance-policy change. */
     public async applyPresetForPerformance(presetId: string): Promise<void> {
         const preset = this.getPresetById(presetId);
         if (!preset) {
@@ -219,34 +212,8 @@ export class QualityManager extends EventEmitter implements IQualityManager {
         return preset;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    public async enableAutoQuality(_targetFps: number = 60): Promise<void> {
-        // No-op: auto quality has been removed. Settings are init-only.
-    }
-
-    public disableAutoQuality(): void {
-        // No-op: auto quality has been removed.
-    }
-
-    public isAutoQualityEnabled(): boolean {
-        return false;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    public setTargetFrameRate(_fps: number): void {
-        // No-op: auto quality has been removed.
-    }
-
     public getPerformanceMetrics(): IPerformanceMetrics {
         return this.performanceMonitor.getMetrics();
-    }
-
-    public startPerformanceMonitoring(): void {
-        // No-op: runtime FPS monitoring removed.
-    }
-
-    public stopPerformanceMonitoring(): void {
-        // No-op: runtime FPS monitoring removed.
     }
 
     public registerModule(module: IQualityModule): void {

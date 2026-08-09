@@ -19,24 +19,31 @@ class ResizeEvent extends BaseEvent {
         super();
         this._resizeObserver = null;
         this._resizePending = false;
+        this._resizeFrame = 0;
+        this._started = false;
     }
 
     start() {
+        if (this._started) {
+            return;
+        }
+        this._started = true;
         global.app.on(`resize.${this.id}`, this._onResizeEvent.bind(this));
-        global.app.on(`animate.ResizeEvent`, this._flushPendingResize.bind(this));
 
         const viewport = global.app.viewport;
         if (viewport && typeof ResizeObserver !== "undefined") {
-            this._resizeObserver = new ResizeObserver(() => {
-                this._resizePending = true;
-            });
+            this._resizeObserver = new ResizeObserver(() => this._scheduleResizeFlush());
             this._resizeObserver.observe(viewport);
         }
     }
 
     stop() {
+        if (!this._started) {
+            return;
+        }
+        this._started = false;
         global.app.on(`resize.${this.id}`, null);
-        global.app.on(`animate.ResizeEvent`, null);
+        this._cancelResizeFlush();
 
         if (this._resizeObserver) {
             this._resizeObserver.disconnect();
@@ -52,17 +59,38 @@ class ResizeEvent extends BaseEvent {
      * Applies immediately.
      */
     _onResizeEvent() {
+        this._cancelResizeFlush();
+        this._resizePending = false;
         this._applyResize();
     }
 
     /**
-     * Called every animation frame. Only does work when a ResizeObserver
-     * callback has flagged a pending resize.
+     * Schedule one resize flush for all ResizeObserver callbacks received
+     * before the browser's next frame.
      */
+    _scheduleResizeFlush() {
+        this._resizePending = true;
+        if (this._resizeFrame) {
+            return;
+        }
+        this._resizeFrame = requestAnimationFrame(() => {
+            this._resizeFrame = 0;
+            this._flushPendingResize();
+        });
+    }
+
     _flushPendingResize() {
         if (!this._resizePending) return;
         this._resizePending = false;
         this._applyResize();
+    }
+
+    _cancelResizeFlush() {
+        if (!this._resizeFrame) {
+            return;
+        }
+        cancelAnimationFrame(this._resizeFrame);
+        this._resizeFrame = 0;
     }
 
     _applyResize() {

@@ -2,7 +2,6 @@ import styled, {css} from "styled-components";
 
 import {flexCenter, regularFont} from "../../../../../../assets/style";
 import {EDITOR_TOP_NAV_HEIGHT} from "@stem/editor-oss/types/editor";
-import {getZIndexWithinHUD, HUD_Z_INDEX} from "../services";
 
 /**
  * Shared floating-pill treatment used by other in-game HUD overlays (e.g. FTUE).
@@ -20,7 +19,9 @@ export const floatingContainerStyle = css`
 
 export const StyledNav = styled.nav`
     position: fixed;
-    z-index: ${getZIndexWithinHUD(HUD_Z_INDEX.HUDBase, 99)};
+    /* The active editor Play chrome is host UI. Keep it above body-level
+       runtime HUDs, which are authored by the loaded game. */
+    z-index: 10000;
     top: 0;
     left: 0;
     right: 0;

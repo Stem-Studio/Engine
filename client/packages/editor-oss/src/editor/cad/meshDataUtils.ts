@@ -18,6 +18,11 @@ type TriangleCandidate = {
     normal: THREE.Vector3;
     planeConstant: number;
 };
+type OrderedFacePoint = {
+    vertexId: number;
+    position: THREE.Vector3Like;
+};
+type TriangleIndexBuffer = ArrayLike<number>;
 
 /**
  *
@@ -41,9 +46,9 @@ function getVertexKey(position: THREE.Vector3Like, tolerance: number): string {
  *
  * @param geometry
  */
-function getTriangleIndices(geometry: THREE.BufferGeometry): number[] {
+function getTriangleIndices(geometry: THREE.BufferGeometry): TriangleIndexBuffer {
     if (geometry.index) {
-        return Array.from(geometry.index.array as Iterable<number>);
+        return geometry.index.array as TriangleIndexBuffer;
     }
 
     const position = geometry.getAttribute("position");
@@ -55,13 +60,47 @@ function getTriangleIndices(geometry: THREE.BufferGeometry): number[] {
  * @param meshData
  * @param bufferIndices
  */
-function getVertexIdsForBufferIndices(meshData: MeshData, bufferIndices: number[]): number[] | null {
-    const vertexIds = bufferIndices.map(index => meshData.bufferIndexToVertexId.get(index));
-    if (vertexIds.some(vertexId => vertexId === undefined)) {
-        return null;
+function getVertexIdsForIndexRange(
+    meshData: MeshData,
+    triangleIndices: TriangleIndexBuffer,
+    start: number,
+    count: number,
+): number[] | null {
+    const vertexIds: number[] = [];
+    for (let offset = 0; offset < count; offset++) {
+        const bufferIndex = triangleIndices[start + offset];
+        if (bufferIndex === undefined) {
+            return null;
+        }
+        const vertexId = meshData.bufferIndexToVertexId.get(bufferIndex);
+        if (vertexId === undefined) {
+            return null;
+        }
+        vertexIds.push(vertexId);
     }
+    return vertexIds;
+}
 
-    return vertexIds as number[];
+function hasThreeUniqueVertexIds(vertexIds: ArrayLike<number>): boolean {
+    return vertexIds.length >= 3
+        && vertexIds[0] !== vertexIds[1]
+        && vertexIds[0] !== vertexIds[2]
+        && vertexIds[1] !== vertexIds[2];
+}
+
+function getUniqueVertexIds(vertexIds: ArrayLike<number>): number[] {
+    const uniqueVertexIds: number[] = [];
+    for (let index = 0; index < vertexIds.length; index++) {
+        const vertexId = vertexIds[index]!;
+        if (!uniqueVertexIds.includes(vertexId)) {
+            uniqueVertexIds.push(vertexId);
+        }
+    }
+    return uniqueVertexIds;
+}
+
+function dotPosition(normal: THREE.Vector3, position: THREE.Vector3Like): number {
+    return normal.x * position.x + normal.y * position.y + normal.z * position.z;
 }
 
 /**
@@ -81,10 +120,18 @@ function computeNormalFromVertexIds(meshData: MeshData, vertexIds: number[]): TH
         return new THREE.Vector3(0, 0, 1);
     }
 
-    return new THREE.Vector3()
-        .subVectors(new THREE.Vector3(p1.x, p1.y, p1.z), new THREE.Vector3(p0.x, p0.y, p0.z))
-        .cross(new THREE.Vector3().subVectors(new THREE.Vector3(p2.x, p2.y, p2.z), new THREE.Vector3(p0.x, p0.y, p0.z)))
-        .normalize();
+    const ux = p1.x - p0.x;
+    const uy = p1.y - p0.y;
+    const uz = p1.z - p0.z;
+    const vx = p2.x - p0.x;
+    const vy = p2.y - p0.y;
+    const vz = p2.z - p0.z;
+
+    return new THREE.Vector3(
+        uy * vz - uz * vy,
+        uz * vx - ux * vz,
+        ux * vy - uy * vx,
+    ).normalize();
 }
 
 /**
@@ -94,31 +141,32 @@ function computeNormalFromVertexIds(meshData: MeshData, vertexIds: number[]): TH
  * @param referenceNormal
  */
 function orderFaceVertexIds(meshData: MeshData, vertexIds: number[], referenceNormal?: THREE.Vector3): number[] | null {
-    const uniqueVertexIds = Array.from(new Set(vertexIds));
+    const uniqueVertexIds = getUniqueVertexIds(vertexIds);
     if (uniqueVertexIds.length < 3) {
         return null;
     }
 
-    const points = uniqueVertexIds
-        .map(vertexId => {
-            const vertex = meshData.getVertex(vertexId);
-            if (!vertex) {
-                return null;
-            }
-
-            return {
+    const points: OrderedFacePoint[] = [];
+    uniqueVertexIds.forEach(vertexId => {
+        const vertex = meshData.getVertex(vertexId);
+        if (vertex) {
+            points.push({
                 vertexId,
-                point: new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z),
-            };
-        })
-        .filter((entry): entry is {vertexId: number; point: THREE.Vector3} => !!entry);
+                position: vertex.position,
+            });
+        }
+    });
 
     if (points.length < 3) {
         return null;
     }
 
     const centroid = new THREE.Vector3();
-    points.forEach(({point}) => centroid.add(point));
+    points.forEach(({position}) => {
+        centroid.x += position.x;
+        centroid.y += position.y;
+        centroid.z += position.z;
+    });
     centroid.multiplyScalar(1 / points.length);
 
     const normal = (referenceNormal && referenceNormal.lengthSq() > 0
@@ -140,10 +188,14 @@ function orderFaceVertexIds(meshData: MeshData, vertexIds: number[], referenceNo
 
     const ordered = points
         .map(entry => {
-            const offset = entry.point.clone().sub(centroid);
+            const offsetX = entry.position.x - centroid.x;
+            const offsetY = entry.position.y - centroid.y;
+            const offsetZ = entry.position.z - centroid.z;
+            const tangentDot = offsetX * tangent.x + offsetY * tangent.y + offsetZ * tangent.z;
+            const bitangentDot = offsetX * bitangent.x + offsetY * bitangent.y + offsetZ * bitangent.z;
             return {
                 vertexId: entry.vertexId,
-                angle: Math.atan2(offset.dot(bitangent), offset.dot(tangent)),
+                angle: Math.atan2(bitangentDot, tangentDot),
             };
         })
         .sort((a, b) => a.angle - b.angle)
@@ -162,15 +214,10 @@ function orderFaceVertexIds(meshData: MeshData, vertexIds: number[], referenceNo
  * @param meshData
  * @param triangleIndices
  */
-function addTriangleFaces(meshData: MeshData, triangleIndices: number[]) {
-    for (let triangleIndex = 0; triangleIndex + 2 < triangleIndices.length; triangleIndex += 3) {
-        const triangleBufferIndices = [
-            triangleIndices[triangleIndex]!,
-            triangleIndices[triangleIndex + 1]!,
-            triangleIndices[triangleIndex + 2]!,
-        ];
-        const vertexIds = getVertexIdsForBufferIndices(meshData, triangleBufferIndices);
-        if (!vertexIds || new Set(vertexIds).size < 3) {
+function addTriangleFaces(meshData: MeshData, triangleIndices: TriangleIndexBuffer, start = 0, end = triangleIndices.length) {
+    for (let triangleIndex = start; triangleIndex + 2 < end && triangleIndex + 2 < triangleIndices.length; triangleIndex += 3) {
+        const vertexIds = getVertexIdsForIndexRange(meshData, triangleIndices, triangleIndex, 3);
+        if (!vertexIds || !hasThreeUniqueVertexIds(vertexIds)) {
             continue;
         }
 
@@ -192,17 +239,12 @@ function getUndirectedEdgeKey(v1Id: number, v2Id: number): string {
  * @param meshData
  * @param triangleIndices
  */
-function buildTriangleCandidates(meshData: MeshData, triangleIndices: number[]): TriangleCandidate[] {
+function buildTriangleCandidates(meshData: MeshData, triangleIndices: TriangleIndexBuffer): TriangleCandidate[] {
     const triangles: TriangleCandidate[] = [];
 
     for (let triangleIndex = 0; triangleIndex + 2 < triangleIndices.length; triangleIndex += 3) {
-        const triangleBufferIndices = [
-            triangleIndices[triangleIndex]!,
-            triangleIndices[triangleIndex + 1]!,
-            triangleIndices[triangleIndex + 2]!,
-        ];
-        const vertexIds = getVertexIdsForBufferIndices(meshData, triangleBufferIndices);
-        if (!vertexIds || new Set(vertexIds).size < 3) {
+        const vertexIds = getVertexIdsForIndexRange(meshData, triangleIndices, triangleIndex, 3);
+        if (!vertexIds || !hasThreeUniqueVertexIds(vertexIds)) {
             continue;
         }
 
@@ -220,7 +262,7 @@ function buildTriangleCandidates(meshData: MeshData, triangleIndices: number[]):
         triangles.push({
             vertexIds: triangleVertexIds,
             normal,
-            planeConstant: normal.dot(new THREE.Vector3(firstVertex.position.x, firstVertex.position.y, firstVertex.position.z)),
+            planeConstant: dotPosition(normal, firstVertex.position),
         });
     }
 
@@ -252,8 +294,7 @@ function isTriangleCoplanarWithReference(
             return false;
         }
 
-        const point = new THREE.Vector3(vertex.position.x, vertex.position.y, vertex.position.z);
-        return Math.abs(referenceNormal.dot(point) - referencePlaneConstant) <= tolerance;
+        return Math.abs(dotPosition(referenceNormal, vertex.position) - referencePlaneConstant) <= tolerance;
     });
 }
 
@@ -305,8 +346,19 @@ function buildMergedBoundaryFace(meshData: MeshData, triangles: TriangleCandidat
 
     const adjacency = new Map<number, number[]>();
     boundaryEdges.forEach(([v1Id, v2Id]) => {
-        adjacency.set(v1Id, [...(adjacency.get(v1Id) || []), v2Id]);
-        adjacency.set(v2Id, [...(adjacency.get(v2Id) || []), v1Id]);
+        let firstNeighbors = adjacency.get(v1Id);
+        if (!firstNeighbors) {
+            firstNeighbors = [];
+            adjacency.set(v1Id, firstNeighbors);
+        }
+        firstNeighbors.push(v2Id);
+
+        let secondNeighbors = adjacency.get(v2Id);
+        if (!secondNeighbors) {
+            secondNeighbors = [];
+            adjacency.set(v2Id, secondNeighbors);
+        }
+        secondNeighbors.push(v1Id);
     });
 
     if (Array.from(adjacency.values()).some(neighbors => neighbors.length !== 2)) {
@@ -371,7 +423,7 @@ function buildMergedBoundaryFace(meshData: MeshData, triangles: TriangleCandidat
  */
 function addMergedCoplanarFaces(
     meshData: MeshData,
-    triangleIndices: number[],
+    triangleIndices: TriangleIndexBuffer,
     tolerance = DEFAULT_COPLANAR_DISTANCE_TOLERANCE,
 ) {
     const triangles = buildTriangleCandidates(meshData, triangleIndices);
@@ -389,7 +441,12 @@ function addMergedCoplanarFaces(
 
         triangleEdges.forEach(([v1Id, v2Id]) => {
             const key = getUndirectedEdgeKey(v1Id, v2Id);
-            edgeToTriangleIndices.set(key, [...(edgeToTriangleIndices.get(key) || []), triangleIndex]);
+            let indices = edgeToTriangleIndices.get(key);
+            if (!indices) {
+                indices = [];
+                edgeToTriangleIndices.set(key, indices);
+            }
+            indices.push(triangleIndex);
         });
     });
 
@@ -460,24 +517,23 @@ function addMergedCoplanarFaces(
  * @param meshData
  * @param triangleIndices
  */
-function addPrimitiveQuadFaces(meshData: MeshData, triangleIndices: number[]) {
+function addPrimitiveQuadFaces(meshData: MeshData, triangleIndices: TriangleIndexBuffer) {
     for (let chunkStart = 0; chunkStart + 5 < triangleIndices.length; chunkStart += 6) {
-        const quadBufferIndices = triangleIndices.slice(chunkStart, chunkStart + 6);
-        const vertexIds = getVertexIdsForBufferIndices(meshData, quadBufferIndices);
+        const vertexIds = getVertexIdsForIndexRange(meshData, triangleIndices, chunkStart, 6);
         if (!vertexIds) {
             continue;
         }
 
-        const uniqueVertexIds = Array.from(new Set(vertexIds));
+        const uniqueVertexIds = getUniqueVertexIds(vertexIds);
         if (uniqueVertexIds.length !== 4) {
-            addTriangleFaces(meshData, quadBufferIndices);
+            addTriangleFaces(meshData, triangleIndices, chunkStart, chunkStart + 6);
             continue;
         }
 
-        const referenceNormal = computeNormalFromVertexIds(meshData, vertexIds.slice(0, 3));
+        const referenceNormal = computeNormalFromVertexIds(meshData, [vertexIds[0]!, vertexIds[1]!, vertexIds[2]!]);
         const orderedVertexIds = orderFaceVertexIds(meshData, uniqueVertexIds, referenceNormal);
         if (!orderedVertexIds || orderedVertexIds.length !== 4) {
-            addTriangleFaces(meshData, quadBufferIndices);
+            addTriangleFaces(meshData, triangleIndices, chunkStart, chunkStart + 6);
             continue;
         }
 
@@ -491,7 +547,15 @@ function addPrimitiveQuadFaces(meshData: MeshData, triangleIndices: number[]) {
  * @param meshData
  */
 function shouldRegenerateQuadPrimitiveMeshData(geometry: THREE.BufferGeometry, meshData: MeshData): boolean {
-    return QUAD_COMPATIBLE_GEOMETRY_TYPES.has(geometry.type) && Array.from(meshData.faces.values()).every(face => face.vertexIds.length === 3);
+    if (!QUAD_COMPATIBLE_GEOMETRY_TYPES.has(geometry.type)) {
+        return false;
+    }
+    for (const face of meshData.faces.values()) {
+        if (face.vertexIds.length !== 3) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -549,8 +613,34 @@ export function createMeshDataFromGeometry(
  * @param meshData
  */
 export function createGeometryFromMeshData(meshData: MeshData): THREE.BufferGeometry {
-    const positions: number[] = [];
-    const indices: number[] = [];
+    let vertexCount = 0;
+    let indexCount = 0;
+
+    for (const face of meshData.faces.values()) {
+        const faceVertexIds = face.vertexIds;
+        if (faceVertexIds.length < 3) {
+            continue;
+        }
+
+        let faceVertexCount = 0;
+        for (const vertexId of faceVertexIds) {
+            if (meshData.getVertex(vertexId)) {
+                faceVertexCount++;
+            }
+        }
+
+        if (faceVertexCount < 3) {
+            continue;
+        }
+
+        vertexCount += faceVertexCount;
+        indexCount += (faceVertexCount - 2) * 3;
+    }
+
+    const positions = new Float32Array(vertexCount * 3);
+    const indices = vertexCount > 65535 ? new Uint32Array(indexCount) : new Uint16Array(indexCount);
+    let positionOffset = 0;
+    let indexOffset = 0;
     let vertexOffset = 0;
 
     for (const face of meshData.faces.values()) {
@@ -559,28 +649,36 @@ export function createGeometryFromMeshData(meshData: MeshData): THREE.BufferGeom
             continue;
         }
 
-        const facePositions = faceVertexIds
-            .map(vertexId => meshData.getVertex(vertexId))
-            .filter((vertex): vertex is NonNullable<typeof vertex> => !!vertex);
+        const faceVertexOffset = vertexOffset;
+        let faceVertexCount = 0;
 
-        if (facePositions.length < 3) {
+        for (const vertexId of faceVertexIds) {
+            const vertex = meshData.getVertex(vertexId);
+            if (!vertex) {
+                continue;
+            }
+            positions[positionOffset++] = vertex.position.x;
+            positions[positionOffset++] = vertex.position.y;
+            positions[positionOffset++] = vertex.position.z;
+            faceVertexCount++;
+        }
+
+        if (faceVertexCount < 3) {
             continue;
         }
 
-        for (const vertex of facePositions) {
-            positions.push(vertex.position.x, vertex.position.y, vertex.position.z);
+        for (let index = 1; index < faceVertexCount - 1; index++) {
+            indices[indexOffset++] = faceVertexOffset;
+            indices[indexOffset++] = faceVertexOffset + index;
+            indices[indexOffset++] = faceVertexOffset + index + 1;
         }
 
-        for (let index = 1; index < facePositions.length - 1; index++) {
-            indices.push(vertexOffset, vertexOffset + index, vertexOffset + index + 1);
-        }
-
-        vertexOffset += facePositions.length;
+        vertexOffset += faceVertexCount;
     }
 
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setIndex(indices);
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();

@@ -13,6 +13,7 @@ import {SetPositionCommand} from "@stem/editor-oss/command/SetPositionCommand";
 import global from "@stem/editor-oss/global";
 import {ExtendedDirectionalLight} from "@stem/editor-oss/light/ExtendedDirectionalLight";
 import {getOrCreateDynamicRoot, getOrCreateSceneHelpersRoot} from "@stem/editor-oss/scene/dynamicRoots";
+import {findObjectByNameDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 class EmptySceneTemplate extends BaseSceneTemplate {
     create() {
@@ -24,10 +25,6 @@ class EmptySceneTemplate extends BaseSceneTemplate {
                 ...editor.scene.userData?.cesium,
                 enabled: false,
             },
-            scheduler: {
-                ...editor.scene.userData?.scheduler,
-                enabled: false,
-            },
         };
 
         // [Dynamic] group for global rendering settings
@@ -35,7 +32,7 @@ class EmptySceneTemplate extends BaseSceneTemplate {
         getOrCreateSceneHelpersRoot(editor.scene);
 
         // Ambient Light
-        let ambient = dynamicGroup.getObjectByName("AmbientLight") as THREE.AmbientLight | undefined;
+        let ambient = findObjectByNameDepthFirst(dynamicGroup, "AmbientLight") as THREE.AmbientLight | null;
         if (!ambient) {
             ambient = new THREE.AmbientLight(0xffffff, 1.0);
             ambient.name = "AmbientLight";
@@ -44,7 +41,7 @@ class EmptySceneTemplate extends BaseSceneTemplate {
             dynamicGroup.add(ambient);
         }
         // Hemisphere Light
-        let hemisphere = dynamicGroup.getObjectByName("HemisphereLight") as THREE.HemisphereLight | undefined;
+        let hemisphere = findObjectByNameDepthFirst(dynamicGroup, "HemisphereLight") as THREE.HemisphereLight | null;
         if (!hemisphere) {
             hemisphere = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
             hemisphere.name = "HemisphereLight";
@@ -124,7 +121,7 @@ class EmptySceneTemplate extends BaseSceneTemplate {
         editor.execute(new SetPositionCommand(dirlight, new THREE.Vector3(5, 50, 7.5)));
 
         // Global behaviors host — attach scene-wide behaviors here
-        let globalHost = editor.scene.getObjectByName(GLOBAL_BEHAVIOR_HOST);
+        let globalHost = findObjectByNameDepthFirst(editor.scene, GLOBAL_BEHAVIOR_HOST);
         if (!globalHost) {
             globalHost = new THREE.Object3D();
             globalHost.name = GLOBAL_BEHAVIOR_HOST;

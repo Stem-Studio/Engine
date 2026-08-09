@@ -184,7 +184,7 @@ class EnableDisableBehavior extends BehaviorBase {
     }
 
     private getObjectByUUID(uuid: string): THREE.Object3D | null {
-        const object = this.game?.scene?.getObjectByProperty("uuid", uuid);
+        const object = this.game?.getObjectByUUID(uuid);
         if (!object) {
             return null;
         }

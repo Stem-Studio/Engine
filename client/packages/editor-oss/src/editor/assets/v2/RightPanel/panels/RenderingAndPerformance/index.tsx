@@ -241,19 +241,19 @@ const deviceCategories = ["Desktop", "Apple Silicon", "Mobile", "iOS"] as const;
 
 const presetEntries = [
     // Desktop — discrete GPU lane
-    { key: "desktop_balanced", device: "Desktop", quality: "Balanced", coreDetails: "PR 0.9 · Shadows 1024 · FXAA · 30Hz/1 · 8 lights", schedulerDetails: "Budget 14ms · Fixed 30Hz · Max 3 steps" },
-    { key: "desktop_high", device: "Desktop", quality: "High", coreDetails: "PR 1.0 · Shadows 2048 · SMAA · 60Hz/2 · 16 lights", schedulerDetails: "Budget 14ms · Fixed 60Hz · Max 3 steps" },
-    { key: "desktop_ultra", device: "Desktop", quality: "Ultra", coreDetails: "PR 1.0 · Shadows 4096 · TAA · 60Hz/4 · 32 lights", schedulerDetails: "Budget 14ms · Fixed 60Hz · Max 3 steps" },
+    { key: "desktop_balanced", device: "Desktop", quality: "Balanced" },
+    { key: "desktop_high", device: "Desktop", quality: "High" },
+    { key: "desktop_ultra", device: "Desktop", quality: "Ultra" },
     // Desktop — Apple Silicon lane
-    { key: "apple_silicon_balanced", device: "Apple Silicon", quality: "Balanced", coreDetails: "PR 1.0 · Shadows 1024 · FXAA · 30Hz/1 · 8 lights", schedulerDetails: "Budget 14ms · Fixed 30Hz · Max 3 steps" },
-    { key: "apple_silicon_high", device: "Apple Silicon", quality: "High", coreDetails: "PR 1.0 · Shadows 2048 · SMAA · 60Hz/2 · 16 lights", schedulerDetails: "Budget 14ms · Fixed 60Hz · Max 3 steps" },
-    { key: "apple_silicon_ultra", device: "Apple Silicon", quality: "Ultra", coreDetails: "PR 1.0 · Shadows 4096 · TAA · 60Hz/4 · 32 lights", schedulerDetails: "Budget 14ms · Fixed 60Hz · Max 3 steps" },
+    { key: "apple_silicon_balanced", device: "Apple Silicon", quality: "Balanced" },
+    { key: "apple_silicon_high", device: "Apple Silicon", quality: "High" },
+    { key: "apple_silicon_ultra", device: "Apple Silicon", quality: "Ultra" },
     // Mobile — Android lane
-    { key: "android_balanced", device: "Mobile", quality: "Balanced", coreDetails: "PR 0.5 · Shadows 512 · No AA · 30Hz/1 · 4 lights", schedulerDetails: "Budget 12ms · Fixed 30Hz · Max 2 steps" },
-    { key: "android_high", device: "Mobile", quality: "High", coreDetails: "PR 0.75 · Shadows 1024 · FXAA · 30Hz/1 · 8 lights", schedulerDetails: "Budget 14ms · Fixed 30Hz · Max 3 steps" },
+    { key: "android_balanced", device: "Mobile", quality: "Balanced" },
+    { key: "android_high", device: "Mobile", quality: "High" },
     // iOS lane
-    { key: "ios_balanced", device: "iOS", quality: "Balanced", coreDetails: "PR 0.75 · Shadows 512 · FXAA · 30Hz/1 · 8 lights", schedulerDetails: "Budget 14ms · Fixed 30Hz · Max 3 steps" },
-    { key: "ios_high", device: "iOS", quality: "High", coreDetails: "PR 1.0 · Shadows 512 · FXAA · 30Hz/1 · 8 lights", schedulerDetails: "Budget 14ms · Fixed 30Hz · Max 3 steps" },
+    { key: "ios_balanced", device: "iOS", quality: "Balanced" },
+    { key: "ios_high", device: "iOS", quality: "High" },
 ];
 
 /**
@@ -284,37 +284,11 @@ function getCurrentPresetKey(): string {
     return "desktop_balanced";
 }
 
-/**
- *
- */
-function getSchedulerEnabled(): boolean {
-    try {
-        const app = global.app as EngineRuntime;
-        const sceneScheduler = app?.editor?.scene?.userData?.scheduler;
-        if (sceneScheduler?.behaviorUpdateMode === "fixed") return true;
-        const sceneValue = sceneScheduler?.enabled;
-        if (typeof sceneValue === "boolean") return sceneValue;
-        return QualitySystemIntegration.getInstance().getSchedulerConfig().enabled;
-    } catch { return true; }
-}
-
-/**
- *
- */
-function getFixedRateBehaviorsEnabled(): boolean {
-    try {
-        const app = global.app as EngineRuntime;
-        return app?.editor?.scene?.userData?.scheduler?.behaviorUpdateMode === "fixed";
-    } catch { return false; }
-}
-
 export const RenderingAndPerformancePanel = () => {
     const app = global.app as EngineRuntime;
     const initialSplatSettings = app?.editor?.scene?.userData?.rendering?.splat ?? {};
     const qualityPreset = getCurrentPresetKey();
     const [activeDevice, setActiveDevice] = useState(() => getDeviceForPreset(qualityPreset));
-    const [schedulerEnabled, setSchedulerEnabled] = useState(getSchedulerEnabled);
-    const [fixedRateBehaviors, setFixedRateBehaviors] = useState(getFixedRateBehaviorsEnabled);
     const [showDetail, setShowDetail] = useState(false);
     const [viewingPreset, setViewingPreset] = useState(qualityPreset);
     const detailAnchorRef = useRef<HTMLDivElement>(null);
@@ -543,7 +517,7 @@ export const RenderingAndPerformancePanel = () => {
                 <TooltipRowWrapper>
                     <PanelSectionTitle>Quality Presets</PanelSectionTitle>
                     <Tooltip
-                        text="Preset bundles that change renderer, shadow, and scheduler settings together. Start from the target device class, then inspect the preset details before overriding individual settings."
+                        text="Preset bundles that change renderer, shadow, physics, and scene budget settings together. Start from the target device class, then inspect the preset details before overriding individual settings."
                         width="220px"
                     />
                 </TooltipRowWrapper>
@@ -574,7 +548,6 @@ export const RenderingAndPerformancePanel = () => {
                     <PresetDetailPanel
                         anchorRef={detailAnchorRef}
                         presetKey={viewingPreset}
-                        schedulerEnabled={schedulerEnabled}
                         onClose={() => setShowDetail(false)}
                     />
                 }
@@ -671,76 +644,6 @@ export const RenderingAndPerformancePanel = () => {
                     regular
                     onChange={() => handleUserDataChange("physicsUseWorker", !usePhysicsWorker, setUsePhysicsWorker)}
                     tooltipText="Runs physics work in a worker thread to reduce main-thread contention. Usually beneficial for heavier scenes, but test carefully if you rely on tight frame-to-frame synchronization."
-                />
-                <Separator margin="4px 0" />
-
-                {/* ── SCHEDULER ── */}
-                <PanelSectionTitle>Scheduler</PanelSectionTitle>
-                <PanelCheckbox
-                    v2
-                    text="Modern Game Scheduler (Beta)"
-                    checked={schedulerEnabled}
-                    isGray
-                    regular
-                    onChange={() => {
-                        const next = !schedulerEnabled;
-                        const nextFixedRateBehaviors = next ? fixedRateBehaviors : false;
-                        setSchedulerEnabled(next);
-                        setFixedRateBehaviors(nextFixedRateBehaviors);
-                        // Persist to scene userData (survives reload)
-                        const userData = app?.editor?.scene?.userData;
-                        if (userData) {
-                            userData.scheduler = {
-                                ...userData.scheduler,
-                                enabled: next,
-                                behaviorUpdateMode: nextFixedRateBehaviors ? "fixed" : "variable",
-                            };
-                            app.call?.("sceneGraphChanged", app.editor);
-                        }
-                        try {
-                            void QualitySystemIntegration.getInstance()
-                                .getQualityManager()
-                                .setSettings({ scheduler: { enabled: next } } as any);
-                        } catch (e) {
-                            console.warn("Failed to update scheduler setting:", e);
-                        }
-                    }}
-                    tooltipText="Switches between the newer pipeline scheduler and the legacy sequential update path. Prefer the modern scheduler for new scenes. Only fall back if an older scene depends on legacy behavior ordering."
-                    tooltipWidth="280px"
-                />
-                <PanelCheckbox
-                    v2
-                    text="Use Fixed Rate Updates (Beta)"
-                    checked={fixedRateBehaviors}
-                    isGray
-                    regular
-                    disabled={!schedulerEnabled}
-                    onChange={() => {
-                        const next = !fixedRateBehaviors;
-                        const nextSchedulerEnabled = next || schedulerEnabled;
-                        setFixedRateBehaviors(next);
-                        setSchedulerEnabled(nextSchedulerEnabled);
-                        try {
-                            const userData = app?.editor?.scene?.userData;
-                            if (userData) {
-                                userData.scheduler = {
-                                    ...userData.scheduler,
-                                    enabled: nextSchedulerEnabled,
-                                    behaviorUpdateMode: next ? "fixed" : "variable",
-                                };
-                                app.call?.("sceneGraphChanged", app.editor);
-                            }
-                            if (nextSchedulerEnabled !== schedulerEnabled) {
-                                void QualitySystemIntegration.getInstance()
-                                    .getQualityManager()
-                                    .setSettings({ scheduler: { enabled: nextSchedulerEnabled } } as any);
-                            }
-                        } catch (e) {
-                            console.warn("Failed to update fixed rate behaviors setting:", e);
-                        }
-                    }}
-                    tooltipText="Runs behavior and lambda fixed updates at a fixed timestep defined by the active quality profile. Use this for physics-dependent gameplay, deterministic timing, or controller logic that should not vary with frame rate."
-                    tooltipWidth="280px"
                 />
                 <Separator margin="4px 0" />
             </ContentItem>

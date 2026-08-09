@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import Editor from '@stem/editor-oss/editor/Editor';
 import { BehaviorBase } from '../../Behavior';
 import GameManager from '../../game/GameManager';
+import {findObjectDepthFirst} from '@stem/editor-oss/utils/SceneTraverser';
 
 /**
  * NavMeshConnectionBehavior creates an off-mesh connection between this object
@@ -17,7 +18,11 @@ class NavMeshConnectionBehavior extends BehaviorBase {
     private previewScene: THREE.Group | THREE.Scene | null = null;
     private navMeshBehavior: any = null;
     private connectionAdded: boolean = false;
-    private visualizationHelper: THREE.ArrowHelper | null = null;
+    private visualizationHelper: THREE.Group | null = null;
+    private readonly scratchStartPos = new THREE.Vector3();
+    private readonly scratchEndPos = new THREE.Vector3();
+    private readonly scratchDirection = new THREE.Vector3();
+    private readonly scratchBackwardDirection = new THREE.Vector3();
 
     async init(game: GameManager): Promise<void> {
         this.game = game;
@@ -99,39 +104,39 @@ class NavMeshConnectionBehavior extends BehaviorBase {
         const targetUUID = this.attributes.targetObject;
         if (!targetUUID) return;
 
-        const targetObject = this.scene?.getObjectByProperty('uuid', targetUUID);
+        const targetObject = this.getObjectByUUID(targetUUID);
         if (!targetObject) return;
 
         // Get current positions
-        const startPos = this.target.getWorldPosition(new THREE.Vector3());
-        const endPos = targetObject.getWorldPosition(new THREE.Vector3());
+        const startPos = this.target.getWorldPosition(this.scratchStartPos);
+        const endPos = targetObject.getWorldPosition(this.scratchEndPos);
+        const direction = this.scratchDirection;
 
-        // Update each arrow in the group
-        this.visualizationHelper.children.forEach((child) => {
-            if (child instanceof THREE.ArrowHelper) {
-                const isForward = child === this.visualizationHelper!.children[0];
-                
-                if (isForward) {
-                    // Forward arrow: from start to end
-                    const direction = new THREE.Vector3().subVectors(endPos, startPos);
-                    const length = direction.length();
-                    direction.normalize();
-                    
-                    child.position.copy(startPos);
-                    child.setDirection(direction);
-                    child.setLength(length, length * 0.2, length * 0.1);
-                } else {
-                    // Backward arrow: from end to start
-                    const direction = new THREE.Vector3().subVectors(startPos, endPos);
-                    const length = direction.length();
-                    direction.normalize();
-                    
-                    child.position.copy(endPos);
-                    child.setDirection(direction);
-                    child.setLength(length, length * 0.2, length * 0.1);
-                }
+        const children = this.visualizationHelper.children;
+        for (let i = 0; i < children.length; i += 1) {
+            const child = children[i];
+            if (!(child instanceof THREE.ArrowHelper)) continue;
+
+            if (i === 0) {
+                // Forward arrow: from start to end
+                direction.subVectors(endPos, startPos);
+                const length = direction.length();
+                direction.normalize();
+
+                child.position.copy(startPos);
+                child.setDirection(direction);
+                child.setLength(length, length * 0.2, length * 0.1);
+            } else {
+                // Backward arrow: from end to start
+                direction.subVectors(startPos, endPos);
+                const length = direction.length();
+                direction.normalize();
+
+                child.position.copy(endPos);
+                child.setDirection(direction);
+                child.setLength(length, length * 0.2, length * 0.1);
             }
-        });
+        }
     }
 
     /**
@@ -171,15 +176,15 @@ class NavMeshConnectionBehavior extends BehaviorBase {
             return;
         }
 
-        const targetObject = this.game?.scene?.getObjectByProperty('uuid', targetUUID);
+        const targetObject = this.game?.getObjectByUUID(targetUUID);
         if (!targetObject) {
             console.warn('[NavMeshConnectionBehavior]: Target object not found:', targetUUID);
             return;
         }
 
         // Get world positions
-        const startPos = this.target.getWorldPosition(new THREE.Vector3());
-        const endPos = targetObject.getWorldPosition(new THREE.Vector3());
+        const startPos = this.target.getWorldPosition(this.scratchStartPos);
+        const endPos = targetObject.getWorldPosition(this.scratchEndPos);
 
         // Get connection direction
         const direction = this.attributes.bidirectional 
@@ -224,21 +229,21 @@ class NavMeshConnectionBehavior extends BehaviorBase {
         if (!targetUUID) return;
 
         // Find target in the main scene, not previewScene
-        const targetObject = this.scene!.getObjectByProperty('uuid', targetUUID);
+        const targetObject = this.getObjectByUUID(targetUUID);
         if (!targetObject) return;
 
         // Get positions
-        const startPos = this.target.getWorldPosition(new THREE.Vector3());
-        const endPos = targetObject.getWorldPosition(new THREE.Vector3());
+        const startPos = this.target.getWorldPosition(this.scratchStartPos);
+        const endPos = targetObject.getWorldPosition(this.scratchEndPos);
 
         // Create direction vector
-        const direction = new THREE.Vector3().subVectors(endPos, startPos);
+        const direction = this.scratchDirection.subVectors(endPos, startPos);
         const length = direction.length();
         direction.normalize();
 
         // Create visualization group
-        this.visualizationHelper = new THREE.Group() as any;
-        this.visualizationHelper!.name = `NavMeshConnection_${this.target.name}`;
+        this.visualizationHelper = new THREE.Group();
+        this.visualizationHelper.name = `NavMeshConnection_${this.target.name}`;
 
         // Get color based on bidirectional setting
         const isBidirectional = this.attributes.bidirectional;
@@ -253,11 +258,11 @@ class NavMeshConnectionBehavior extends BehaviorBase {
             length * 0.2, // headLength
             length * 0.1,  // headWidth
         );
-        this.visualizationHelper!.add(forwardArrow);
+        this.visualizationHelper.add(forwardArrow);
 
         // Add backward arrow if bidirectional
         if (isBidirectional) {
-            const backwardDirection = direction.clone().negate();
+            const backwardDirection = this.scratchBackwardDirection.copy(direction).negate();
             const backwardArrow = new THREE.ArrowHelper(
                 backwardDirection,
                 endPos,
@@ -266,10 +271,20 @@ class NavMeshConnectionBehavior extends BehaviorBase {
                 length * 0.2, // headLength
                 length * 0.1,  // headWidth
             );
-            this.visualizationHelper!.add(backwardArrow);
+            this.visualizationHelper.add(backwardArrow);
         }
 
-        this.previewScene!.add(this.visualizationHelper!);
+        this.previewScene!.add(this.visualizationHelper);
+    }
+
+    private getObjectByUUID(uuid: string): THREE.Object3D | null {
+        if (this.game) {
+            return this.game.getObjectByUUID(uuid);
+        }
+
+        return this.scene
+            ? findObjectDepthFirst(this.scene, object => object.uuid === uuid)
+            : null;
     }
 
     /**

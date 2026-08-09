@@ -13,11 +13,12 @@ import type {StemEditorMetadata} from "../../../../../../editor/stem-editor/save
 import global from "@stem/editor-oss/global";
 import type {LambdaInstanceData} from "../../../../../../lambdas/Lambda";
 import {getPrefabId, isPrefab} from "@stem/editor-oss/prefab/util";
-import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
 import {showToast} from "@stem/editor-oss/showToast";
 import {isProtectedTreeNode} from "../../../../../../ui/tree/v2/helpers";
 import {Tree} from "../../../../../../ui/tree/v2/Tree";
 import {TreeItemData} from "../../../../../../ui/tree/v2/TreeItem";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+import {shouldIncludeProjectTreeObject} from "./projectTreeFilters";
 import {TextInput} from "../../../common/TextInput";
 import searchIcon from "../../../icons/search-icon-small.svg";
 import "../../css/ProjectTab.css";
@@ -54,6 +55,8 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
     const [anchorUuid, setAnchorUuid] = useState<string | null>(null);
     const foundObjectsRef = useRef<THREE.Object3D[]>([]);
     const searchRef = useRef("");
+    const quickBuildBatchDepthRef = useRef(0);
+    const quickBuildBatchNeedsUpdateRef = useRef(false);
 
     const app = global.app as EngineRuntime;
     const editor = app.editor as Editor;
@@ -215,7 +218,7 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
 
         // If in collaborative editing mode, add items locked by other users
         if (isCollaborativEditing) {
-            scene.traverse(obj => {
+            traverseObjectDepthFirst(scene, obj => {
                 if (obj.userData?.selectedBy && obj.userData.selectedBy !== app.userId) {
                     collaborativelyLockedItems.push(obj.uuid);
                 }
@@ -226,6 +229,29 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
         const allLockedItems = Array.from(new Set([...manuallyLockedItems, ...collaborativelyLockedItems]));
         setLockedItems(allLockedItems);
         const stemEditorMode = isStemEditor(scene);
+        const selectedObject = !isArray(app.editor.selected)
+            ? app.editor.selected as THREE.Object3D | null | undefined
+            : null;
+        const foundBranchSet = foundObjects.length > 0 ? new Set<THREE.Object3D>() : null;
+        const selectedFoundBranchSet = foundBranchSet && selectedObject ? new Set<THREE.Object3D>() : null;
+        if (foundBranchSet) {
+            for (let i = 0; i < foundObjects.length; i++) {
+                const foundObject = foundObjects[i];
+                if (!foundObject) continue;
+                const isSelectedFoundObject = !!selectedObject && foundObject.uuid === selectedObject.uuid;
+                let current: THREE.Object3D | null = foundObject;
+                while (current) {
+                    foundBranchSet.add(current);
+                    if (isSelectedFoundObject) {
+                        selectedFoundBranchSet?.add(current);
+                    }
+                    if (current === scene) {
+                        break;
+                    }
+                    current = current.parent;
+                }
+            }
+        }
         const objectList: TreeItemData[] = stemEditorMode
             ? []
             : [
@@ -308,12 +334,32 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
         }
 
         scene.children.forEach(obj => {
-            _parseData(obj, objectList);
+            _parseData(obj, objectList, foundBranchSet, selectedFoundBranchSet);
         });
         setData(objectList);
 
         if (isArray(app.editor.selected)) return;
         setSelected([(app.editor.selected as any)?.uuid]);
+    };
+
+    const updateSceneTreeForSceneChange = () => {
+        if (quickBuildBatchDepthRef.current > 0) {
+            quickBuildBatchNeedsUpdateRef.current = true;
+            return;
+        }
+        updateUI();
+    };
+
+    const handleQuickBuildBatchStarted = () => {
+        quickBuildBatchDepthRef.current += 1;
+    };
+
+    const handleQuickBuildBatchEnded = () => {
+        quickBuildBatchDepthRef.current = Math.max(0, quickBuildBatchDepthRef.current - 1);
+        if (quickBuildBatchDepthRef.current !== 0 || !quickBuildBatchNeedsUpdateRef.current) return;
+
+        quickBuildBatchNeedsUpdateRef.current = false;
+        updateUI();
     };
 
     const expandData = (uuid: string, list: readonly TreeItemData[]) => {
@@ -348,12 +394,17 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
         return "Default";
     };
 
-    const _parseData = (obj: THREE.Object3D, list: TreeItemData[]) => {
+    const _parseData = (
+        obj: THREE.Object3D,
+        list: TreeItemData[],
+        foundBranchSet: ReadonlySet<THREE.Object3D> | null,
+        selectedFoundBranchSet: ReadonlySet<THREE.Object3D> | null,
+    ) => {
         if (!app || !app.editor) return;
         const scene = app.editor.scene;
         const camera = app.editor.camera;
 
-        if (obj.name === DYNAMIC_ROOT_NAME || obj.userData.isRuntimeOnly) {
+        if (!shouldIncludeProjectTreeObject(obj)) {
             return;
         }
 
@@ -370,18 +421,8 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
             expanded[obj.uuid] = true;
         }
 
-        const selected = app.editor?.selected;
-        let isChildSelectedAndFound = false;
-        let isChildFound = false;
-
-        obj.traverse(child => {
-            if (foundObjects.indexOf(child) > -1) {
-                isChildFound = true;
-                if (!isArray(selected) && child.uuid === selected?.uuid) {
-                    isChildSelectedAndFound = true;
-                }
-            }
-        });
+        const isChildFound = foundBranchSet?.has(obj) ?? false;
+        const isChildSelectedAndFound = selectedFoundBranchSet?.has(obj) ?? false;
 
         const data = {
             value: obj.uuid,
@@ -420,26 +461,29 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
         }
 
         if (Array.isArray(obj.children)) {
-            obj.children.forEach(child => {
+            for (let i = 0; i < obj.children.length; i++) {
+                const child = obj.children[i];
+                if (!child) continue;
                 if (child.userData.isStemObject || isPrefab(child)) {
-                    _parseData(child, data.children);
+                    _parseData(child, data.children, foundBranchSet, selectedFoundBranchSet);
                 }
-            });
+            }
         }
     };
 
-    const matchTags = (obj: THREE.Object3D, searchValue: string): boolean => {
+    const matchTags = (obj: THREE.Object3D, normalizedSearchValue: string): boolean => {
         const tags = obj.userData.tags;
         if (!tags || !Array.isArray(tags)) return false;
 
-        return tags.some((tag: string) => tag.toLowerCase().includes(searchValue.toLowerCase()));
+        return tags.some((tag: string) => tag.toLowerCase().includes(normalizedSearchValue));
     };
 
     const searchObjects = (obj: THREE.Object3D, searchValue: string): THREE.Object3D[] => {
         const matched: THREE.Object3D[] = [];
-        obj.traverse(node => {
-            const nameMatch = node.name?.toLowerCase().includes(searchValue.toLowerCase());
-            const tagMatch = matchTags(node, searchValue);
+        const normalizedSearchValue = searchValue.toLowerCase();
+        traverseObjectDepthFirst(obj, node => {
+            const nameMatch = node.name?.toLowerCase().includes(normalizedSearchValue);
+            const tagMatch = matchTags(node, normalizedSearchValue);
 
             if (searchValue && (nameMatch || tagMatch)) {
                 matched.push(node);
@@ -652,16 +696,18 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
     useEffect(() => {
         if (!app) return;
         updateUI();
-        app.on(`sceneGraphChanged.ProjectTab`, updateUI);
-        app.on(`objectChanged.ProjectTab`, updateUI);
-        app.on(`objectRemoved.ProjectTab`, updateUI);
+        app.on(`sceneGraphChanged.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`objectChanged.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`objectRemoved.ProjectTab`, updateSceneTreeForSceneChange);
+        app.on(`quickBuildBatchStarted.ProjectTab`, handleQuickBuildBatchStarted);
+        app.on(`quickBuildBatchEnded.ProjectTab`, handleQuickBuildBatchEnded);
         app.on(`objectSelected.ProjectTab`, handleObjectSelected);
         app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
-        app?.on(`objectRemoved.ProjectTab`, () => {
+        app?.on(`objectRemoved.ProjectTabSearch`, () => {
             const results = searchObjects(app.editor!.scene, searchRef.current);
             setFoundObjects(results);
         });
-        app?.on(`objectCloned.ProjectTab`, () => {
+        app?.on(`objectCloned.ProjectTabSearch`, () => {
             const results = searchObjects(app.editor!.scene, searchRef.current);
             setFoundObjects(results);
         });
@@ -670,9 +716,12 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
             app.on(`sceneGraphChanged.ProjectTab`, null);
             app.on(`objectChanged.ProjectTab`, null);
             app.on(`objectRemoved.ProjectTab`, null);
+            app.on(`quickBuildBatchStarted.ProjectTab`, null);
+            app.on(`quickBuildBatchEnded.ProjectTab`, null);
             app.on(`objectSelected.ProjectTab`, null);
-            app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
-            app?.on(`objectRemoved.ModelsTabContext`, null);
+            app.on(`objectArraySelected.ProjectTab`, null);
+            app?.on(`objectRemoved.ProjectTabSearch`, null);
+            app?.on(`objectCloned.ProjectTabSearch`, null);
         };
     }, []);
 

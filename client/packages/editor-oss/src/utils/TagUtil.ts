@@ -1,10 +1,48 @@
 import {Object3D} from "three";
 
+import {findObjectDepthFirst, traverseObjectDepthFirst} from "./SceneTraverser";
+
+type TagMatcher = {
+    tag: string;
+    path?: never;
+} | {
+    tag?: never;
+    path: string[];
+};
+
 /**
  * Utility class for managing tags on Three.js Object3D instances.
  * Tags are stored in the object's userData?.tags property as an array of strings.
  */
 class TagUtil {
+    private static matcherCache = new Map<string, TagMatcher>();
+
+    private static createMatcher(tag: string): TagMatcher {
+        let matcher = this.matcherCache.get(tag);
+        if (!matcher) {
+            matcher = tag.includes(".") ? { path: tag.split(".") } : { tag };
+            this.matcherCache.set(tag, matcher);
+        }
+        return matcher;
+    }
+
+    private static matchesTag(object: Object3D, matcher: TagMatcher): boolean {
+        if (matcher.path) {
+            let current: unknown = object.userData;
+
+            for (const part of matcher.path) {
+                if (current === undefined || current === null) {
+                    return false;
+                }
+                current = (current as Record<string, unknown>)[part];
+            }
+
+            return Boolean(current);
+        }
+
+        return object.userData?.tags ? object.userData?.tags.includes(matcher.tag) : false;
+    }
+
     /**
      * Adds one or more tags to an Object3D instance.
      * If the object doesn't have a tags array, it will be created.
@@ -62,24 +100,7 @@ class TagUtil {
      * @returns True if the object has the tag, false otherwise
      */
     public static hasTag(object: Object3D, tag: string): boolean {
-        // Check if it's a nested property path (contains a dot)
-        if (tag.includes(".")) {
-            const parts = tag.split(".");
-            let current: any = object.userData;
-
-            for (const part of parts) {
-                if (current === undefined || current === null) {
-                    return false;
-                }
-                current = current[part];
-            }
-
-            // Return true if the final value is truthy
-            return Boolean(current);
-        }
-
-        // For simple tags, check the tags array
-        return object.userData?.tags ? object.userData?.tags.includes(tag) : false;
+        return this.matchesTag(object, this.createMatcher(tag));
     }
 
     /**
@@ -90,7 +111,18 @@ class TagUtil {
      * @returns True if the object has at least one of the tags, false otherwise
      */
     public static hasAnyTag(object: Object3D, tags: string[]): boolean {
-        return object.userData?.tags ? tags.some(tag => object.userData?.tags.includes(tag)) : false;
+        const objectTags = object.userData?.tags;
+        if (!objectTags) {
+            return false;
+        }
+
+        for (const tag of tags) {
+            if (objectTags.includes(tag)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -101,7 +133,18 @@ class TagUtil {
      * @returns True if the object has all the tags, false otherwise
      */
     public static hasAllTags(object: Object3D, tags: string[]): boolean {
-        return object.userData?.tags ? tags.every(tag => object.userData?.tags.includes(tag)) : false;
+        const objectTags = object.userData?.tags;
+        if (!objectTags) {
+            return false;
+        }
+
+        for (const tag of tags) {
+            if (!objectTags.includes(tag)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -167,15 +210,37 @@ class TagUtil {
      */
     public static getObjectsByTag(object: Object3D, tag: string | string[]): Object3D[] {
         const tags = Array.isArray(tag) ? tag : [tag];
+        const matchers = tags.map(t => this.createMatcher(t));
         const objectsWithTag: Object3D[] = [];
 
-        object.traverse(child => {
-            if (tags.some(t => this.hasTag(child, t))) {
-                objectsWithTag.push(child);
+        traverseObjectDepthFirst(object, child => {
+            for (const matcher of matchers) {
+                if (this.matchesTag(child, matcher)) {
+                    objectsWithTag.push(child);
+                    break;
+                }
             }
         });
 
         return objectsWithTag;
+    }
+
+    /**
+     * Finds the first object in depth-first order that has any of the requested tags.
+     * Prefer this over getObjectsByTag when the caller only needs a single match.
+     */
+    public static getFirstObjectByTag(object: Object3D, tag: string | string[]): Object3D | null {
+        const tags = Array.isArray(tag) ? tag : [tag];
+        const matchers = tags.map(t => this.createMatcher(t));
+
+        return findObjectDepthFirst(object, child => {
+            for (const matcher of matchers) {
+                if (this.matchesTag(child, matcher)) {
+                    return true;
+                }
+            }
+            return false;
+        });
     }
 }
 

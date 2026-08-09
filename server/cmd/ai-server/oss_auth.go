@@ -10,11 +10,10 @@ import (
 	serverContext "github.com/dotErth/ai-3d-sandbox/stemstudio/server/context"
 )
 
-// ossDummyToken is the constant the OSS editor sends in the Authorization
-// header. The OSS deployment trusts the local machine — there's no Firebase,
+// ossDummyToken is the constant the editor sends in the Authorization
+// header. The open-source deployment trusts the local machine — there's no Firebase,
 // no multi-tenant identity, no billing. A single dummy token is enough to
-// keep the existing per-handler auth shape (`auth_params["token"].UID`)
-// working without changes to downstream code.
+// keep the existing per-handler auth shape (`auth_params["token"].UID`) working.
 const ossDummyToken = "stemstudio-token"
 
 // ossLocalIdentity is the minimal stand-in injected into the request
@@ -26,9 +25,8 @@ type ossLocalIdentity struct {
 }
 
 // ossAuthMiddleware accepts the constant `stemstudio-token` and rejects
-// anything else with 401. Mounted only by the ai-server binary via
-// `server.SetAuthMiddleware`. The combined / storage-server binaries
-// continue to use the Firebase-based validator from `server/middleware`.
+// anything else with 401. Mounted by the ai-server binary via
+// `server.SetAuthMiddleware`.
 //
 // Routes registered with constants.None keep the original public-route
 // semantics (health, capabilities, configure-keys). Everything else must

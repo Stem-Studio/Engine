@@ -6,6 +6,7 @@ import type {
     ProjectMeta,
     StoredAsset,
 } from "./types";
+export {isFileSystemAccessSupported} from "./fileSystemAccess";
 
 /**
  * Chromium-only project store backed by the File System Access API. Each
@@ -41,6 +42,8 @@ const SUFFIX = ".stemscript.json";
 
 /** Filename for an asset's binary payload inside the project's subdirectory. */
 const ASSET_MANIFEST = "assets.json";
+const ASSET_MANIFEST_PREFIX = "assets.";
+const ASSET_MANIFEST_SUFFIX = ".json";
 
 /**
  * True only for the File System Access API's "this entry does not exist" error
@@ -73,10 +76,6 @@ const base64ToBytes = (base64: string): Uint8Array<ArrayBuffer> => {
 
 type AssetManifestEntry = Omit<StoredAsset, "data"> & {file: string};
 
-export const isFileSystemAccessSupported = (): boolean =>
-    typeof window !== "undefined" &&
-    typeof (window as unknown as {showDirectoryPicker?: unknown}).showDirectoryPicker === "function";
-
 const nowIso = (): string => new Date().toISOString();
 
 const newId = (): string =>
@@ -87,7 +86,11 @@ const newId = (): string =>
 const sanitizeName = (name: string): string =>
     name.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80) || "untitled";
 
-const filenameFor = (meta: ProjectMeta): string => `${sanitizeName(meta.name)}.${meta.id}${SUFFIX}`;
+const generationToken = (): string =>
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const filenameFor = (meta: ProjectMeta, generation = generationToken()): string =>
+    `${sanitizeName(meta.name)}.${meta.id}.${generation}${SUFFIX}`;
 
 export class FileSystemProjectStore implements ProjectStore {
     readonly kind = "filesystem" as const;
@@ -151,13 +154,21 @@ export class FileSystemProjectStore implements ProjectStore {
         const limit = Math.max(1, options.limit ?? 40);
         const search = options.search?.trim().toLowerCase() ?? "";
 
-        const all: ProjectMeta[] = [];
+        const latestById = new Map<string, ProjectMeta>();
         for await (const [name, handle] of this.dir.entries()) {
             if (handle.kind !== "file" || !name.endsWith(SUFFIX)) continue;
             try {
                 const file = await (handle).getFile();
                 const body = JSON.parse(await file.text()) as ProjectBody;
-                if (body?.meta) all.push(body.meta);
+                if (body?.meta) {
+                    const previous = latestById.get(body.meta.id);
+                    if (
+                        !previous ||
+                        new Date(body.meta.updatedAt).getTime() > new Date(previous.updatedAt).getTime()
+                    ) {
+                        latestById.set(body.meta.id, body.meta);
+                    }
+                }
             } catch (err) {
                 // We're iterating files that demonstrably exist, so a failure
                 // here means the file is present but unreadable/corrupt — a real
@@ -168,6 +179,7 @@ export class FileSystemProjectStore implements ProjectStore {
             }
         }
 
+        const all = [...latestById.values()];
         const filtered = search ? all.filter(p => p.name.toLowerCase().includes(search)) : all;
         const sorted = filtered.sort(
             (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
@@ -250,6 +262,46 @@ export class FileSystemProjectStore implements ProjectStore {
         return meta;
     }
 
+    commitProject(body: ProjectBody, assets: StoredAsset[]): Promise<ProjectMeta> {
+        return this.serializeWrite(() => this.commitProjectLocked(body, assets));
+    }
+
+    private async commitProjectLocked(body: ProjectBody, assets: StoredAsset[]): Promise<ProjectMeta> {
+        const generation = generationToken();
+        const id = body.meta.id || newId();
+        const assetManifest = await this.writeAssetGenerationLocked(id, generation, assets);
+        const meta: ProjectMeta = {
+            ...body.meta,
+            id,
+            createdAt: body.meta.createdAt || nowIso(),
+            updatedAt: nowIso(),
+            extra: {...body.meta.extra, assetManifest},
+        };
+        const targetName = filenameFor(meta, generation);
+        const staleNames = (await this.matchingNamesForId(meta.id)).filter(name => name !== targetName);
+
+        // The project file is the commit record and is written last under a
+        // fresh generation name. Until close succeeds, load() still resolves
+        // the prior project and its prior asset-manifest pointer.
+        const handle = await this.dir.getFileHandle(targetName, {create: true});
+        const writable = await handle.createWritable();
+        try {
+            await writable.write(JSON.stringify({...body, meta}, null, 2));
+        } finally {
+            await writable.close();
+        }
+
+        for (const name of staleNames) {
+            try {
+                await this.dir.removeEntry(name);
+            } catch (error) {
+                console.warn(`[FileSystemProjectStore] Could not remove stale project generation "${name}"`, error);
+            }
+        }
+        await this.cleanupOldAssetGenerations(meta.id, assetManifest);
+        return meta;
+    }
+
     delete(id: string): Promise<void> {
         return this.serializeWrite(() => this.deleteLocked(id));
     }
@@ -267,31 +319,20 @@ export class FileSystemProjectStore implements ProjectStore {
     }
 
     saveAssets(projectId: string, assets: StoredAsset[]): Promise<void> {
-        return this.serializeWrite(() => this.saveAssetsLocked(projectId, assets));
+        return this.serializeWrite(async () => {
+            const body = await this.load(projectId);
+            await this.commitProjectLocked(body, assets);
+        });
     }
 
-    private async saveAssetsLocked(projectId: string, assets: StoredAsset[]): Promise<void> {
-        // Replace the whole subdirectory so a re-save drops assets no longer
-        // referenced. The project lives as `<name>.<id>.stemscript.json` in
-        // the picked folder; its binary assets live in a sibling `<id>/`.
-        try {
-            await this.dir.removeEntry(projectId, {recursive: true});
-        } catch {
-            // First save for this project — no subdirectory yet.
-        }
-        if (assets.length === 0) {
-            return;
-        }
-
+    private async writeAssetGenerationLocked(
+        projectId: string,
+        generation: string,
+        assets: StoredAsset[],
+    ): Promise<string> {
         const projectDir = await this.dir.getDirectoryHandle(projectId, {create: true});
-        // Write the asset files concurrently. Each targets a distinct file, so
-        // there's no `NoModificationAllowedError` risk (that only arises from two
-        // writers on the *same* file — prevented by serializeWrite at the call
-        // level). Sequential awaits made large projects (dozens of MB) take many
-        // seconds, long enough that a reload could beat the manifest write and
-        // lose every asset. Parallelizing cuts that window dramatically.
         const writeAsset = async (asset: StoredAsset): Promise<AssetManifestEntry> => {
-            const file = `${asset.assetId}.${asset.format || "bin"}`;
+            const file = `${generation}.${asset.assetId}.${asset.format || "bin"}`;
             const handle = await projectDir.getFileHandle(file, {create: true});
             const writable = await handle.createWritable();
             try {
@@ -302,16 +343,45 @@ export class FileSystemProjectStore implements ProjectStore {
             const {data: _omit, ...meta} = asset;
             return {...meta, file};
         };
-        // The manifest is still written LAST (after all file writes resolve) so
-        // loadAssets never sees a manifest referencing a not-yet-written file.
         const manifest: AssetManifestEntry[] = await Promise.all(assets.map(writeAsset));
 
-        const manifestHandle = await projectDir.getFileHandle(ASSET_MANIFEST, {create: true});
+        // A generation manifest is never overwritten. If any payload or this
+        // manifest fails, the previous project still points to its untouched
+        // last-known-good generation.
+        const manifestName = `${ASSET_MANIFEST_PREFIX}${generation}${ASSET_MANIFEST_SUFFIX}`;
+        const manifestHandle = await projectDir.getFileHandle(manifestName, {create: true});
         const manifestWritable = await manifestHandle.createWritable();
         try {
             await manifestWritable.write(JSON.stringify(manifest, null, 2));
         } finally {
             await manifestWritable.close();
+        }
+        return manifestName;
+    }
+
+    private async cleanupOldAssetGenerations(projectId: string, currentManifestName: string): Promise<void> {
+        let projectDir: FsDirectoryHandle;
+        try {
+            projectDir = await this.dir.getDirectoryHandle(projectId);
+        } catch {
+            return;
+        }
+        let currentManifest: AssetManifestEntry[];
+        try {
+            const file = await (await projectDir.getFileHandle(currentManifestName)).getFile();
+            currentManifest = JSON.parse(await file.text()) as AssetManifestEntry[];
+        } catch {
+            // Never clean anything unless the committed generation re-reads.
+            return;
+        }
+        const keep = new Set<string>([currentManifestName, ...currentManifest.map(entry => entry.file)]);
+        for await (const [name, handle] of projectDir.entries()) {
+            if (handle.kind !== "file" || keep.has(name)) continue;
+            try {
+                await projectDir.removeEntry(name);
+            } catch (error) {
+                console.warn(`[FileSystemProjectStore] Could not remove stale asset generation "${name}"`, error);
+            }
         }
     }
 
@@ -327,9 +397,19 @@ export class FileSystemProjectStore implements ProjectStore {
             throw err;
         }
 
+        let manifestName = ASSET_MANIFEST;
+        const projectNames = await this.matchingNamesForId(projectId);
+        if (projectNames.length > 0) {
+            const project = await this.load(projectId);
+            const referencedManifest = project.meta.extra?.assetManifest;
+            if (typeof referencedManifest === "string" && referencedManifest) {
+                manifestName = referencedManifest;
+            }
+        }
+
         let manifest: AssetManifestEntry[];
         try {
-            const manifestFile = await (await projectDir.getFileHandle(ASSET_MANIFEST)).getFile();
+            const manifestFile = await (await projectDir.getFileHandle(manifestName)).getFile();
             manifest = JSON.parse(await manifestFile.text()) as AssetManifestEntry[];
         } catch (err) {
             // No manifest file → no assets recorded (legit empty). But a manifest

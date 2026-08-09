@@ -1,7 +1,7 @@
-import React, { useRef, useEffect } from "react";
+import {useRef, useEffect} from "react";
 import * as THREE from "three";
-import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
-import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
+import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 
 export const TexturePreview = ({ url }: { url: string }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);

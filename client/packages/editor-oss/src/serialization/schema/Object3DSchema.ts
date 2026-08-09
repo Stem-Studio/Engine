@@ -1,4 +1,4 @@
-import z from 'zod';
+import z from 'zod/v3';
 
 import { BehaviorDataSchema } from './BehaviorDataSchema';
 import { LambdaComponentDataSchema } from './LambdaComponentDataSchema';

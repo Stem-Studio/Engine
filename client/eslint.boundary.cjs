@@ -1,9 +1,9 @@
 // Narrow ESLint config used by `bun run lint:oss-boundary`. The full repo
 // config (eslint.config.cjs) accumulated 1437 pre-existing errors across
-// rules unrelated to OSS work — running it as a gate is a separate cleanup
-// project. This config enforces only the OSS boundary contract, so a green
+// rules unrelated to the open-source package boundary — running it as a gate
+// is a separate cleanup project. This config enforces only that boundary, so a green
 // `lint:oss-boundary` is the load-bearing CI gate that prevents new
-// proprietary imports from leaking into `@stem/editor-oss`.
+// hosted-service imports from leaking into `@stem/editor-oss`.
 //
 // Keep this list aligned with the per-files block in eslint.config.cjs.
 
@@ -42,7 +42,7 @@ module.exports = [
             {
               group: ['@stem/copilot', '@stem/copilot/*', '@stem/copilot-stemstudio', '@stem/copilot-stemstudio/*'],
               message:
-                'editor-oss must not depend on the proprietary copilot bridge. Use ICopilotProvider (client/packages/editor-oss/src/copilot/) and have integrated mode inject the concrete impl via initIntegratedCopilotProvider().',
+                'editor-oss must not depend on the hosted copilot bridge. Use ICopilotProvider (client/packages/editor-oss/src/copilot/) and inject a concrete implementation via the compatibility bootstrap.',
             },
             {
               group: ['stripe', '@stripe/*'],
@@ -51,7 +51,7 @@ module.exports = [
             {
               group: ['firebase', 'firebase/*', '@firebase/*', '@web-shared/firebase', '@web-shared/firebase/*', '@stem/auth-firebase', '@stem/auth-firebase/*'],
               message:
-                'editor-oss must not depend on Firebase. Use IAuthProvider / IAnalyticsRecorder / IRemoteDocStore and let integrated mode install the concrete Firebase-backed impls via the side-effect import of `@stem/auth-firebase` and the `initIntegrated*()` bootstraps in `shared/bootstrap/integrated.ts`.',
+                'editor-oss must not depend on Firebase. Use IAuthProvider / IAnalyticsRecorder / IRemoteDocStore and inject concrete implementations through the compatibility bootstrap.',
             },
             {
               // Ban @web-shared/* from inside editor-oss except for the five
@@ -67,7 +67,7 @@ module.exports = [
                 'editor-oss should route to itself via @stem/editor-oss/* — not through the @web-shared shim. The five shared-only paths (routes, player/, queryClient, editorConfig, AppRuntime) are the only allowed exceptions.',
             },
             // @web-shared/api/stripe is shielded the same way: the export
-            // script's OSS_OVERRIDES replaces it with a null-shaped stub at
+            // script's open-source overrides replace it with a null-shaped stub at
             // export time, and the 3 stripe-coupled files inside editor-oss
             // (Products, CreditsPurchaseModal, CreditsSummary) are listed
             // in the per-file override block below to skip the boundary
@@ -78,11 +78,10 @@ module.exports = [
       ],
     },
   },
-  // Pre-existing tech-debt allowlist: these files reach into stripe-coupled
-  // internals and need migration into a dashboard-internal package. Tracked
-  // separately. Until that lands, the boundary gate downgrades the stripe
-  // ban for ONLY these specific files so new violations elsewhere still
-  // fail loud.
+  // Pre-existing tech-debt allowlist: these legacy billing UI files are inert
+  // in this repository because the feature flag is always false and the
+  // network adapter is a compatibility stub. The boundary gate still bans
+  // new Stripe imports everywhere else.
   {
     files: [
       'packages/editor-oss/src/editor/assets/v2/CreateDashboard/AdminPanel/Products/Products.tsx',

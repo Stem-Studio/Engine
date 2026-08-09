@@ -1,6 +1,5 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
-import raw from "vite-raw-plugin";
 import * as dotEnv from "dotenv";
 import * as fs from "node:fs";
 import { ViteImageOptimizer } from "vite-plugin-image-optimizer";
@@ -15,8 +14,51 @@ const CESIUM_PUBLIC_PATH = "/cesium";
 const CESIUM_BUILD_DIR = resolve(__dirname, "node_modules/cesium/Build/Cesium");
 const CESIUM_OUTPUT_DIR = resolve(__dirname, "build/public/cesium");
 const WEB_BUILD_PUBLIC_DIR = resolve(__dirname, "build/public");
+const KTX2_ENCODER_WEB_ENTRY = resolve(
+  __dirname,
+  "node_modules/ktx2-encoder/dist/web/index.js",
+);
+const AMMO_BROWSER_ENTRY = resolve(__dirname, "client/assets/js/ammo/ammo.wasm.js");
+const BROWSER_ONLY_QUERY = "?browser-only";
+const NODE_BROWSER_UNAVAILABLE_ENTRY = resolve(__dirname, "client/oss-stubs/node-browser-unavailable.ts");
 const reactRefreshInclude = /\.[jt]sx$/;
 const reactRefreshExclude = [/\/node_modules\//, /\.worker\.[tj]sx?$/];
+const DEFERRED_SCENE_PRELOAD_RE =
+  /(?:^|\/)(?:AiWorldController|AssetLoader|AssetResolutionContext|AssetSource|Behavior|BehaviorAttributeType|CSS3DRenderer|CanvasUtils|Cesium|Converter|DRACOLoader|DashboardAssetPackImportUtils|DashboardImportUtils|DetectDevice|DirectCopilotProvider|Editor|EngineRuntime|GLTFLoader|HDRLoader|ImportUtils|ModelLoader|ModelPreview(?:WebGL)?Renderer|ModelUtils|OrbitControls|PhysicsBase|PhysicsEngine|PhysicsUtil|SVGLoader|SceneLoadProfiler|TagUtil|Viewport|ammo|asset|context|convertToGlb|createModelWithData|getPhysics|loadHumanoidAnimations|loadModelFromFile|rapier|saveStemEditor|scene|schemas|scriptImports|serialization|three\.quarks(?:\.esm)?|three\.tsl|three\.webgpu|util)-/;
+const EDITOR_PLAY_DEFERRED_PRELOAD_RE =
+  /(?:^|\/)(?:AiWorldController|AssetLoader|AtlasDetector|BaseGameServiceController|BehaviorScriptInjector|BufferGeometryUtils|Converter|CrazyGamesController|DRACOLoader|DiscordController|EffectRenderer|EmailPasswordController|ExtendedDirectionalLight|GeometryComputePool|GLTFLoader(?:Extended)?|GeometryUtils|GuestController|HUDManager|KTX2Loader|LambdaScriptInjector|MobileGameServicesController|ModelGeneratorProvider|ModelLoader|ModelPreview(?:WebGL)?Renderer|ModelUtils|ParametricGeometry|PhysicsBase|PhysicsEngine|PhysicsEngineFactory|PhysicsUtil|preloadPhysics|QualitySystemIntegration|SparkCompositeBridge|SteamController|Teapot(?:Geometry)?|TextGeometry|TextureMapping|UIKitPointerEvents|additions|ammo|dist|game-service-controllers|gaussianSplats|jszip(?:\.min)?|load-util|loadMixamoAnimationToVRM|meshoptimizer|rapier|runtime-geometry-helpers|serialization|spark\.module|three\.module|three\.quarks(?:\.esm)?|three\.tsl|three\.webgpu|translations|worker-PhysicsWorker)-/;
+const LAZY_ROUTE_PRELOAD_RE =
+  /(?:^|\/)(?:AdminPanel|Create|CreateDashboard|DashboardAssetPackImportUtils|DashboardImportUtils|GameOverview|MyAvatarsView|Player|SettingsPage|StemEditor)-/;
+const PLAYGROUND_COPILOT_REGISTRATION_PRELOAD_RE =
+  /(?:^|\/)registerPlaygroundCopilot-/;
+const THREE_ADDON_OPTIMIZED_DEPS = [
+  "three/addons/loaders/AMFLoader.js",
+  "three/addons/loaders/ColladaLoader.js",
+  "three/addons/loaders/DRACOLoader.js",
+  "three/addons/loaders/EXRLoader.js",
+  "three/addons/loaders/FBXLoader.js",
+  "three/addons/loaders/FontLoader.js",
+  "three/addons/loaders/GCodeLoader.js",
+  "three/addons/loaders/GLTFLoader.js",
+  "three/addons/loaders/HDRLoader.js",
+  "three/addons/loaders/KMZLoader.js",
+  "three/addons/loaders/KTX2Loader.js",
+  "three/addons/loaders/LUT3dlLoader.js",
+  "three/addons/loaders/LUTCubeLoader.js",
+  "three/addons/loaders/MD2Loader.js",
+  "three/addons/loaders/MTLLoader.js",
+  "three/addons/loaders/NRRDLoader.js",
+  "three/addons/loaders/OBJLoader.js",
+  "three/addons/loaders/PCDLoader.js",
+  "three/addons/loaders/PDBLoader.js",
+  "three/addons/loaders/PLYLoader.js",
+  "three/addons/loaders/STLLoader.js",
+  "three/addons/loaders/SVGLoader.js",
+  "three/addons/loaders/TDSLoader.js",
+  "three/addons/loaders/USDLoader.js",
+  "three/addons/loaders/VRMLLoader.js",
+  "three/addons/loaders/VTKLoader.js",
+];
 const MIME_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".gif": "image/gif",
@@ -32,27 +74,37 @@ const MIME_TYPES: Record<string, string> = {
   ".xml": "application/xml; charset=utf-8",
 };
 
-function glsl() {
-  return {
-    name: "glsl",
-    transform(src, id) {
-      if (/\.glsl$/.test(id) === false) return;
+function resolveModulePreloadDependencies(
+  filename: string,
+  deps: string[],
+  context: { hostId: string; hostType: "html" | "js" },
+) {
+  const isMarketingShellHtml =
+    context.hostType === "html" &&
+    (context.hostId === "packages/marketing/index.html" || context.hostId.endsWith("/packages/marketing/index.html"));
+  const isEditorOrPlayHtml =
+    context.hostType === "html" &&
+    /(?:^|\/)packages\/(?:editor\/editor|play\/play)\.html$/.test(context.hostId);
+  const isLazyRouteImport =
+    context.hostType === "js" &&
+    (LAZY_ROUTE_PRELOAD_RE.test(filename) || LAZY_ROUTE_PRELOAD_RE.test(context.hostId));
+  const isPlaygroundCopilotRegistrationImport =
+    context.hostType === "js" &&
+    PLAYGROUND_COPILOT_REGISTRATION_PRELOAD_RE.test(filename);
 
-      const transformedCode =
-        "export default " +
-        JSON.stringify(
-          src
-            .replace(/[ \t]*\/\/.*\n/g, "") // remove //
-            .replace(/[ \t]*\/\*[\s\S]*?\*\//g, "") // remove /* */
-            .replace(/\n{2,}/g, "\n"), // # \n+ to \n
-        ) +
-        ";";
-      return {
-        code: transformedCode,
-        map: null,
-      };
-    },
-  };
+  if (isPlaygroundCopilotRegistrationImport) {
+    return [];
+  }
+
+  if (isEditorOrPlayHtml) {
+    return deps.filter(dep => !EDITOR_PLAY_DEFERRED_PRELOAD_RE.test(dep));
+  }
+
+  if (!isMarketingShellHtml && !isLazyRouteImport) {
+    return deps;
+  }
+
+  return deps.filter(dep => !DEFERRED_SCENE_PRELOAD_RE.test(dep));
 }
 
 dotEnv.config({ path: __dirname + "/client/.env" });
@@ -137,7 +189,7 @@ function normalizeHtmlEntrypointsPlugin() {
         // shell HTML files (see client/packages/site/public/_redirects).
         ["packages/site/index.html", "index.html"],
         // App shell (PublicAppContainerLite — dashboard, project list,
-        // OSS bootstrap modal). No longer the top-level index in this build.
+        // local storage bootstrap modal). No longer the top-level index in this build.
         ["packages/marketing/index.html", "shell.html"],
         ["packages/editor/editor.html", "editor.html"],
         ["packages/play/play.html", "play.html"],
@@ -150,12 +202,42 @@ function normalizeHtmlEntrypointsPlugin() {
           fs.copyFileSync(sourcePath, targetPath);
         }
       }
+
+      // GitHub Pages does not honour `_redirects` and answers deep links with
+      // its global 404.html fallback.  That fallback is deliberately kept for
+      // arbitrary editor/player paths, but the two entry points used by the
+      // public Playground should be real directories as well.  Emitting an
+      // index.html in each directory makes `/playground` and the embedded
+      // `/dashboard?mode=playground` resolve with a normal 200 response on
+      // every static host, including hosts that do not run rewrite rules.
+      const directRouteCopies: Array<[string, string]> = [
+        ["packages/site/index.html", "playground/index.html"],
+        ["packages/marketing/index.html", "dashboard/index.html"],
+      ];
+      for (const [sourceRelativePath, targetRelativePath] of directRouteCopies) {
+        const sourcePath = resolve(WEB_BUILD_PUBLIC_DIR, sourceRelativePath);
+        const targetPath = resolve(WEB_BUILD_PUBLIC_DIR, targetRelativePath);
+        if (fs.existsSync(sourcePath)) {
+          fs.mkdirSync(path.dirname(targetPath), {recursive: true});
+          fs.copyFileSync(sourcePath, targetPath);
+        }
+      }
     },
   };
 }
 
 function nodePolyfillsWithoutDeprecatedEsbuild(): Plugin {
-  const plugin = nodePolyfills() as Plugin;
+  const plugin = nodePolyfills({
+    // Browser code directly uses EventEmitter. Keep path for glTF-Transform's
+    // lazy NodeIO export, but do not inject the full Node standard library.
+    include: ["events", "path"],
+    globals: {
+      Buffer: false,
+      global: false,
+      process: false,
+    },
+    protocolImports: true,
+  }) as Plugin;
   const originalConfig = plugin.config;
 
   if (!originalConfig) return plugin;
@@ -175,10 +257,72 @@ function nodePolyfillsWithoutDeprecatedEsbuild(): Plugin {
   return plugin;
 }
 
+function redirectKtx2NodeToWebPlugin(): Plugin {
+  return {
+    name: "redirect-ktx2-node-to-web",
+    enforce: "pre",
+    resolveId: {
+      filter: { id: /^\.\.\/node\/index\.js$/ },
+      handler(source, importer) {
+        if (source === "../node/index.js" && importer?.includes("ktx2-encoder")) {
+          return KTX2_ENCODER_WEB_ENTRY;
+        }
+      },
+    },
+  };
+}
+
+function browserOnlyPhysicsWasmPlugin(): Plugin {
+  const replaceGeneratedRange = (
+    code: string,
+    startMarker: string,
+    endMarker: string,
+    replacement: string,
+    id: string,
+  ): string => {
+    const start = code.indexOf(startMarker);
+    const end = start === -1 ? -1 : code.indexOf(endMarker, start + startMarker.length);
+    if (start === -1 || end === -1) {
+      throw new Error(`Unexpected physics WASM wrapper format: ${id}`);
+    }
+    return code.slice(0, start) + replacement + code.slice(end + endMarker.length);
+  };
+
+  return {
+    name: "browser-only-physics-wasm",
+    enforce: "pre",
+    apply(_config, env) {
+      return env.mode !== "test";
+    },
+    transform: {
+      filter: {
+        id: /client\/assets\/js\/ammo\/ammo\.wasm\.js(?:\?.*)?$/,
+      },
+      handler(code, id) {
+        const queryIndex = id.indexOf("?");
+        const normalizedSourceId = queryIndex === -1 ? id : id.slice(0, queryIndex);
+        if (normalizedSourceId === AMMO_BROWSER_ENTRY) {
+          const nodePredicate = 'ca="object"==typeof process&&process.versions?.node&&"renderer"!=process.type';
+          if (!code.includes(nodePredicate)) {
+            throw new Error(`Unexpected Ammo WASM wrapper format: ${normalizedSourceId}`);
+          }
+          return replaceGeneratedRange(
+            code.replace(nodePredicate, "ca=false"),
+            'if(ca){var fs=require("fs");',
+            '}else if(aa||ba){',
+            'if(aa||ba){',
+            normalizedSourceId,
+          );
+        }
+
+        return null;
+      },
+    },
+  };
+}
+
 export default async ({ mode }) => {
   const isProduction = mode === "production";
-  const isOssBuild =
-    process.env.BUILD_MODE === "oss" || process.env.VITE_BUILD_MODE === "oss";
 
   const visualizerPlugin = isProduction
     ? (await import("rollup-plugin-visualizer")).visualizer({
@@ -202,12 +346,18 @@ export default async ({ mode }) => {
     : [];
 
   return defineConfig({
-    root: "client",
+    // Resolve from the config location rather than the process cwd. This keeps
+    // the same app root when Vite is started from the repository root or from
+    // `client/` via the compatibility shim in `client/vite.config.ts`.
+    root: resolve(__dirname, "client"),
     envPrefix: ["REACT_APP_", "REACT_ENGINE_", "NODE_ENV", "CORS_", "OLD_BUILD_SYSTEM", "USE_WORKER_PHYSICS", "PRODUCTION_BUILD"],
     assetsInclude: ["assets/**", "**/*.glb"],
     build: {
       target: "esnext",
       chunkSizeWarningLimit: 16000,
+      modulePreload: {
+        resolveDependencies: resolveModulePreloadDependencies,
+      },
       commonjsOptions: {
         exclude: ["assets/**"],
       },
@@ -236,6 +386,26 @@ export default async ({ mode }) => {
           codeSplitting: {
             groups: [
               {
+                name: "dashboard-thumbnails",
+                test: /\/client\/packages\/editor-oss\/src\/(?:utils\/thumbnailUrl|editor\/assets\/v2\/CreateDashboard\/GameOverview\/placeholderThumbnails)\.ts$/,
+              },
+              {
+                name: "runtime-serialization-helpers",
+                test: /\/client\/packages\/editor-oss\/src\/core\/(?:noDeserializeSerializers|scenePhysicsSettings)\.ts$/,
+              },
+              {
+                name: "platform-environment",
+                test: /\/client\/packages\/editor-oss\/src\/userManagement\/(?:utils\/PlatformDetector|playerProfile\/discordEnvironment)\.ts$/,
+              },
+              {
+                name: "physics-runtime",
+                test: /\/client\/packages\/(?:editor-oss|shared)\/src\/physics\/(?:PhysicsRuntimeUtil|worker\/GeometryComputePoolConfig)\.ts$/,
+              },
+              {
+                name: "logger",
+                test: /\/client\/packages\/(?:shared|editor-oss)\/src\/utils\/Logger\.ts$/,
+              },
+              {
                 name: "vendor",
                 test: /\/node_modules\/(react|react-dom)\//,
               },
@@ -250,18 +420,30 @@ export default async ({ mode }) => {
       outDir: "../build/public", // This is the default output directory for Create React AppContainer
     },
     optimizeDeps: {
-      exclude: ["@stemstudio/validators", "cesium", "threejs-gif-texture"],
+      include: THREE_ADDON_OPTIMIZED_DEPS,
+      exclude: [
+        "@stemstudio/validators",
+        "cesium",
+        "threejs-gif-texture",
+        // Bun patches this package in-repo. Let Vite serve the patched files
+        // directly instead of reusing a stale optimized dependency copy.
+        "@ni2khanna/uikit",
+      ],
     },
     server: {
       allowedHosts: true,
+      // Keep the local dev endpoint reachable through the IPv4 loopback URL
+      // used by the browser/playwright verification scripts. Vite otherwise
+      // prefers ::1 on some macOS versions, making 127.0.0.1 look offline.
+      host: process.env.REACT_APP_HOST || "127.0.0.1",
       port: parseInt(process.env.REACT_APP_PORT || "5173"),
       open: true, // Automatically open the app in the browser on server start
       proxy: {
         "/api": {
-          // Fall back to the OSS ai-server's default port so the dev proxy
+          // Fall back to the local ai-server's default port so the dev proxy
           // works without requiring the user to first run `cp .env.example .env`.
-          // In integrated mode REACT_APP_SERVER_HOST is set to the storage
-          // server, so this fallback only kicks in for fresh OSS exports.
+          // REACT_APP_SERVER_HOST can still override this for custom local
+          // deployments.
           target: process.env.REACT_APP_SERVER_HOST || "http://localhost:8081",
           ws: true,
           secure: process.env.REACT_APP_SECURE_WEB_SOCKET === "true",
@@ -316,32 +498,25 @@ export default async ({ mode }) => {
     },
     resolve: {
       alias: [
-        // OSS-only: redirect Firebase SDK imports to local stubs so Vite
-        // tree-shakes the SDK out of OSS bundles. Editor-oss code paths
-        // that reach Firebase are already runtime-gated by IS_OSS and by
-        // AuthorizationContext short-circuits, so the stubs never execute
-        // in practice. MUST be listed first so it wins over node_modules
-        // resolution. Skipped entirely in integrated builds.
-        ...(isOssBuild
-          ? [
-              {
-                find: /^firebase\/app$/,
-                replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-app.ts"),
-              },
-              {
-                find: /^firebase\/auth$/,
-                replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-auth.ts"),
-              },
-              {
-                find: /^firebase\/firestore$/,
-                replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-firestore.ts"),
-              },
-              {
-                find: /^firebase\/analytics$/,
-                replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-analytics.ts"),
-              },
-            ]
-          : []),
+        // This repository resolves Firebase SDK imports to local stubs so the SDK
+        // never enters the bundle. Keep these first so they win over
+        // node_modules resolution.
+        {
+          find: /^firebase\/app$/,
+          replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-app.ts"),
+        },
+        {
+          find: /^firebase\/auth$/,
+          replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-auth.ts"),
+        },
+        {
+          find: /^firebase\/firestore$/,
+          replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-firestore.ts"),
+        },
+        {
+          find: /^firebase\/analytics$/,
+          replacement: path.resolve(__dirname, "./client/oss-stubs/firebase-analytics.ts"),
+        },
         // {find: /^three$/, replacement: 'three/webgpu'},
         // Force @three.ez/batched-mesh-extensions to use the prebuilt WebGPU bundle
         {
@@ -351,7 +526,13 @@ export default async ({ mode }) => {
             "node_modules/@three.ez/batched-mesh-extensions/build/webgpu.js",
           ),
         },
-        { find: "ammo", replacement: "/assets/js/ammo/ammo.wasm.js" },
+        ...(mode === "test"
+          ? []
+          : [{
+              find: /^(?:node:)?(?:fs|module|os|url|util|worker_threads)$/,
+              replacement: NODE_BROWSER_UNAVAILABLE_ENTRY,
+            }]),
+        { find: "ammo", replacement: `${AMMO_BROWSER_ENTRY}${BROWSER_ONLY_QUERY}` },
         {
           // MUST come before the bare @web-shared alias so the api/ subpath
           // resolves to the new remote-go adapter location (alias matching is
@@ -386,27 +567,21 @@ export default async ({ mode }) => {
         },
         {
           find: /^@stem\/copilot-stemstudio$/,
-          replacement: path.resolve(__dirname, "./client/packages/copilot-stemstudio/src/index.ts"),
+          replacement: path.resolve(__dirname, "./client/oss-stubs/copilot-stemstudio.ts"),
         },
         {
           find: /^@stem\/copilot-stemstudio\/(.*)$/,
-          replacement: path.resolve(__dirname, "./client/packages/copilot-stemstudio/src/$1"),
+          replacement: path.resolve(__dirname, "./client/oss-stubs/copilot-stemstudio.ts"),
         },
-        // `@stem/auth-firebase` is the Firebase-backed auth provider used by
-        // integrated builds. In OSS mode we alias it to a no-op stub so the
-        // Firebase Auth SDK is never reached and the editor-oss factory's
-        // NullAuthProvider default stays in place.
+        // Compatibility stubs for packages that are intentionally not part of
+        // this repository.
         {
           find: /^@stem\/auth-firebase$/,
-          replacement: isOssBuild
-            ? path.resolve(__dirname, "./client/oss-stubs/auth-firebase.ts")
-            : path.resolve(__dirname, "./client/packages/auth-firebase/src/index.ts"),
+          replacement: path.resolve(__dirname, "./client/oss-stubs/auth-firebase.ts"),
         },
         {
           find: /^@stem\/auth-firebase\/(.*)$/,
-          replacement: isOssBuild
-            ? path.resolve(__dirname, "./client/oss-stubs/auth-firebase.ts")
-            : path.resolve(__dirname, "./client/packages/auth-firebase/src/$1"),
+          replacement: path.resolve(__dirname, "./client/oss-stubs/auth-firebase.ts"),
         },
         {
           find: /^@stem\/editor-oss$/,
@@ -425,17 +600,8 @@ export default async ({ mode }) => {
           replacement: path.resolve(__dirname, "./client/packages/copilot/src/$1"),
         },
         {
-          find: "autolod",
-          replacement: path.resolve(
-            __dirname,
-            "./client/packages/shared/src/package/autolod/packages/core/src",
-          ),
-        },
-        {
           find: "@stemstudio/validators",
-          replacement: isOssBuild
-            ? resolve(__dirname, "client/oss-stubs/validators.js")
-            : resolve(__dirname, "stemstudio-importer/tools/lib/validate-code.js"),
+          replacement: resolve(__dirname, "client/oss-stubs/validators.js"),
         },
       ],
     },
@@ -452,6 +618,8 @@ export default async ({ mode }) => {
       pool: "forks", // Use forked processes to prevent memory leaks
       isolate: true, // Isolate each test file in separate environment
       alias: [
+        { find: /^url$/, replacement: "node:url" },
+        { find: /^path$/, replacement: "node:path" },
         // Force ESM source builds to avoid circular CJS self-require in UMD bundles.
         // three-mesh-bvh's UMD does require('three-mesh-bvh') causing BVH to be undefined.
         {
@@ -468,11 +636,7 @@ export default async ({ mode }) => {
       __APP_VERSION__: JSON.stringify(appVersion),
       __APP_BUILD_ID__: JSON.stringify(appBuildId),
       __APP_BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
-      __BUILD_MODE__: JSON.stringify(
-        process.env.BUILD_MODE === "oss" || process.env.VITE_BUILD_MODE === "oss"
-          ? "oss"
-          : "integrated",
-      ),
+      __BUILD_MODE__: JSON.stringify("oss"),
       "process.browser": "true",
       "process.env": (() => {
         // Only expose env vars with allowed prefixes to avoid leaking system vars (PATH, HOME, secrets, etc.)
@@ -492,21 +656,11 @@ export default async ({ mode }) => {
     },
     worker: {
       format: "es",
+      // ktx2-encoder uses `typeof window` to choose its encoder, but Web
+      // Workers intentionally have no window and would select the Node path.
       plugins: () => [
-        // Redirect ktx2-encoder Node entry to browser entry so Vite never
-        // encounters the Node.js `import('module')` in basis_encoder.js.
-        {
-          name: "redirect-ktx2-node-to-web",
-          enforce: "pre" as const,
-          resolveId(source, importer) {
-            if (
-              source === "../node/index.js" &&
-              importer?.includes("ktx2-encoder")
-            ) {
-              return this.resolve("../client/index.js", importer);
-            }
-          },
-        },
+        redirectKtx2NodeToWebPlugin(),
+        browserOnlyPhysicsWasmPlugin(),
       ],
       rolldownOptions: {
         output: {
@@ -575,15 +729,11 @@ export default async ({ mode }) => {
           });
         },
       },
-      // Redirect ktx2-encoder Node entry to browser entry so Vite never
-      // encounters the Node.js `import('module')` in basis_encoder.js.
+      // Specialize generated dual-runtime wrappers before browser bundling.
+      browserOnlyPhysicsWasmPlugin(),
       nodePolyfillsWithoutDeprecatedEsbuild(),
       imagetools(),
-      glsl(),
       react({ include: reactRefreshInclude, exclude: reactRefreshExclude }),
-      raw({
-        fileRegex: /.(txt|fs|vs)$/,
-      }),
       emitAppVersionManifest(),
       cesiumAssetsPlugin(),
       normalizeHtmlEntrypointsPlugin(),

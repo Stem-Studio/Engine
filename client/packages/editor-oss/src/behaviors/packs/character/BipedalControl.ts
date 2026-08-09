@@ -9,7 +9,8 @@ import {CameraControl, ICameraControl} from "../../../controls/CameraControl";
 import {PlayerActions} from "../../../controls/input/ActionTypes";
 import {InputProvider} from "../../../controls/input/InputProvider";
 import global from "@stem/editor-oss/global";
-import {IPhysics} from "../../../physics/common/types";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+import {IPhysics, ObjectMotionState} from "../../../physics/common/types";
 import MotionStateHelper from "../../../physics/MotionStateHelper";
 import {PhysicsUtil} from "../../../physics/PhysicsUtil";
 import {CAMERA_TYPES, CharacterOptionsInterface} from "@stem/editor-oss/types/editor";
@@ -61,6 +62,8 @@ type MovementAction =
     | MOVEMENT_STATES.FALL
     | MOVEMENT_STATES.JUMP;
 
+const MOVEMENT_STOP_EPSILON_SQ = 0.0001 * 0.0001;
+
 interface CharacterMovementState {
     forward: DirectionalForwardState;
     lateral: DirectionalLateralState;
@@ -93,6 +96,17 @@ export default class BipedalControl implements IPlayerAnimationController {
     private bodyAngle = 0;
     private rotateAngle = new Vector3(0, 1, 0);
     private rotateQuarternion = new Quaternion();
+    private inputMoveDirection = new Vector3();
+    private cameraDirection = new Vector3();
+    private movePlayerVelocity = new Vector3();
+    private groundAccelerationInput = Number.NaN;
+    private groundAccelerationCoefficient = 0;
+    private groundDecelerationInput = Number.NaN;
+    private groundDecelerationCoefficient = 1;
+    private airAccelerationInput = Number.NaN;
+    private airAccelerationCoefficient = 0;
+    private airDecelerationInput = Number.NaN;
+    private airDecelerationCoefficient = 1;
 
     private gamePaused = true;
     private cameraControl: ICameraControl;
@@ -109,6 +123,7 @@ export default class BipedalControl implements IPlayerAnimationController {
 
     private isGrounded: boolean = false;
     private wasGrounded: boolean = false;
+    private currentMotionState: ObjectMotionState | undefined;
     private onEmitEvent?: (eventName: string, data?: any) => void;
 
     // For now we will not use forward, backward, left, right because
@@ -343,6 +358,7 @@ export default class BipedalControl implements IPlayerAnimationController {
 
     private updateGroundedState() {
         const motionState = MotionStateHelper.getMotionState(this.character);
+        this.currentMotionState = motionState;
         if (motionState) {
             this.isGrounded = motionState.onGround;
         } else {
@@ -448,7 +464,9 @@ export default class BipedalControl implements IPlayerAnimationController {
         }
 
         // Use the helper to determine if the player should start climbing.
-        const inputMoveDirection = new Vector3(Math.sin(this.moveAngle), 0, Math.cos(this.moveAngle)).normalize();
+        const inputMoveDirection = this.inputMoveDirection
+            .set(Math.sin(this.moveAngle), 0, Math.cos(this.moveAngle))
+            .normalize();
 
         const shouldStartClimbing = this.climbingHelper.shouldStartClimbing(inputMoveDirection, climbable);
 
@@ -478,7 +496,7 @@ export default class BipedalControl implements IPlayerAnimationController {
     private getSpawnPointObjects(): Object3D[] {
         const spawnPoints: Object3D[] = [];
 
-        this.scene.traverse(child => {
+        traverseObjectDepthFirst(this.scene, child => {
             if (child.userData.isSpawnPoint) {
                 spawnPoints.push(child);
             }
@@ -604,11 +622,15 @@ export default class BipedalControl implements IPlayerAnimationController {
         );
     }
 
+    private isIdleMode(mode: MOVEMENT_STATES): boolean {
+        return mode === MOVEMENT_STATES.IDLE || mode === MOVEMENT_STATES.NONE;
+    }
+
     private sendMovementStateNotification() {
         const current = this.movementState;
         const previous = this.previousMovementState;
-        const isIdle = [MOVEMENT_STATES.IDLE, MOVEMENT_STATES.NONE].includes(current.mode);
-        const wasIdle = [MOVEMENT_STATES.IDLE, MOVEMENT_STATES.NONE].includes(previous.mode);
+        const isIdle = this.isIdleMode(current.mode);
+        const wasIdle = this.isIdleMode(previous.mode);
 
         // Idle state
         if (isIdle) {
@@ -868,7 +890,7 @@ export default class BipedalControl implements IPlayerAnimationController {
     }
 
     private isPlayerFalling(): boolean {
-        const motionState = MotionStateHelper.getMotionState(this.character);
+        const motionState = this.currentMotionState;
         if (motionState) {
             return motionState.linearVelocity.y < 0;
         }
@@ -876,7 +898,7 @@ export default class BipedalControl implements IPlayerAnimationController {
     }
 
     private isPlayerJumping(): boolean {
-        const motionState = MotionStateHelper.getMotionState(this.character);
+        const motionState = this.currentMotionState;
         if (motionState) {
             return motionState.linearVelocity.y > 0;
         }
@@ -931,6 +953,8 @@ export default class BipedalControl implements IPlayerAnimationController {
     }
 
     private updateMotion(doJump: boolean): void {
+        this.updateMotionTuningCache();
+
         const speedMultiplier = 1 / 60;
         let inputSpeed = 0;
         switch (this.movementState.mode) {
@@ -942,7 +966,12 @@ export default class BipedalControl implements IPlayerAnimationController {
                 break;
         }
 
-        const inputMoveDirection = new Vector3(Math.sin(this.moveAngle), 0, Math.cos(this.moveAngle)).normalize();
+        const inputMoveDirection = this.inputMoveDirection;
+        if (inputSpeed > 0) {
+            inputMoveDirection
+                .set(Math.sin(this.moveAngle), 0, Math.cos(this.moveAngle))
+                .normalize();
+        }
 
         if (this.isGrounded) {
             this.handleGroundMovement(inputSpeed, inputMoveDirection);
@@ -950,59 +979,64 @@ export default class BipedalControl implements IPlayerAnimationController {
             this.handleAirMovement(inputSpeed, inputMoveDirection);
         }
 
-        this.physics.movePlayerObject(
-            this.character.uuid,
-            {
-                x: this.velocity.x,
-                y: 0,
-                z: this.velocity.z,
-            } as Vector3,
-            doJump,
-        );
+        this.movePlayerVelocity.set(this.velocity.x, 0, this.velocity.z);
+        this.physics.movePlayerObject(this.character.uuid, this.movePlayerVelocity, doJump);
     }
 
     private handleGroundMovement(inputSpeed: number, inputMoveDirection: Vector3): void {
-        // TODO: cache these values
-        const groundAcceleration = this.linearToExp(this.characterOptions.groundAcceleration);
-        const groundDeceleration = 1 - this.linearToExp(this.characterOptions.groundDeceleration);
-
         if (inputSpeed > 0) {
             // Accelerate towards the target speed.
             const targetVelocity = inputMoveDirection.multiplyScalar(inputSpeed);
-            this.velocity.lerp(targetVelocity, groundAcceleration);
+            this.velocity.lerp(targetVelocity, this.groundAccelerationCoefficient);
         } else {
             // Apply friction when there is no input.
-            this.velocity.multiplyScalar(groundDeceleration);
-            if (this.velocity.length() < 0.0001) {
+            this.velocity.multiplyScalar(this.groundDecelerationCoefficient);
+            if (this.velocity.lengthSq() < MOVEMENT_STOP_EPSILON_SQ) {
                 this.velocity.set(0, 0, 0);
             }
         }
     }
 
     private handleAirMovement(inputSpeed: number, inputMoveDirection: Vector3): void {
-        // TODO: cache these values
-        const airAcceleration = this.linearToExp(this.characterOptions.airAcceleration);
-        const airDeceleration = 1 - this.linearToExp(this.characterOptions.airDeceleration);
-
         // In the air, preserve momentum. Air control should not reduce speed.
-        const speed = this.velocity.length();
-        const airControlTargetSpeed = Math.max(inputSpeed, speed);
-
         if (inputSpeed > 0) {
+            const speed = this.velocity.length();
+            const airControlTargetSpeed = Math.max(inputSpeed, speed);
             // Apply air control if there is input.
             const targetVelocity = inputMoveDirection.multiplyScalar(airControlTargetSpeed);
-            this.velocity.lerp(targetVelocity, airAcceleration);
+            this.velocity.lerp(targetVelocity, this.airAccelerationCoefficient);
         }
 
         // Always apply air friction.
-        this.velocity.multiplyScalar(airDeceleration);
-        if (this.velocity.length() < 0.0001) {
+        this.velocity.multiplyScalar(this.airDecelerationCoefficient);
+        if (this.velocity.lengthSq() < MOVEMENT_STOP_EPSILON_SQ) {
             this.velocity.set(0, 0, 0);
         }
     }
 
     private updateCamera(dt: number): void {
         this.cameraControl?.update(dt);
+    }
+
+    private updateMotionTuningCache(): void {
+        const options = this.characterOptions;
+
+        if (options.groundAcceleration !== this.groundAccelerationInput) {
+            this.groundAccelerationInput = options.groundAcceleration;
+            this.groundAccelerationCoefficient = this.linearToExp(options.groundAcceleration);
+        }
+        if (options.groundDeceleration !== this.groundDecelerationInput) {
+            this.groundDecelerationInput = options.groundDeceleration;
+            this.groundDecelerationCoefficient = 1 - this.linearToExp(options.groundDeceleration);
+        }
+        if (options.airAcceleration !== this.airAccelerationInput) {
+            this.airAccelerationInput = options.airAcceleration;
+            this.airAccelerationCoefficient = this.linearToExp(options.airAcceleration);
+        }
+        if (options.airDeceleration !== this.airDecelerationInput) {
+            this.airDecelerationInput = options.airDeceleration;
+            this.airDecelerationCoefficient = 1 - this.linearToExp(options.airDeceleration);
+        }
     }
 
     private linearToExp(value: number): number {
@@ -1044,7 +1078,7 @@ export default class BipedalControl implements IPlayerAnimationController {
     }
 
     private getCameraDirectionAngle(): number {
-        const cameraDirection = new Vector3();
+        const cameraDirection = this.cameraDirection;
         this.cameraControl.camera.getWorldDirection(cameraDirection);
         cameraDirection.y = 0; // Ignore vertical direction
         cameraDirection.normalize();

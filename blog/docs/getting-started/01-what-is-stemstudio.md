@@ -1,15 +1,17 @@
 ---
 title: What Is StemStudio?
 slug: what-is-stemstudio
-description: An overview of StemStudio, what you can build, and how the creation workflow works.
-status: draft
+description: An overview of the local-first StemStudio Playground and its current creation workflow.
+status: current
 audience: beginners
 prerequisites: []
 ---
 
 # What Is StemStudio?
 
-StemStudio is a browser-based 3D game editor that lets you build, test, and publish interactive 3D experiences — all from your web browser.
+StemStudio is a browser-based 3D game editor and runtime. The current product
+focus is the **Playground**: build and test projects locally in your browser,
+with no account or remote scene service required.
 
 ![Gallery of example games made with StemStudio](images/dashboard-with-games.png)
 
@@ -23,7 +25,15 @@ StemStudio is designed for a wide range of 3D projects:
 - **Simulations** — Physics sandboxes, educational demos, interactive visualizations
 - **Story-driven games** — Adventures with AI NPCs, dialogue, and branching paths
 
-You do not need to install anything. The editor runs in Chrome, Firefox, or Edge.
+For the hosted Playground you do not install an editor. Repository contributors
+can run the same surface locally. Use a current hardware-accelerated browser;
+Chromium is recommended and is required for folder storage. The runtime prefers
+WebGPU and retries through a WebGL compatibility backend when WebGPU
+initialization fails.
+
+Mobile authoring is supported in landscape only. Portrait mode intentionally
+shows a rotate-device gate rather than a compressed editor. Phone QA starts at
+an `844 × 390` CSS-pixel landscape viewport.
 
 ## Key Features
 
@@ -45,9 +55,11 @@ For advanced creators, **lambdas** provide ECS-style batch processing across man
 
 Full physics simulation with two interchangeable engines: **Ammo.js** (Bullet Physics) and **Rapier3D**. Objects can collide, bounce, stack, and respond to forces out of the box. Pick the engine per project from Project Settings.
 
-### Multiplayer
+### Local Multiplayer Development
 
-Enable real-time multiplayer with a toggle. StemStudio handles room management, player synchronization, and host authority for you — you just write the gameplay logic.
+The repository includes an optional Colyseus sidecar for testing multiplayer
+between local browser tabs. Hosted rooms, accounts, and collaboration are not
+part of the deployed Playground.
 
 ### AI-Powered Creation
 
@@ -56,9 +68,11 @@ Enable real-time multiplayer with a toggle. StemStudio handles room management, 
 - **3D Model Generation** — Generate 3D models from text descriptions
 - **Image Generation** — Create textures, skyboxes, and images with AI
 
-### Cross-Platform Publishing
+### Local-First Persistence
 
-Publish your game with one click. Players can access it via web link, or you can build for mobile (iOS/Android) and integrate with platforms like Steam, Discord, and CrazyGames.
+Projects auto-save to the active local project store. IndexedDB works without
+folder permission. Chromium folder storage creates files you can inspect and
+back up. Cloud sync and one-click publishing are not currently deployed.
 
 ## The Creation Workflow
 
@@ -80,8 +94,8 @@ Here is the typical flow for building a game in StemStudio:
 5. ITERATE
    Adjust, add more objects, refine behaviors
 
-6. PUBLISH
-   Share your game with a link or publish to platforms
+6. SAVE AND BACK UP
+   Keep the project in IndexedDB or a selected local folder
 ```
 
 You will spend most of your time in steps 2–5, cycling between configuring objects and testing gameplay.
@@ -97,11 +111,12 @@ You will spend most of your time in steps 2–5, cycling between configuring obj
 
 ## What You Need
 
-- **Browser:** Chrome 90+, Firefox 90+, or Edge 90+ (Chrome recommended)
+- **Browser:** a current hardware-accelerated browser (Chromium recommended)
 - **RAM:** 4 GB minimum, 8 GB recommended
-- **Graphics:** WebGL 2.0 support required
-- A StemStudio account (sign up at [next.erth.ai](https://next.erth.ai))
-- No installation required
+- **Graphics:** hardware acceleration; WebGPU preferred, WebGL compatibility fallback
+- **Phone orientation:** landscape (`844 × 390` CSS pixels or larger)
+- No StemStudio account
+- No installation for the hosted Playground
 
 ## Next Steps
 

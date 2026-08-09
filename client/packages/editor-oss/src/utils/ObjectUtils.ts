@@ -1,33 +1,83 @@
 
 import {BufferGeometry, Material, MathUtils, Mesh, Object3D, Scene} from "three";
-import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
+import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
 
 import {assetRefKey} from "@stem/editor-oss/asset-management/AssetRef";
 import {remapBehaviorAttributeUuids} from "@stem/editor-oss/asset-management/dependencies";
 import {getModelId, getModelRevisionId, isModelAssetInstance} from "@stem/editor-oss/model/util";
-import {getPrefabId, getPrefabRevisionId, isPrefab} from "@stem/editor-oss/prefab/util";
+import {getPrefabId, getPrefabRevisionId, isPrefab} from "@stem/editor-oss/prefab/metadata";
+import {retainExistingManagedObjectGpuResources} from "../core/resources/GpuResourceOwnership";
 import {TemplateType} from "../types/TemplateType";
+import {cloneJsonCompatible} from "./cloneJsonCompatible";
+import {findObjectDepthFirst, traverseObjectDepthFirst} from "./SceneTraverser";
 
 type ChildData = {
     uuid: string;
     children: ChildData[];
 };
 
-const containsSkinnedMesh = (object: Object3D): boolean => {
-    if ((object as {isSkinnedMesh?: boolean}).isSkinnedMesh) {
-        return true;
-    }
+type UserDataSnapshot = {
+    object: Object3D;
+    userData: Object3D["userData"];
+};
 
-    for (const child of object.children) {
-        if (containsSkinnedMesh(child)) {
+const containsSkinnedMesh = (object: Object3D): boolean => {
+    const stack: Object3D[] = [object];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        if ((current as {isSkinnedMesh?: boolean}).isSkinnedMesh) {
             return true;
+        }
+
+        const children = current.children;
+        for (let i = children.length - 1; i >= 0; i--) {
+            stack.push(children[i]!);
         }
     }
 
     return false;
 };
 
-const processClonedObjectRecursively = (
+const clonePlainObjectHierarchyWithoutUserDataSerialization = (object: Object3D): Object3D => {
+    const clonedRoot = object.clone(false);
+    const sourceStack: Object3D[] = [object];
+    const cloneStack: Object3D[] = [clonedRoot];
+
+    while (sourceStack.length > 0) {
+        const source = sourceStack.pop()!;
+        const clone = cloneStack.pop()!;
+        const sourceChildren = source.children;
+
+        for (let i = 0, l = sourceChildren.length; i < l; i++) {
+            const sourceChild = sourceChildren[i]!;
+            const clonedChild = sourceChild.clone(false);
+            clone.add(clonedChild);
+            sourceStack.push(sourceChild);
+            cloneStack.push(clonedChild);
+        }
+    }
+
+    return clonedRoot;
+};
+
+const cloneWithoutUserDataSerialization = (object: Object3D): Object3D => {
+    const snapshots: UserDataSnapshot[] = [];
+    traverseObjectDepthFirst(object, source => {
+        snapshots.push({object: source, userData: source.userData});
+        source.userData = {};
+    });
+
+    try {
+        return containsSkinnedMesh(object) ? SkeletonUtils.clone(object) : clonePlainObjectHierarchyWithoutUserDataSerialization(object);
+    } finally {
+        for (let i = 0; i < snapshots.length; i++) {
+            const snapshot = snapshots[i]!;
+            snapshot.object.userData = snapshot.userData;
+        }
+    }
+};
+
+const processClonedObject = (
     sourceObject: Object3D,
     clonedObject: Object3D,
     options: CloneObjectOptions = {},
@@ -72,11 +122,9 @@ const processClonedObjectRecursively = (
     }
 
     if (sourceObject.userData) {
-        clonedObject.userData = JSON.parse(JSON.stringify(sourceObject.userData));
+        clonedObject.userData = cloneJsonCompatible(sourceObject.userData);
         processCloneBehaviors(clonedObject);
     }
-
-    processCloneChildrenRecursively(sourceObject, clonedObject, options);
 };
 
 const processCloneBehaviors = (clonedObject: Object3D): void => {
@@ -90,18 +138,31 @@ const processCloneBehaviors = (clonedObject: Object3D): void => {
     }));
 };
 
-const processCloneChildrenRecursively = (
+const processClonedObjectHierarchy = (
     sourceObject: Object3D,
     clonedObject: Object3D,
     options: CloneObjectOptions = {},
 ): void => {
-    sourceObject.children.map((sourceChild, index) => {
-        const clonedChild = clonedObject.children[index];
-        if (!clonedChild) {
-            return;
+    const sourceStack: Object3D[] = [sourceObject];
+    const cloneStack: Object3D[] = [clonedObject];
+
+    while (sourceStack.length > 0) {
+        const source = sourceStack.pop()!;
+        const clone = cloneStack.pop()!;
+        processClonedObject(source, clone, options);
+
+        const sourceChildren = source.children;
+        const clonedChildren = clone.children;
+        for (let index = sourceChildren.length - 1; index >= 0; index--) {
+            const sourceChild = sourceChildren[index]!;
+            const clonedChild = clonedChildren[index];
+            if (!clonedChild) {
+                continue;
+            }
+            sourceStack.push(sourceChild);
+            cloneStack.push(clonedChild);
         }
-        processClonedObjectRecursively(sourceChild, clonedChild, options);
-    });
+    }
 };
 
 type CloneObjectOptions = {
@@ -122,19 +183,18 @@ type CloneObjectOptions = {
 export const cloneObject = (object: Object3D, options: CloneObjectOptions = {}): Object3D => {
     const internalOptions = { ...options };
     if (internalOptions.cloneMaterials && !internalOptions.materialCache) {
-        internalOptions.materialCache = new Map();
+        internalOptions.materialCache = new WeakMap();
     }
     if (internalOptions.cloneGeometry && !internalOptions.geometryCache) {
-        internalOptions.geometryCache = new Map();
+        internalOptions.geometryCache = new WeakMap();
     }
     // Use provided uuidMap or create an internal one for remapping
     const uuidMap = internalOptions.uuidMap || new Map<string, string>();
     internalOptions.uuidMap = uuidMap;
 
-    // Check if the object or its children contain skinned meshes
-    const clonedObject = containsSkinnedMesh(object) ? SkeletonUtils.clone(object) : object.clone(true);
+    const clonedObject = cloneWithoutUserDataSerialization(object);
 
-    processClonedObjectRecursively(object, clonedObject, internalOptions);
+    processClonedObjectHierarchy(object, clonedObject, internalOptions);
 
     // Remap "object" type behavior attributes to use the new UUIDs
     remapBehaviorAttributeUuids(clonedObject, internalOptions.uuidMap);
@@ -149,6 +209,8 @@ export const cloneObject = (object: Object3D, options: CloneObjectOptions = {}):
     (clonedObject as ObjectWithRefs)._obj = (object as ObjectWithRefs)._obj;
     (clonedObject as ObjectWithRefs)._root = (object as ObjectWithRefs)._root;
 
+    retainExistingManagedObjectGpuResources(clonedObject);
+
     return clonedObject;
 };
 
@@ -158,20 +220,26 @@ export const processChildData = (clonedObject: Object3D, initial?: boolean): voi
     }
 
     clonedObject.userData.children = [];
-    const saveChildrenData = (obj: Object3D, childrenList: ChildData[]) => {
-        if (obj.userData.Server === true || obj.userData.isRuntimeOnly) return;
+    const objectStack: Object3D[] = [clonedObject];
+    const childrenListStack: ChildData[][] = [clonedObject.userData.children];
+    while (objectStack.length > 0) {
+        const obj = objectStack.pop()!;
+        const childrenList = childrenListStack.pop()!;
+        if (obj.userData.Server === true || obj.userData.isRuntimeOnly) continue;
         if (obj.children && obj.userData?.type === undefined) {
-            obj.children.forEach(n => {
-                let children1: ChildData[] = [];
+            const children = obj.children;
+            for (let i = 0, l = children.length; i < l; i++) {
+                const n = children[i]!;
+                const children1: ChildData[] = [];
                 childrenList.push({
                     uuid: n.uuid,
                     children: children1,
                 });
-                saveChildrenData(n, children1);
-            });
+                objectStack.push(n);
+                childrenListStack.push(children1);
+            }
         }
-    };
-    saveChildrenData(clonedObject, clonedObject.userData.children);
+    }
 };
 
 export const getObjectTemplateType = (object: Object3D): TemplateType | undefined => {
@@ -236,13 +304,13 @@ export const getObjectTemplateFromScene = (object: Object3D, scene: Scene): Obje
         return undefined;
     }
 
-    return scene.getObjectByProperty("uuid", templateUuid);
+    return findObjectDepthFirst(scene, candidate => candidate.uuid === templateUuid) ?? undefined;
 };
 
 export const getVertexCount = (object: Object3D): number => {
     let count = 0;
 
-    object.traverse(child => {
+    traverseObjectDepthFirst(object, child => {
         if (child instanceof Mesh && child.isMesh) {
             if (child.geometry instanceof BufferGeometry) {
                 if (child.geometry.index) {

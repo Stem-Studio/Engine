@@ -17,12 +17,16 @@ class FollowBehavior extends BehaviorBase {
     private followTarget: Object3D | null = null;
     private physics?: IPhysics;
     private isActive: boolean = false;
-    private initialOffset?: Vector3;
+    private hasInitialOffset: boolean = false;
+    private readonly initialOffset = new Vector3();
+    private readonly followPosition = new Vector3();
+    private readonly newPosition = new Vector3();
+    private readonly newQuaternion = new Quaternion();
 
     init(game: GameManager) {
         this.game = game;
 
-        this.followTarget = game.scene?.getObjectByProperty("uuid", this.attributes.followTargetUuid) ?? null;
+        this.followTarget = game.getObjectByUUID(this.attributes.followTargetUuid);
         this.physics = game.collisionDetector?.physics;
         if (!this.attributes.startOnTrigger) {
             this.isActive = true;
@@ -30,38 +34,34 @@ class FollowBehavior extends BehaviorBase {
     }
 
     update(deltaTime: number) {
-        if (isDirectionalLight(this.target)) {
-            return;
-        }
-
         if (!this.isActive || !this.followTarget || !this.target || this.attributes.speed <= 0) {
             return;
         }
 
-        const followPosition = this.followTarget.position.clone();
-        const parentPosition = this.target.position.clone();
+        const followPosition = this.followPosition.copy(this.followTarget.position);
 
         if (isDirectionalLight(this.target)) {
-            if (!this.initialOffset) {
-                this.initialOffset = this.target.position.clone().sub(this.followTarget.position.clone());
+            if (!this.hasInitialOffset) {
+                this.initialOffset.copy(this.target.position).sub(followPosition);
+                this.hasInitialOffset = true;
             }
 
             this.target.target.position.copy(followPosition);
             if (this.target.target.updateMatrixWorld) {
                 this.target.target.updateMatrixWorld();
             }
-            this.target.position.copy(followPosition.clone().add(this.initialOffset));
+            this.target.position.copy(followPosition).add(this.initialOffset);
             return;
         }
 
-        const currentDistance = parentPosition.distanceTo(followPosition);
-
-        const newPosition = parentPosition.clone();
-        const newQuaternion = this.target.quaternion.clone();
+        const currentDistanceSq = this.target.position.distanceToSquared(followPosition);
+        const newPosition = this.newPosition.copy(this.target.position);
+        const newQuaternion = this.newQuaternion.copy(this.target.quaternion);
 
         const alpha = MathUtils.clamp(this.attributes.speed * deltaTime, 0, 1);
 
-        if (this.attributes.distance < currentDistance) {
+        const followDistance = Number(this.attributes.distance);
+        if (Number.isFinite(followDistance) && (followDistance < 0 || followDistance * followDistance < currentDistanceSq)) {
             newPosition.lerp(followPosition, alpha);
         }
 
@@ -104,7 +104,7 @@ class FollowBehavior extends BehaviorBase {
     }
 
     onAttributesUpdated(): void {
-        this.followTarget = this.game?.scene?.getObjectByProperty("uuid", this.attributes.followTargetUuid) ?? null;
+        this.followTarget = this.game?.getObjectByUUID(this.attributes.followTargetUuid) ?? null;
     }
 
     onEvent(msg: string, data: unknown): void {

@@ -1,6 +1,5 @@
 import {Object3D, Scene} from "three";
 
-import {deserializePrefab} from "./serialization";
 import {AssetLoader} from "@stem/editor-oss/asset-management/AssetLoader";
 import {AssetRef} from "@stem/editor-oss/asset-management/AssetRef";
 import {
@@ -321,6 +320,7 @@ export const loadPrefabWithLoader = async (
         assetIdToRevisionId: prefabRevision.dependencies || {},
         logicalIdToAssetId: (prefabRevision.metadata?.logicalAssetIdMap || {}) as Record<string, string>,
     };
+    const {deserializePrefab} = await import("./serialization");
     const prefabInstance = await deserializePrefab(prefabStr, prefabResolutionContext, skipChildrenProcess);
     if (!prefabInstance) {
         throw new Error(`Failed to load prefab revision ${prefabId}:${prefabRevisionId}`);

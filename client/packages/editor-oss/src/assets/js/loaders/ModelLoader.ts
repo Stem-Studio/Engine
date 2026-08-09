@@ -1,6 +1,6 @@
-import {AudioListener, BufferAttribute, Camera, Mesh, Object3D} from "three";
-import {DRACOLoader} from "three/examples/jsm/loaders/DRACOLoader.js";
-import {Renderer} from "three/webgpu";
+import {AudioListener, BufferAttribute, BufferGeometry, Camera, Mesh, Object3D} from "three";
+import {DRACOLoader} from "three/addons/loaders/DRACOLoader.js";
+import type {Renderer} from "three/webgpu";
 
 import BaseLoader from "./BaseLoader";
 import BlendLoader from "./BlendLoader";
@@ -15,7 +15,6 @@ import OBJLoader from "./OBJLoader";
 import PCDLoader from "./PCDLoader";
 import PDBLoader from "./PDBLoader";
 import PLYLoader from "./PLYLoader";
-import SparkGaussianSplatLoader from "./SparkGaussianSplatLoader";
 import STLLoader from "./STLLoader";
 import TDSLoader from "./TDSLoader";
 import USDZLoader from "./USDZLoader";
@@ -30,6 +29,7 @@ import {ImportUtils} from "../../../utils/ImportUtils";
 import MeshUtils from "../../../utils/MeshUtils";
 import {cloneObject} from "../../../utils/ObjectUtils";
 import {PriorityTaskQueue} from "../../../utils/PriorityTaskQueue";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 import {applyHumanoidAnimations} from "../animations/applyHumanoidAnimations";
 import {loadHumanoidAnimations} from "../animations/loadHumanoidAnimations";
 
@@ -78,7 +78,6 @@ const Loaders: Record<string, any> = {
     vrm: VRMLoader,
     vrml: VRMLLoader,
     ply: PLYLoader,
-    spz: SparkGaussianSplatLoader,
     usd: USDZLoader,
     usda: USDZLoader,
     usdc: USDZLoader,
@@ -87,12 +86,19 @@ const Loaders: Record<string, any> = {
     blend: BlendLoader,
 };
 
+const normalizedGeometries = new WeakSet<BufferGeometry>();
+const MAX_MODEL_CACHE_ENTRIES = 64;
+
+const loadSparkGaussianSplatLoader = async () => {
+    const module = await import("./SparkGaussianSplatLoader");
+    return module.default;
+};
+
 /**
  * ModelLoader
  *
  */
 class ModelLoader extends BaseLoader {
-    // TODO: implement cache invalidation strategy, and destroy cached models when needed
     private static cache = new Map<string, Object3D>();
     private static pendingLoads = new Map<string, Promise<Object3D | null>>();
 
@@ -107,23 +113,55 @@ class ModelLoader extends BaseLoader {
         super();
     }
 
+    static clearCache(): void {
+        ModelLoader.cache.clear();
+        ModelLoader.pendingLoads.clear();
+    }
+
+    private static getCachedModel(cacheKey: string): Object3D | null {
+        const cached = ModelLoader.cache.get(cacheKey);
+        if (!cached) {
+            return null;
+        }
+
+        ModelLoader.cache.delete(cacheKey);
+        ModelLoader.cache.set(cacheKey, cached);
+        return cached;
+    }
+
+    private static rememberCachedModel(cacheKey: string, obj: Object3D): void {
+        if (ModelLoader.cache.has(cacheKey)) {
+            ModelLoader.cache.delete(cacheKey);
+        }
+
+        ModelLoader.cache.set(cacheKey, obj);
+
+        while (ModelLoader.cache.size > MAX_MODEL_CACHE_ENTRIES) {
+            const oldestKey = ModelLoader.cache.keys().next().value;
+            if (oldestKey === undefined) {
+                break;
+            }
+            ModelLoader.cache.delete(oldestKey);
+        }
+    }
+
     async load(
         url: string,
         options?: ModelLoaderOptions,
         environment?: ModelLoaderEnvironment,
     ): Promise<Object3D | null> {
+        if (options?.Type === undefined) {
+            console.warn(`ModelLoader: no type parameters, and cannot load.`);
+            return null;
+        }
+
         const cacheKey = options?.CacheKey || url;
         let loadPromise: Promise<Object3D | null>;
         let reusedPendingLoad = false;
 
-        if (ModelLoader.cache.has(cacheKey)) {
-            const cached = ModelLoader.cache.get(cacheKey);
-            if (cached) {
-                loadPromise = Promise.resolve(cached);
-            } else {
-                // Should not happen if has() is true, but for safety
-                loadPromise = Promise.resolve(null);
-            }
+        const cached = ModelLoader.getCachedModel(cacheKey);
+        if (cached) {
+            loadPromise = Promise.resolve(cached);
         } else if (ModelLoader.pendingLoads.has(cacheKey)) {
             loadPromise = ModelLoader.pendingLoads.get(cacheKey)!;
             reusedPendingLoad = true;
@@ -181,7 +219,9 @@ class ModelLoader extends BaseLoader {
             MeshUtils.traverseUUID(obj.children, obj.userData._children); // Record the uuid of each component of the most original model.
         }
 
-        obj.traverse((child: Object3D) => {
+        const stripMorphingForMobile = !options?.EnableMorphing && DetectDevice.isMobile();
+
+        traverseObjectDepthFirst(obj, (child: Object3D) => {
             if (child.uuid === obj.uuid) {
                 return;
             }
@@ -190,6 +230,15 @@ class ModelLoader extends BaseLoader {
 
             child.userData = child.userData || {};
             child.userData.isRuntimeOnly = true;
+
+            if (stripMorphingForMobile && MeshUtils.isMesh(child)) {
+                // Remove morph target state on mobile unless explicitly requested.
+                if (child.morphTargetInfluences) delete child.morphTargetInfluences;
+                if (child.morphTargetDictionary) delete child.morphTargetDictionary;
+                if (child.geometry?.morphAttributes) {
+                    child.geometry.morphAttributes = {};
+                }
+            }
         });
 
         if (!options?.DisableDefaultPhysics) {
@@ -206,22 +255,6 @@ class ModelLoader extends BaseLoader {
                 restitution: 0,
                 ctype: "Static",
             };
-        }
-
-        if (!options?.EnableMorphing && DetectDevice.isMobile()) {
-            obj.traverse((child: Object3D) => {
-                if (MeshUtils.isMesh(child)) {
-                    // Remove morph target influences and dictionary
-                    if (child.morphTargetInfluences) delete child.morphTargetInfluences;
-                    if (child.morphTargetDictionary) delete child.morphTargetDictionary;
-                    // Remove morph attributes from geometry
-                    if (child.geometry && child.geometry.morphAttributes) {
-                        // Consider cloning geometry to avoid modifying the shared cached geometry
-                        // child.geometry = child.geometry.clone();
-                        child.geometry.morphAttributes = {};
-                    }
-                }
-            });
         }
 
         // Humanoid models carry only a flag in userData — the standard
@@ -249,10 +282,7 @@ class ModelLoader extends BaseLoader {
         const type = options?.Type;
 
         if (type === undefined) {
-            console.warn(`ModelLoader: no type parameters, and cannot load.`);
-            return new Promise(resolve => {
-                resolve(null);
-            });
+            return null;
         }
 
         const server = global.app?.options.server;
@@ -266,45 +296,46 @@ class ModelLoader extends BaseLoader {
         }
 
         let LoaderCtor = Loaders[type];
-        if (LoaderCtor === undefined) {
-            console.warn(`ModelLoader: no ${type} loader.`);
-            return Promise.resolve(null);
+
+        if (type === "spz") {
+            LoaderCtor = await loadSparkGaussianSplatLoader();
         }
 
         if (type === "ply") {
             try {
                 if (options?.ForceGaussianSplatPly || await isGaussianSplatPlyUrl(url)) {
-                    LoaderCtor = SparkGaussianSplatLoader;
+                    LoaderCtor = await loadSparkGaussianSplatLoader();
                 }
             } catch (error) {
                 console.warn(`ModelLoader: failed to inspect PLY header for ${url}`, error);
             }
         }
 
-        return new Promise(resolve => {
-            const newLoader = new LoaderCtor();
+        if (LoaderCtor === undefined) {
+            console.warn(`ModelLoader: no ${type} loader.`);
+            return Promise.resolve(null);
+        }
 
-            newLoader
-                .load(url, options, environment)
-                .then((obj: Object3D | null) => {
-                    if (!obj || !obj.userData) {
-                        resolve(null);
-                        return;
-                    }
+        const newLoader = new LoaderCtor();
+        return newLoader
+            .load(url, options, environment)
+            .then((obj: Object3D | null) => {
+                if (!obj || !obj.userData) {
+                    return null;
+                }
 
-                    obj.traverse((child: Object3D) => {
-                        this.normalizeGeometryAttributes(child);
-                    });
-
-                    if (!isGaussianSplatObject(obj)) {
-                        ModelLoader.cache.set(cacheKey, obj);
-                    }
-                    resolve(obj);
-                })
-                .finally(() => {
-                    newLoader.dispose();
-                });
-        });
+                if (!isGaussianSplatObject(obj)) {
+                    ModelLoader.rememberCachedModel(cacheKey, obj);
+                }
+                return obj;
+            })
+            .catch((error: unknown) => {
+                console.warn(`ModelLoader: failed to load ${type} model from ${url}`, error);
+                return null;
+            })
+            .finally(() => {
+                newLoader.dispose();
+            });
     }
 
     async reuploadModel(modelUrl: string): Promise<string | null> {
@@ -328,12 +359,15 @@ class ModelLoader extends BaseLoader {
     }
 
     private normalizeGeometryAttributes(child: Object3D) {
-        // CHECK: if we really need this method
-
         if ((child as Mesh).isMesh && (child as Mesh).geometry) {
             const geometry = (child as Mesh).geometry;
+            if (normalizedGeometries.has(geometry)) {
+                return;
+            }
 
-            geometry.computeBoundingBox();
+            if (!geometry.boundingBox) {
+                geometry.computeBoundingBox();
+            }
 
             // if (attributes.skinIndex && !(attributes.skinIndex.array instanceof Float32Array)) {
             //     geometry.setAttribute(
@@ -467,6 +501,8 @@ class ModelLoader extends BaseLoader {
                     }
                 }
             }
+
+            normalizedGeometries.add(geometry);
         }
     }
 }

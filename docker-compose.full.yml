@@ -44,7 +44,6 @@ services:
         image: buildwithstem-ai:latest
         container_name: buildwithstem-ai
         environment:
-            - BUILD_MODE=oss
             - AI_SERVER_PORT=8081
             # BYOK keys — set in a .env file next to this compose file,
             # or `export` them in your shell before `docker compose up`.

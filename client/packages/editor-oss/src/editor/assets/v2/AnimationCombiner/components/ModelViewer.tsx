@@ -4,9 +4,11 @@ import styled from "styled-components";
 import * as THREE from "three";
 import {bayer16} from "three/addons/tsl/math/Bayer.js";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
-import {gaussianBlur} from "three/examples/jsm/tsl/display/GaussianBlurNode.js";
+import {gaussianBlur} from "three/addons/tsl/display/GaussianBlurNode.js";
 import {pass, screenUV, screenCoordinate, vec3, vec4, uniform, texture, depth, float} from "three/tsl";
-import {WebGPURenderer, RenderPipeline, RenderTarget, MeshBasicNodeMaterial} from "three/webgpu";
+import {RenderTarget} from "three";
+import {MeshBasicNodeMaterial, RenderPipeline} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 // Experimental node-based shading helpers for vignette & contact shadow
  
  
@@ -225,8 +227,14 @@ export const ModelViewer: React.FC<ModelViewerProps> = ({
     };
 
     useEffect(() => {
+        let cleanupModelViewer: (() => void) | undefined;
+        let disposed = false;
+
         const processModel= async () => {
             if (!model || !fileExt || !viewer.current) return;
+            const {WebGPURenderer} = await import("three/webgpu");
+            if (disposed || !viewer.current) return;
+
             const scene = new THREE.Scene();
             scene.name = "AnimationCombinerScene";
             const camera = setCamera(viewer.current);
@@ -234,7 +242,7 @@ export const ModelViewer: React.FC<ModelViewerProps> = ({
             let mixer: THREE.AnimationMixer | null = null;
             let graph: AnimationGraph | null = null;
 
-            const renderer = new WebGPURenderer({antialias: true, alpha: false});
+            const renderer: WebGPURenderer = new WebGPURenderer({antialias: true, alpha: false});
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setClearColor(CLEAR_COLOR);
             resizeWindow(camera, viewer.current, renderer);
@@ -592,7 +600,19 @@ export const ModelViewer: React.FC<ModelViewerProps> = ({
             };
         };
 
-        void processModel();
+        void processModel().then(nextCleanup => {
+            if (typeof nextCleanup !== "function") return;
+            if (disposed) {
+                nextCleanup();
+                return;
+            }
+            cleanupModelViewer = nextCleanup;
+        });
+
+        return () => {
+            disposed = true;
+            cleanupModelViewer?.();
+        };
     }, [model, fileExt]);
 
     return (

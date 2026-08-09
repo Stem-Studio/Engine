@@ -1,4 +1,3 @@
-import React from "react";
 import * as THREE from "three";
 import { AdditiveBlending, NormalBlending } from "three";
 import { ParticleSystem } from "three.quarks";

@@ -10,6 +10,7 @@ import BaseSerializer from "../BaseSerializer";
 const MAX_CONCURRENT_IMAGE_LOADS = DetectDevice.isMobile() ? 4 : 20;
 let activeImageLoads = 0;
 const imageLoadQueue = [];
+let imageLoadQueueHead = 0;
 
 /**
  *
@@ -26,8 +27,8 @@ function enqueueImageLoad(loadFn) {
  *
  */
 function processImageLoadQueue() {
-    while (activeImageLoads < MAX_CONCURRENT_IMAGE_LOADS && imageLoadQueue.length > 0) {
-        const { loadFn, resolve, reject } = imageLoadQueue.shift();
+    while (activeImageLoads < MAX_CONCURRENT_IMAGE_LOADS && imageLoadQueueHead < imageLoadQueue.length) {
+        const { loadFn, resolve, reject } = imageLoadQueue[imageLoadQueueHead++];
         activeImageLoads++;
         loadFn()
             .then(resolve)
@@ -36,6 +37,18 @@ function processImageLoadQueue() {
                 activeImageLoads--;
                 processImageLoadQueue();
             });
+    }
+    compactImageLoadQueueIfNeeded();
+}
+
+function compactImageLoadQueueIfNeeded() {
+    if (imageLoadQueueHead === 0) return;
+    if (imageLoadQueueHead >= imageLoadQueue.length) {
+        imageLoadQueue.length = 0;
+        imageLoadQueueHead = 0;
+    } else if (imageLoadQueueHead >= 1024 && imageLoadQueueHead * 2 >= imageLoadQueue.length) {
+        imageLoadQueue.splice(0, imageLoadQueueHead);
+        imageLoadQueueHead = 0;
     }
 }
 
@@ -80,20 +93,70 @@ const properties = [
     "needsUpdate",
 ];
 
+const DEFAULT_TEXTURE = new THREE.Texture();
+
+function hasEquals(value) {
+    return value && typeof value.equals === "function";
+}
+
+function isPlainObject(value) {
+    return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function valuesEqual(value, defaultValue) {
+    if (value === defaultValue) {
+        return true;
+    }
+
+    if (defaultValue !== undefined && defaultValue !== null && hasEquals(value)) {
+        return value.equals(defaultValue);
+    }
+
+    if (Array.isArray(value) && Array.isArray(defaultValue)) {
+        if (value.length !== defaultValue.length) {
+            return false;
+        }
+        for (let i = 0; i < value.length; i++) {
+            if (!valuesEqual(value[i], defaultValue[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (isPlainObject(value) && isPlainObject(defaultValue)) {
+        const keys = Object.keys(value);
+        const defaultKeys = Object.keys(defaultValue);
+        if (keys.length !== defaultKeys.length) {
+            return false;
+        }
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            if (!Object.prototype.hasOwnProperty.call(defaultValue, key) || !valuesEqual(value[key], defaultValue[key])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
 class TextureSerializer extends BaseSerializer {
     toJSON(obj, defaultTexture) {
-        const texture = defaultTexture ? defaultTexture : new THREE.Texture();
+        const texture = defaultTexture ? defaultTexture : DEFAULT_TEXTURE;
         const json = super.toJSON(obj);
 
-        properties.forEach(key => {
-            if (JSON.stringify(obj[key]) === JSON.stringify(texture[key])) {
+        for (let i = 0; i < properties.length; i++) {
+            const key = properties[i];
+            if (valuesEqual(obj[key], texture[key])) {
                 delete json[key];
             } else if (obj[key] instanceof THREE.Vector2 && obj[key].x !== null && obj[key].y !== null) {
                 json[key] = obj[key].toArray();
             } else {
                 json[key] = obj[key];
             }
-        });
+        }
 
         if (json.userData && json.userData.revisionID) {
             delete json.userData.revisionID;

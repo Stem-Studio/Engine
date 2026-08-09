@@ -1,6 +1,6 @@
 const PAGE_CACHE = "stemstudio-pages-v3";
 const ASSET_CACHE = "stemstudio-assets-v1";
-const PRECACHE_URLS = ["/", "/index.html", "/editor.html", "/play.html"];
+const PRECACHE_URLS = ["/", "/index.html", "/shell.html", "/editor.html", "/play.html"];
 const CACHEABLE_CODE_EXTENSIONS = [
   ".js",
   ".css",
@@ -55,11 +55,17 @@ self.addEventListener("fetch", event => {
   }
 
   if (request.mode === "navigate") {
-    const fallbackUrl = url.pathname.startsWith("/create/")
+    const pathname = url.pathname;
+    const fallbackUrl = pathname === "/shell.html"
+      ? "/shell.html"
+      : pathname.startsWith("/create/") || pathname.startsWith("/stem-editor")
       ? "/editor.html"
-      : url.pathname.startsWith("/play/")
+      : pathname.startsWith("/play/")
         ? "/play.html"
-        : "/index.html";
+        : pathname === "/dashboard" || pathname.startsWith("/dashboard/") ||
+            pathname === "/login" || pathname.startsWith("/login/")
+          ? "/shell.html"
+          : "/index.html";
     event.respondWith(networkFirst(request, PAGE_CACHE, fallbackUrl));
     return;
   }
@@ -81,6 +87,22 @@ async function networkFirst(request, cacheName, fallbackUrl) {
 
     if (response.ok) {
       cache.put(request, response.clone()).catch(() => undefined);
+      return response;
+    }
+
+    // A static host can return a normal 404 for a client-side route instead
+    // of rejecting the request. Treat that the same as an offline miss so a
+    // cached app shell can still boot and let the SPA router resolve the URL.
+    const cachedResponse = await cache.match(request);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+
+    if (fallbackUrl) {
+      const fallbackResponse = await cache.match(fallbackUrl);
+      if (fallbackResponse) {
+        return fallbackResponse;
+      }
     }
 
     return response;

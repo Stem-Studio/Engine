@@ -1,5 +1,5 @@
 import { BoxGeometry, BufferGeometry, Group, Mesh, MeshBasicMaterial, SphereGeometry } from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import BehaviorObjectSettingsApplier from "./BehaviorObjectSettingsApplier";
 import { BodyShapeType } from "../../physics/common/types";
@@ -44,6 +44,25 @@ describe("BehaviorObjectSettingsApplier", () => {
             physics: { enabled: true, shape: "capsule" },
         });
 
+        expect(group.userData.physics.shape).toBe(BodyShapeType.SPHERE);
+    });
+
+    it("detects primitive geometry in deep object trees without recursive traversal", () => {
+        const group = new Group();
+        let cursor = group;
+        for (let i = 0; i < 12_000; i++) {
+            const child = new Group();
+            cursor.add(child);
+            cursor = child;
+        }
+        cursor.add(new Mesh(new SphereGeometry(1), new MeshBasicMaterial()));
+        const traverseSpy = vi.spyOn(group, "traverse");
+
+        BehaviorObjectSettingsApplier.applyObjectSettings(group, {
+            physics: { enabled: true, shape: "capsule" },
+        });
+
+        expect(traverseSpy).not.toHaveBeenCalled();
         expect(group.userData.physics.shape).toBe(BodyShapeType.SPHERE);
     });
 

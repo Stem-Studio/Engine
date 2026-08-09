@@ -5,8 +5,7 @@
  */
 
 
-import * as THREE from "three";
-
+import {CameraHelper as ThreeCameraHelper} from "three";
 import BaseHelper from "./BaseHelper";
 import global from "../global";
 
@@ -21,11 +20,12 @@ class CameraHelper extends BaseHelper {
     }
 
     stop() {
-        global.app.on(`appStarted.${this.id}`, null);
+        global.app.on(`storageChanged.${this.id}`, null);
 
         if (this.helper) {
             var scene = global.app.editor.sceneHelpers;
             scene.remove(this.helper);
+            this.helper.dispose();
             delete this.helper;
         }
     }
@@ -34,7 +34,7 @@ class CameraHelper extends BaseHelper {
         var showCamera = global.app.storage.showCamera;
 
         if (!this.helper) {
-            this.helper = new THREE.CameraHelper(global.app.editor.camera ?? global.app.camera);
+            this.helper = new ThreeCameraHelper(global.app.editor.camera ?? global.app.camera);
         }
 
         var scene = global.app.editor.sceneHelpers;

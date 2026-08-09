@@ -4,6 +4,7 @@ import {AssetRef, assetRefKey} from "./AssetRef";
 import {SerializedAssetDerivative, SerializedAssetObjectSchema, SerializedAssetRevision} from "./schema";
 import {getAsset, getAssetDerivatives, getAssetRevision} from "@stem/network/api/asset";
 import {getPrefabEditRevisionId, getPrefabId} from "../prefab/util";
+import {traverseObjectDepthFirst} from "../utils/SceneTraverser";
 
 /**
  * Collects all asset refs needed for export from the scene's resolution
@@ -20,7 +21,7 @@ export const collectExportAssetRefs = (scene: Scene, dependencies: Record<string
     // Include prefab edit revision refs for unlocked prefabs.
     // These reference a different revision than the scene's pinned
     // revision, so they aren't in assetIdToRevisionId.
-    scene.traverse((obj) => {
+    traverseObjectDepthFirst(scene, (obj) => {
         const editRevisionId = getPrefabEditRevisionId(obj);
         const prefabId = getPrefabId(obj);
         if (editRevisionId && prefabId) {
@@ -86,73 +87,75 @@ const findAllAssetRevisions = async (
     allRevisions: Map<string, SerializedAssetRevision>,
     allDerivatives: Map<string, SerializedAssetDerivative>,
 ): Promise<void> => {
-    // Base case - no more dependencies
-    if (dependencies.length === 0) {
-        return;
-    }
+    let pending = [...dependencies];
 
-    // Fetch any new revisions that we don't already have
-    const newAssetRefs = dependencies.filter(assetRef => !allRevisions.has(assetRefKey(assetRef)));
-    const revisionPromises = newAssetRefs.map(({assetId, revisionId}) =>
-        getAssetRevision(assetId, revisionId, {
-            includeDataUrl: true,
-            includeDependencies: true,
-            includeMetadata: true,
-        }),
-    );
+    while (pending.length > 0) {
+        const newAssetRefsMap = new Map<string, AssetRef>();
+        for (const assetRef of pending) {
+            const key = assetRefKey(assetRef);
+            if (!allRevisions.has(key)) {
+                newAssetRefsMap.set(key, assetRef);
+            }
+        }
 
-    const revisions = await Promise.all(revisionPromises);
+        const newAssetRefs = Array.from(newAssetRefsMap.values());
+        if (newAssetRefs.length === 0) {
+            return;
+        }
 
-    // Add the new asset revisions to the output array
-    for (const revision of revisions) {
-        const key = assetRefKey({assetId: revision.assetId, revisionId: revision.id});
-        allRevisions.set(key, {
-            id: revision.id,
-            assetId: revision.assetId,
-            format: revision.format,
-            contentType: revision.contentType,
-            contentEncoding: revision.contentEncoding,
-            dataUrl: revision.dataUrl!,
-            dependencies: revision.dependencies || undefined,
-            metadata: revision.metadata || undefined,
-        });
-    }
+        const revisionPromises = newAssetRefs.map(({assetId, revisionId}) =>
+            getAssetRevision(assetId, revisionId, {
+                includeDataUrl: true,
+                includeDependencies: true,
+                includeMetadata: true,
+            }),
+        );
+        const revisions = await Promise.all(revisionPromises);
 
-    // Fetch derivatives for each new revision
-    const derivativePromises = newAssetRefs.map(({assetId, revisionId}) =>
-        getAssetDerivatives(assetId, revisionId, { includeDataUrl: true })
-            .catch(() => []), // Return empty array if fetching fails
-    );
-    const derivativeResults = await Promise.all(derivativePromises);
-
-    // Add derivatives to the output map
-    for (const derivatives of derivativeResults) {
-        for (const derivative of derivatives) {
-            allDerivatives.set(derivative.id, {
-                id: derivative.id,
-                assetId: derivative.assetId,
-                revisionId: derivative.revisionId,
-                type: derivative.type,
-                format: derivative.format,
-                contentType: derivative.contentType,
-                contentEncoding: derivative.contentEncoding,
-                dataUrl: derivative.dataUrl!,
-                metadata: derivative.metadata || undefined,
-                lodLevel: derivative.lodLevel,
+        for (const revision of revisions) {
+            const key = assetRefKey({assetId: revision.assetId, revisionId: revision.id});
+            allRevisions.set(key, {
+                id: revision.id,
+                assetId: revision.assetId,
+                format: revision.format,
+                contentType: revision.contentType,
+                contentEncoding: revision.contentEncoding,
+                dataUrl: revision.dataUrl!,
+                dependencies: revision.dependencies || undefined,
+                metadata: revision.metadata || undefined,
             });
         }
-    }
 
-    // For each new revision, find its dependencies
-    const nextDependenciesMap = new Map<string, AssetRef>();
-    for (const revision of revisions) {
-        for (const [assetId, revisionId] of Object.entries(revision.dependencies || {})) {
-            const assetRef = {assetId, revisionId};
-            nextDependenciesMap.set(assetRefKey(assetRef), assetRef);
+        const derivativePromises = newAssetRefs.map(({assetId, revisionId}) =>
+            getAssetDerivatives(assetId, revisionId, { includeDataUrl: true })
+                .catch(() => []), // Return empty array if fetching fails
+        );
+        const derivativeResults = await Promise.all(derivativePromises);
+
+        for (const derivatives of derivativeResults) {
+            for (const derivative of derivatives) {
+                allDerivatives.set(derivative.id, {
+                    id: derivative.id,
+                    assetId: derivative.assetId,
+                    revisionId: derivative.revisionId,
+                    type: derivative.type,
+                    format: derivative.format,
+                    contentType: derivative.contentType,
+                    contentEncoding: derivative.contentEncoding,
+                    dataUrl: derivative.dataUrl!,
+                    metadata: derivative.metadata || undefined,
+                    lodLevel: derivative.lodLevel,
+                });
+            }
         }
-    }
-    const nextDependencies = Array.from(nextDependenciesMap.values());
 
-    // Recursively find all dependencies
-    await findAllAssetRevisions(nextDependencies, allRevisions, allDerivatives);
+        const nextDependenciesMap = new Map<string, AssetRef>();
+        for (const revision of revisions) {
+            for (const [assetId, revisionId] of Object.entries(revision.dependencies || {})) {
+                const assetRef = {assetId, revisionId};
+                nextDependenciesMap.set(assetRefKey(assetRef), assetRef);
+            }
+        }
+        pending = Array.from(nextDependenciesMap.values());
+    }
 };

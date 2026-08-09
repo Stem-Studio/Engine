@@ -2,8 +2,9 @@
 
 Builds `ammo.js` with **growable WASM memory** (64MB initial → 256MB max).
 
-The current static build in `web/assets/js/ammo/` has a fixed 64MB non-growable heap
-which causes `RuntimeError: memory access out of bounds` in complex physics scenes.
+The checked-in assets in `client/assets/js/ammo/` and
+`client/packages/editor-oss/assets/js/ammo/` use the growable build. This avoids
+fixed-heap exhaustion during complex Playground physics scenes.
 
 ## Source
 
@@ -32,15 +33,17 @@ docker --version  # Just need Docker installed
 ## Build
 
 ```bash
-# Build and install into web/assets/js/ammo/
+# Build and install into both canonical Playground asset locations
 ./build.sh --install
 
 # Or just build (output goes to ammo.js/builds/)
 ./build.sh
 ```
 
-The `--install` flag copies the WASM files and applies the ESM export patch
-(comments out `this.Ammo=d;`, adds `export default Ammo;`).
+The `--install` flag copies the WASM files to both asset locations and applies
+the ESM export patch (comments out Emscripten's global `Ammo` assignment and
+adds `export default Ammo;`). A fresh clone is patched idempotently before the
+CMake build, so the generated output does not depend on an untracked checkout.
 
 ## What it changes
 
@@ -52,4 +55,4 @@ The `--install` flag copies the WASM files and applies the ESM export patch
 
 ## After building
 
-Restart the dev server (`bun run run-dev-env`) to pick up the new WASM files.
+Restart the dev server to pick up the new WASM files.

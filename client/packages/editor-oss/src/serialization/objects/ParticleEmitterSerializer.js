@@ -1,8 +1,6 @@
 
 import * as THREE from "three";
-import {ParticleSystem, QuarksLoader} from "three.quarks";
 
-import {DEFAULT_PARTICLE_CONFIG} from "@web-shared/services";
 import {showToast} from "@web-shared/showToast";
 import BaseSerializer from "../BaseSerializer";
 import GeometriesSerializer from "../geometry/GeometriesSerializer";
@@ -13,9 +11,15 @@ import MaterialSerializer from "../material/MaterialSerializer";
  *
  */
 
-const defaultObject = new ParticleSystem(DEFAULT_PARTICLE_CONFIG).emitter;
-const defaultJSON = defaultObject.toJSON();
-const loader = new QuarksLoader();
+let quarksLoaderPromise = null;
+
+function getQuarksLoader() {
+    if (!quarksLoaderPromise) {
+        quarksLoaderPromise = import("three.quarks").then(({QuarksLoader}) => new QuarksLoader());
+    }
+
+    return quarksLoaderPromise;
+}
 
 // Cache for instancing geometries to avoid recreating the same geometry multiple times
 // Structure: Map<key, { object: Geometry, refCount: number }>
@@ -58,6 +62,37 @@ function getOrCreateCached(cache, cacheKey, createFn) {
     return resource;
 }
 
+async function getOrCreateCachedAsync(cache, cacheKey, createFn) {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+        cached.refCount++;
+        return cached.object;
+    }
+
+    const resource = await createFn();
+    if (!resource) {
+        return resource;
+    }
+
+    cache.set(cacheKey, {object: resource, refCount: 1});
+
+    const originalDispose = resource.dispose.bind(resource);
+    resource.dispose = function () {
+        const cached = cache.get(cacheKey);
+        if (cached) {
+            cached.refCount--;
+            if (cached.refCount <= 0) {
+                cache.delete(cacheKey);
+                originalDispose();
+            }
+        } else {
+            originalDispose();
+        }
+    };
+
+    return resource;
+}
+
 class ParticleEmitterSerializer extends BaseSerializer {
     toJSON(obj) {
         const json = obj.toJSON();
@@ -80,10 +115,11 @@ class ParticleEmitterSerializer extends BaseSerializer {
         return json;
     }
 
-    fromJSON(json, parent, options) {
+    async fromJSON(json, parent, options) {
+        const loader = await getQuarksLoader();
         const jsonCopy = {
             ...json,
-            metadata: { ...json.metadata, generator: defaultJSON.metadata.generator },
+            metadata: { ...json.metadata, generator: "Object3D.toJSON" },
             object: {
                 ...json.object,
                 ps: { ...json.object.ps },
@@ -140,14 +176,17 @@ class ParticleEmitterSerializer extends BaseSerializer {
         obj.system.material.needsUpdate = true;
 
         if (jsonCopy.object?.ps?.instancingGeometry) {
-            const geometry = getOrCreateCached(geometryCache, jsonCopy.object.ps.instancingGeometry, () => {
-                const geometry = new GeometriesSerializer().fromJSON(jsonCopy.object.ps.instancingGeometry);
+            const geometryCacheKey = JSON.stringify(jsonCopy.object.ps.instancingGeometry);
+            const geometry = await getOrCreateCachedAsync(geometryCache, geometryCacheKey, async () => {
+                const geometry = await new GeometriesSerializer().fromJSON(jsonCopy.object.ps.instancingGeometry);
                 if (geometry instanceof THREE.PlaneGeometry) {
                     geometry.rotateX(Math.PI / 2);
                 }
                 return geometry;
             });
-            obj.system.instancingGeometry = geometry;
+            if (geometry) {
+                obj.system.instancingGeometry = geometry;
+            }
         }
 
         obj.parentUuid = jsonCopy.parentUuid;

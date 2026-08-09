@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Object3D } from 'three';
+import type { Object3D } from 'three';
 
 import { useLoadAnimations } from './useLoadAnimations';
 import { AssetType, createAssetWithData, ModelFormat, SUPPORTED_MODEL_CONTENT_TYPES, SUPPORTED_MODEL_FORMATS_REGEX } from '@stem/network/api/asset';
@@ -101,15 +101,12 @@ const useModelUploader = () => {
 
             // If there are textures to upload, upload them first
             if (categorized.textureFiles.length > 0) {
-                console.log(`[useModelUploader] Uploading ${categorized.textureFiles.length} texture(s) as image assets`);
                 const uploadedTextures = await uploadTexturesAsAssets(categorized.textureFiles, abortController.signal);
                 setUploadedTextureAssets(uploadedTextures);
-                console.log(`[useModelUploader] Uploaded ${uploadedTextures.length} texture asset(s)`);
             }
 
             // If we have multiple model packages, set up the queue
             if (categorized.modelPackages.length > 1) {
-                console.log(`[useModelUploader] Found ${categorized.modelPackages.length} model packages, setting up queue`);
                 setModelQueue(categorized.modelPackages);
                 setCurrentModelIndex(0);
                 // Process the first model package
@@ -132,25 +129,12 @@ const useModelUploader = () => {
 
         processFiles()
             .then(({originalFile, model, rootFile, format, textureOverrides, textureDetection}) => {
-                console.log('[useModelUploader] ✅ Model loaded successfully!', {
-                    modelName: model?.name || model?.uuid,
-                    format,
-                    hasModel: !!model,
-                });
                 const isGaussianSplat = isGaussianSplatObject(model) || isGaussianSplatFormat(format);
                 const maxLodLevel = isGaussianSplat ? LodLevel.Original : LodLevel.Lod3;
                 const hasTextureOverrides = textureOverrides !== undefined && Object.keys(textureOverrides).length > 0;
                 const textureCount = textureDetection?.texturePaths?.length ?? 0;
                 const hasMissingTextures = detectMissingTextures(model);
 
-                if (hasTextureOverrides) {
-                    console.log(`useModelUploader: Loaded model with ${textureCount} texture override(s)`);
-                }
-                if (hasMissingTextures) {
-                    console.log('[useModelUploader] Missing textures detected on loaded model');
-                }
-
-                console.log('[useModelUploader] Calling setModelData...');
                 setModelData({
                     zipOrOriginalFile: originalFile,
                     model,
@@ -162,10 +146,8 @@ const useModelUploader = () => {
                     hasMissingTextures,
                     isGaussianSplat,
                 });
-                console.log('[useModelUploader] setModelData called!');
             })
             .catch(error => {
-                console.error('[useModelUploader] ❌ Error loading model:', error);
                 if (error?.name !== "AbortError") {
                     console.error("Error processing file:", error);
 
@@ -313,19 +295,6 @@ const useModelUploader = () => {
                 : {}),
         };
         const normalizedMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
-
-        console.log('[useModelUploader] Preparing upload:', {
-            originalFileName: originalFile.name,
-            originalFileSize: originalFile.size,
-            originalFileType: originalFile.type,
-            rootFileName: modelData.rootFile.name,
-            format,
-            contentType,
-            isZip,
-            metadata: normalizedMetadata,
-            lodCount: modelLods.length,
-            sourceGlbSize: sourceGlbBuffer?.byteLength ?? 0,
-        });
 
         // If we are updating an existing model, create a new revision
         if (settings.updateModelId) {
@@ -495,10 +464,6 @@ const useModelUploader = () => {
             const maxLodLevel = isGaussianSplat ? LodLevel.Original : LodLevel.Lod3;
             const hasTextureOverrides = textureOverrides !== undefined && Object.keys(textureOverrides).length > 0;
             const textureCount = textureDetection?.texturePaths?.length ?? 0;
-
-            if (hasTextureOverrides) {
-                console.log(`useModelUploader: Loaded model with ${textureCount} texture override(s)`);
-            }
 
             setCurrentModelIndex(nextIndex);
             setModelData({
@@ -718,8 +683,6 @@ const uploadTexturesAsAssets = async (
             const format = textureFile.name.split('.').pop()?.toLowerCase() || 'png';
             const contentType = textureFile.type || 'image/png';
 
-            console.log(`[uploadTexturesAsAssets] Uploading texture: ${textureFile.name}`);
-
             const asset = await createAssetWithData({
                 type: AssetType.Image,
                 name: textureFile.name,
@@ -733,8 +696,6 @@ const uploadTexturesAsAssets = async (
                 assetId: asset.id,
                 revisionId: asset.headRevisionId,
             });
-
-            console.log(`[uploadTexturesAsAssets] Uploaded texture ${textureFile.name} as asset ${asset.id}`);
         } catch (error) {
             console.error(`[uploadTexturesAsAssets] Failed to upload texture ${textureFile.name}:`, error);
             // Continue with other textures even if one fails
@@ -778,7 +739,6 @@ const createModelPackages = async (
             packages.push(modelFile);
         } else {
             // Create a mini-zip with all relevant files
-            console.log(`[createModelPackages] Creating package for ${modelFile.name} with ${relevantTextures.length} texture(s), ${associatedBins.length} bin file(s), ${associatedMtls.length} mtl file(s)`);
             const zipBlob = await zipFiles(filesToPackage);
             const zipFile = new File([zipBlob], `${modelBaseName}.zip`, { type: 'application/zip' });
             packages.push(zipFile);
@@ -798,8 +758,6 @@ const processZipFile = async (zipFile: File): Promise<{
     modelPackages: File[];
     textureFiles: File[];
 }> => {
-    console.log('[processZipFile] Processing ZIP file:', zipFile.name, 'Size:', zipFile.size);
-
     // Check file size limit
     if (zipFile.size > MAX_ZIP_SIZE_BYTES) {
         throw new Error(`ZIP file is too large (${Math.round(zipFile.size / 1024 / 1024)}MB). Maximum supported size is 100MB.`);
@@ -809,8 +767,6 @@ const processZipFile = async (zipFile: File): Promise<{
     const zip = await zipper.loadAsync(zipFile);
 
     const allPaths = Object.keys(zip.files);
-    console.log('[processZipFile] Total entries in ZIP:', allPaths.length);
-    console.log('[processZipFile] All paths in ZIP:', allPaths);
 
     const modelPaths: string[] = [];
     const texturePaths: string[] = [];
@@ -823,7 +779,6 @@ const processZipFile = async (zipFile: File): Promise<{
 
         // Skip directories
         if (entry.dir) {
-            console.log(`[processZipFile] Skipping directory: ${path}`);
             continue;
         }
 
@@ -832,7 +787,6 @@ const processZipFile = async (zipFile: File): Promise<{
 
         // Skip system/hidden files (check both full path and filename)
         if (isSystemFile(path) || isSystemFile(filename)) {
-            console.log(`[processZipFile] Skipping system file: ${path}`);
             continue;
         }
 
@@ -840,7 +794,6 @@ const processZipFile = async (zipFile: File): Promise<{
         const isTexture = isTextureFile(filename);
         const isBin = isBinFile(filename);
         const isMtl = isMtlFile(filename);
-        console.log(`[processZipFile] File: ${path}, filename: ${filename}, isModel: ${isModel}, isTexture: ${isTexture}, isBin: ${isBin}, isMtl: ${isMtl}`);
 
         if (isModel) {
             modelPaths.push(path);
@@ -858,12 +811,8 @@ const processZipFile = async (zipFile: File): Promise<{
     const dedupedPathSet = new Set(dedupedModelPaths.map(p => p.fullPath));
     const filteredModelPaths = modelPaths.filter(p => dedupedPathSet.has(p));
 
-    console.log(`[processZipFile] Found ${modelPaths.length} model(s), deduped to ${filteredModelPaths.length}, ${texturePaths.length} texture(s), ${binPaths.length} bin file(s)`);
-    console.log('[processZipFile] Model paths:', filteredModelPaths);
-
     // If only one model, return the original ZIP as-is
     if (filteredModelPaths.length <= 1) {
-        console.log('[processZipFile] Single model found, returning original ZIP');
         return { modelPackages: [zipFile], textureFiles: [] };
     }
 
@@ -922,8 +871,6 @@ type CategorizedFiles = {
  * @param files
  */
 const categorizeFiles = async (files: FileList | File): Promise<CategorizedFiles> => {
-    console.log('[categorizeFiles] Input:', files instanceof File ? `File: ${files.name}, type: ${files.type}` : `FileList with ${files.length} files`);
-
     // Helper to check if a file is a ZIP
     const isZipFile = (file: File) =>
         file.type === 'application/zip' ||
@@ -933,15 +880,8 @@ const categorizeFiles = async (files: FileList | File): Promise<CategorizedFiles
 
     // Handle single File object
     if (files instanceof File) {
-        console.log('[categorizeFiles] Is ZIP file:', isZipFile(files));
-
         if (isZipFile(files)) {
-            const result = await processZipFile(files);
-            console.log('[categorizeFiles] processZipFile result:', {
-                modelPackages: result.modelPackages.length,
-                textureFiles: result.textureFiles.length,
-            });
-            return result;
+            return processZipFile(files);
         }
         // Single non-ZIP file
         return { modelPackages: [files], textureFiles: [] };
@@ -949,13 +889,7 @@ const categorizeFiles = async (files: FileList | File): Promise<CategorizedFiles
 
     // Handle FileList - check if it's a single ZIP file
     if (files.length === 1 && files[0] && isZipFile(files[0])) {
-        console.log('[categorizeFiles] FileList with single ZIP file:', files[0].name);
-        const result = await processZipFile(files[0]);
-        console.log('[categorizeFiles] processZipFile result:', {
-            modelPackages: result.modelPackages.length,
-            textureFiles: result.textureFiles.length,
-        });
-        return result;
+        return processZipFile(files[0]);
     }
 
     // Handle FileList (folder upload or multiple file selection)
@@ -981,7 +915,6 @@ const categorizeFiles = async (files: FileList | File): Promise<CategorizedFiles
 
     // Deduplicate models by base name, keeping best format per model
     const dedupedModelFiles = deduplicateModelFiles(modelFiles);
-    console.log(`[categorizeFiles] Found ${modelFiles.length} model(s), deduped to ${dedupedModelFiles.length}, ${textureFiles.length} texture(s), ${binFiles.length} bin file(s), ${mtlFiles.length} mtl file(s)`);
 
     // If only one model, process as single package (may include textures)
     if (dedupedModelFiles.length <= 1) {

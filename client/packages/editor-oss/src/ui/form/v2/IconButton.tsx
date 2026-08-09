@@ -1,4 +1,3 @@
-import React from "react";
 import "../css/IconButton.css";
 import classNames from "classnames";
 

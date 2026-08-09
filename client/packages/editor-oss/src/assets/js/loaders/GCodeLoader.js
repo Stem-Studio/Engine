@@ -1,4 +1,4 @@
-import { GCodeLoader as ThreeGCodeLoader } from "three/examples/jsm/loaders/GCodeLoader.js";
+import { GCodeLoader as ThreeGCodeLoader } from "three/addons/loaders/GCodeLoader.js";
 
 import BaseLoader from "./BaseLoader";
 

@@ -1,5 +1,5 @@
-import * as THREE from "three";
-
+import {Camera, CanvasTexture, LinearFilter, PerspectiveCamera, SRGBColorSpace, Sprite, SpriteMaterial, Vector2, Vector3} from "three";
+import type {Object3DJSON} from "three";
 import {convertFromMetersDisplay, getActiveDisplayUnit} from "./displayUnits";
 
 export type SizeLabelAxis = "x" | "y" | "z";
@@ -30,10 +30,10 @@ const formatLength = (value: number): string => {
  * world units relative to a desired pixel height; the parent should not
  * be non-uniformly scaled or the text will distort.
  */
-export class SizeLabelSprite extends THREE.Sprite {
+export class SizeLabelSprite extends Sprite {
     private readonly _canvas: HTMLCanvasElement;
     private readonly _ctx: CanvasRenderingContext2D;
-    private readonly _texture: THREE.CanvasTexture;
+    private readonly _texture: CanvasTexture;
     private readonly _opts: Required<Omit<SizeLabelOptions, "axis">>;
     private _aspect = 1;
     private _pixelHeight: number;
@@ -48,11 +48,11 @@ export class SizeLabelSprite extends THREE.Sprite {
         canvas.height = 128;
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("SizeLabelSprite: 2d context unavailable");
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.minFilter = THREE.LinearFilter;
-        texture.magFilter = THREE.LinearFilter;
-        const material = new THREE.SpriteMaterial({
+        const texture = new CanvasTexture(canvas);
+        texture.colorSpace = SRGBColorSpace;
+        texture.minFilter = LinearFilter;
+        texture.magFilter = LinearFilter;
+        const material = new SpriteMaterial({
             map: texture,
             transparent: true,
             depthTest: false,
@@ -138,7 +138,7 @@ export class SizeLabelSprite extends THREE.Sprite {
         (this.material).dispose();
     }
 
-    toJSON(): THREE.Object3DJSON {
+    toJSON(): Object3DJSON {
         this.updateMatrix();
 
         return {
@@ -181,10 +181,10 @@ export class SizeLabelSprite extends THREE.Sprite {
      * NDC-space hit test for a sprite with sizeAttenuation:false.
      * Returns true if pointer (in NDC) is over the sprite as drawn.
      */
-    hitTestNDC(pointerNDC: THREE.Vector2, camera: THREE.Camera): boolean {
+    hitTestNDC(pointerNDC: Vector2, camera: Camera): boolean {
         const center = _v.setFromMatrixPosition(this.matrixWorld).project(camera);
         if (center.z < -1 || center.z > 1) return false;
-        const proj = (camera as THREE.PerspectiveCamera).projectionMatrix;
+        const proj = (camera as PerspectiveCamera).projectionMatrix;
         const pxx = proj.elements[0];
         const pyy = proj.elements[5];
         const halfX = Math.abs(pxx) * this.scale.x * 0.5;
@@ -197,10 +197,10 @@ export class SizeLabelSprite extends THREE.Sprite {
     /**
      * Returns screen-space NDC bounding rect of this sprite as drawn.
      */
-    getNDCRect(camera: THREE.Camera, out: {cx: number; cy: number; hx: number; hy: number; z: number}): boolean {
+    getNDCRect(camera: Camera, out: {cx: number; cy: number; hx: number; hy: number; z: number}): boolean {
         const center = _v.setFromMatrixPosition(this.matrixWorld).project(camera);
         if (center.z < -1 || center.z > 1) return false;
-        const proj = (camera as THREE.PerspectiveCamera).projectionMatrix;
+        const proj = (camera as PerspectiveCamera).projectionMatrix;
         out.cx = center.x;
         out.cy = center.y;
         out.hx = Math.abs(proj.elements[0]) * this.scale.x * 0.5;
@@ -210,4 +210,4 @@ export class SizeLabelSprite extends THREE.Sprite {
     }
 }
 
-const _v = new THREE.Vector3();
+const _v = new Vector3();

@@ -25,7 +25,8 @@ type ProgressCallback = (progress: ImportProgress) => void;
 
 const LOCAL_ASSET_URL_PATTERN = /(localhost|minio)/i;
 const IMPORT_ABORT_ERROR_MESSAGE = "The resource specified in the project could not be imported.";
-const STEM_ACCESS_ERROR_PATTERN = /stem revision is private\/unreleased|not present in the target environment/i;
+const STEM_ACCESS_ERROR_PATTERN =
+    /stem revision is private\/unreleased|not present in the target environment|stem revision is unavailable in this environment|source project cannot be resolved/i;
 const PREFAB_REVISION_NOT_FOUND_PATTERN = /Cannot import scene:\s*Prefab revision not found/i;
 
 const formatPrefabRevisionNotFoundError = (rawMessage: string): string => {
@@ -38,7 +39,7 @@ const formatPrefabRevisionNotFoundError = (rawMessage: string): string => {
         prefabId ? `Prefab ID: ${prefabId}` : "",
         revisionId ? `Revision ID: ${revisionId}` : "",
         objectName ? `Object: ${objectName}` : "",
-        "This prefab may have been deleted, may be private, or may belong to another user.",
+        "This prefab revision may have been deleted or may not exist in this environment.",
     ].filter(Boolean);
 
     return details.join("\n");

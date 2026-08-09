@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import {
-    positionLocal,
+    positionGeometry,
     positionWorld,
     cameraPosition,
     float,
@@ -25,10 +25,9 @@ import {
     DoubleSide,
     Mesh,
     PlaneGeometry,
-    ShaderMaterial,
     Scene,
-    MeshBasicNodeMaterial,
-} from "three/webgpu";
+} from "three";
+import {MeshBasicNodeMaterial} from "three/webgpu";
 
 import BaseHelper from "./BaseHelper";
 import {ApplicationMode} from "../EngineRuntime";
@@ -36,7 +35,7 @@ import global from "../global";
 
 class GridHelper extends BaseHelper {
     private infiniteGridPlane: Mesh | null = null;
-    private infiniteGridMaterial: ShaderMaterial | null = null;
+    private infiniteGridMaterial: MeshBasicNodeMaterial | null = null;
     private snapSize: number | null = null;
 
     constructor() {
@@ -98,6 +97,7 @@ class GridHelper extends BaseHelper {
         const geometry = new PlaneGeometry(1, 1, 10, 10);
 
         const material = new MeshBasicNodeMaterial();
+        this.infiniteGridMaterial = material;
         material.transparent = true;
         material.side = DoubleSide;
 
@@ -105,8 +105,8 @@ class GridHelper extends BaseHelper {
         const dist = cameraFar.min(1000).div(2).toVar();
 
         material.positionNode = Fn(() => {
-            const x = positionLocal.x.mul(dist).add(cameraPosition.x);
-            const z = positionLocal.y.mul(dist).add(cameraPosition.z);
+            const x = positionGeometry.x.mul(dist).add(cameraPosition.x);
+            const z = positionGeometry.y.mul(dist).add(cameraPosition.z);
             return vec3(x, 0, z);
         })();
 
@@ -243,7 +243,12 @@ class GridHelper extends BaseHelper {
         const outColor = colorA.mul(sA).add(colorB.mul(sB)).add(colorC.mul(sC)).toVar();
         const distToCam = length(pos.sub(cameraPosition.xz));
         const fade = float(1.0).sub(smoothstep(dist.mul(0.75), dist, distToCam));
-        const outAlpha = levelAAlpha.mul(sA).add(levelBAlpha.mul(sB)).add(levelCAlpha.mul(sC)).mul(fade).toVar();
+        const outAlpha = levelAAlpha
+            .mul(sA)
+            .add(levelBAlpha.mul(sB))
+            .add(levelCAlpha.mul(sC))
+            .mul(fade)
+            .toVar();
 
         // Premultiply for better blending
         material.colorNode = outColor.mul(outAlpha);
@@ -253,6 +258,7 @@ class GridHelper extends BaseHelper {
         this.infiniteGridPlane = new Mesh(geometry, material);
         this.infiniteGridPlane.name = "InfiniteGridPlane";
         this.infiniteGridPlane.userData.isInfiniteGrid = true;
+        this.infiniteGridPlane.userData.isBatchable = false;
         // depth flags directly on the material instance
         material.depthWrite = false;
         material.depthTest = true;

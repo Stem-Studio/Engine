@@ -21,7 +21,7 @@ services:
           curl -fsSL https://bun.sh/install | bash
           export PATH=$HOME/.bun/bin:$PATH
           bun install --frozen-lockfile
-          BUILD_MODE=oss bun run build
+          bun run build
       staticPublishPath: ./build/public
       pullRequestPreviewsEnabled: true
       headers:
@@ -81,8 +81,6 @@ services:
     #   buildCommand: go build -tags oss -trimpath -o ai-server ./cmd/ai-server
     #   startCommand: ./ai-server serve
     #   envVars:
-    #     - key: BUILD_MODE
-    #       value: oss
     #     - key: AI_SERVER_PORT
     #       value: "10000"
     #     - key: ANTHROPIC_API_KEY

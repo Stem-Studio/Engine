@@ -15,6 +15,17 @@ type Action = string;
 type Motion = string;
 type Trigger = string;
 
+function normalizeRawKeyboardAction(actionId: Action): string | null {
+    if (typeof actionId !== "string") return null;
+    const value = actionId.trim();
+    if (/^Key[A-Z]$/i.test(value)) return `Key${value.slice(3).toUpperCase()}`;
+    if (/^[a-z]$/i.test(value)) return `Key${value.toUpperCase()}`;
+    if (/^(Arrow(?:Up|Down|Left|Right)|Space|Enter|Escape|Tab|Backspace|Shift(?:Left|Right)|Control(?:Left|Right)|Alt(?:Left|Right)|Meta(?:Left|Right)|Digit[0-9]|Numpad\w+)$/i.test(value)) {
+        return value;
+    }
+    return null;
+}
+
 class ActionBinding {
     name: Action;
 
@@ -201,6 +212,7 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     private motions = new Map<Motion, MotionState>();
     private attachedEventTarget: EventTarget | null = null;
     private onDetachFns: (() => void)[] = [];
+    private isAttached = false;
     private downKeys = new Set<string>();
     private heldPressTriggers = new Set<Trigger>();
     private activeTriggers = new Set<string>();
@@ -214,6 +226,7 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     private readonly INPUT_TIMEOUT_MS = 200; // Actions timeout after 200ms without refresh
     private readonly MAX_DELTA_PER_EVENT = 1000; // Max delta per mouse/touch event
     private inputTimestamps = new Map<Trigger, number>(); // trigger -> last update timestamp
+    private stuckTriggersScratch: Trigger[] = [];
 
     private mouseX: number = 0;
     private mouseY: number = 0;
@@ -224,6 +237,8 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     private gamepadIndex: number = -1;
     private readonly GAMEPAD_DEADZONE = 0.15;
     private gamepadButtonStates = new Map<number, boolean>();
+    private gamepadButtonTriggerCache: Trigger[] = [];
+    private gamepadAxisTriggerCache: Trigger[] = [];
 
     constructor(bindings: Bindings<ActionsAndMotions>, eventTarget: EventTarget) {
         this.bindings = bindings;
@@ -266,7 +281,18 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     getAction(actionId: Action): boolean {
         const boundState = this.actions.get(actionId);
         if (boundState === true) return true;
-        return this.virtualDispatcher.getButtonState(actionId) ?? boundState ?? false;
+        const virtualState = this.virtualDispatcher.getButtonState(actionId);
+        if (virtualState !== undefined) return virtualState;
+        if (boundState !== undefined) return boundState;
+
+        // Behaviors sometimes use a raw keyboard shorthand for lightweight
+        // UI toggles (for example `getAction("h")`) instead of registering a
+        // gameplay action. Preserve named-action semantics above, then fall
+        // back to the browser's stable `KeyboardEvent.code` representation.
+        // This keeps unbound keys useful without making a key masquerade as a
+        // bound action when that action is explicitly released.
+        const keyCode = normalizeRawKeyboardAction(actionId);
+        return keyCode ? this.downKeys.has(keyCode) : false;
     }
 
     /**
@@ -301,6 +327,8 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     }
 
     attach() {
+        if (this.isAttached) return;
+        this.isAttached = true;
         this.downKeys.clear();
         this.attachVirtual();
 
@@ -408,23 +436,27 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
 
         /** Touch Input Handling */
         this.listen("touchstart", (event: TouchEvent) => {
-            if (event.target === this.attachedEventTarget) {
-                event.preventDefault(); // Prevent default touch behaviors (scroll, zoom)
+            if (this.shouldPreventTouchDefault(event)) {
+                event.preventDefault?.(); // Prevent default touch behaviors (scroll, zoom)
             }
 
-            const touch = event.changedTouches[0];
-            if (!touch) return;
-            const trigger = TriggerType.MouseClick + touch.identifier;
-            this.markTriggerHeld(trigger, true);
-            this.setActionState(trigger, true);
-            this.setMotionState(trigger, true);
-            this.mouseX = touch.clientX;
-            this.mouseY = touch.clientY;
+            for (let i = 0; i < event.changedTouches.length; i++) {
+                const touch = event.changedTouches[i];
+                if (!touch) continue;
+                const trigger = TriggerType.MouseClick + touch.identifier;
+                this.markTriggerHeld(trigger, true);
+                this.setActionState(trigger, true);
+                this.setMotionState(trigger, true);
+                if (i === 0) {
+                    this.mouseX = touch.clientX;
+                    this.mouseY = touch.clientY;
+                }
+            }
         });
 
         this.listen("touchmove", (event: TouchEvent) => {
-            if (event.target === this.attachedEventTarget) {
-                event.preventDefault(); // Prevent scrolling during touch movement
+            if (this.shouldPreventTouchDefault(event)) {
+                event.preventDefault?.(); // Prevent scrolling during touch movement
             }
             const touch = event.changedTouches[0];
             if (!touch) return;
@@ -439,13 +471,15 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
         });
 
         this.listen("touchend", (event: TouchEvent) => {
-            if (event.target === this.attachedEventTarget) {
-                event.preventDefault(); // Prevent default behaviors on touch end
-            }
-            const trigger = TriggerType.MouseClick + event.changedTouches[0]?.identifier;
-            this.markTriggerHeld(trigger, false);
-            this.setActionState(trigger, false);
-            this.setMotionState(trigger, false);
+            this.releaseChangedTouches(event);
+        });
+
+        // A touch can leave the viewport, be interrupted by the browser, or be
+        // cancelled by a competing gesture without producing touchend. Treat
+        // cancellation as release so gameplay actions and virtual overlays can
+        // never remain latched after a lost contact.
+        this.listen("touchcancel", (event: TouchEvent) => {
+            this.releaseChangedTouches(event);
         });
 
         /** Gamepad Input Handling */
@@ -462,6 +496,11 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     }
 
     detach() {
+        if (!this.isAttached && this.onDetachFns.length === 0) {
+            this.clearAllInputStates();
+            return;
+        }
+        this.isAttached = false;
         this.onDetachFns.forEach(fn => fn());
         this.onDetachFns = [];
         this.virtualDispatcher.clearListeners();
@@ -554,6 +593,38 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
 
         for (const action of actionsList) {
             this.actions.set(action.name, active);
+        }
+    }
+
+    private shouldPreventTouchDefault(event: TouchEvent): boolean {
+        const target = event.target;
+        const attached = this.attachedEventTarget;
+        if (!target || !attached) return false;
+        if (target === attached) return true;
+
+        // Game input is normally attached to `document` or a viewport root,
+        // while touches land on a canvas/UI descendant. Use containment so the
+        // browser cannot steal those gestures for scroll or pinch handling.
+        try {
+            const contains = (attached as EventTarget & {contains?: (node: unknown) => boolean}).contains;
+            return typeof contains === "function" && contains.call(attached, target);
+        } catch {
+            return false;
+        }
+    }
+
+    private releaseChangedTouches(event: TouchEvent): void {
+        if (this.shouldPreventTouchDefault(event)) {
+            event.preventDefault?.();
+        }
+
+        for (let i = 0; i < event.changedTouches.length; i++) {
+            const touch = event.changedTouches[i];
+            if (!touch) continue;
+            const trigger = TriggerType.MouseClick + touch.identifier;
+            this.markTriggerHeld(trigger, false);
+            this.setActionState(trigger, false);
+            this.setMotionState(trigger, false);
         }
     }
 
@@ -665,7 +736,7 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
             const wasPressed = this.gamepadButtonStates.get(i) ?? false;
             if (pressed !== wasPressed) {
                 this.gamepadButtonStates.set(i, pressed);
-                const trigger = TriggerType.GamepadButton + i;
+                const trigger = this.getGamepadButtonTrigger(i);
                 this.markTriggerHeld(trigger, pressed);
                 this.setActionState(trigger, pressed);
                 this.setMotionState(trigger, pressed);
@@ -676,14 +747,31 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
         for (let i = 0; i < gamepad.axes.length; i++) {
             const raw = gamepad.axes[i] ?? 0;
             const value = Math.abs(raw) < this.GAMEPAD_DEADZONE ? 0 : raw;
-            const trigger = TriggerType.GamepadAxis + i;
-            this.setMotionState(trigger, value !== 0, value);
+            const trigger = this.getGamepadAxisTrigger(i);
+            this.setGamepadAxisState(trigger, value);
         }
+    }
+
+    private getGamepadButtonTrigger(buttonIndex: number): Trigger {
+        return this.gamepadButtonTriggerCache[buttonIndex] ??= TriggerType.GamepadButton + buttonIndex;
+    }
+
+    private getGamepadAxisTrigger(axisIndex: number): Trigger {
+        return this.gamepadAxisTriggerCache[axisIndex] ??= TriggerType.GamepadAxis + axisIndex;
+    }
+
+    private setGamepadAxisState(trigger: Trigger, value: number): void {
+        const active = value !== 0;
+        const wasActive = this.activeTriggers.has(trigger);
+        if (wasActive === active && (!active || this.triggerValues.get(trigger) === value)) {
+            return;
+        }
+        this.setMotionState(trigger, active, value);
     }
 
     private clearGamepadState() {
         for (const [buttonIndex] of this.gamepadButtonStates) {
-            const trigger = TriggerType.GamepadButton + buttonIndex;
+            const trigger = this.getGamepadButtonTrigger(buttonIndex);
             this.setActionState(trigger, false);
             this.setMotionState(trigger, false);
         }
@@ -698,8 +786,13 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
     }
 
     private clearStuckInputs() {
+        if (this.inputTimestamps.size === 0) {
+            return;
+        }
+
         const now = performance.now();
-        const stuckTriggers: Trigger[] = [];
+        const stuckTriggers = this.stuckTriggersScratch;
+        stuckTriggers.length = 0;
 
         for (const [trigger, timestamp] of this.inputTimestamps.entries()) {
             if (this.isTriggerHeld(trigger)) {
@@ -726,6 +819,7 @@ export class InputManager<ActionsAndMotions extends string> implements InputProv
                 this.downKeys.delete(keyCode);
             }
         }
+        stuckTriggers.length = 0;
     }
 
     private isTriggerHeld(trigger: Trigger) {

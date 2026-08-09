@@ -1,4 +1,14 @@
+const mockStlState = vi.hoisted(() => ({
+    parse: vi.fn((group: {children?: unknown[]}) => `solid mock ${group.children?.length ?? 0}`),
+}));
+
 // Mock dependencies
+vi.mock("three/addons/exporters/STLExporter.js", () => ({
+    STLExporter: class MockSTLExporter {
+        parse = mockStlState.parse;
+    },
+}));
+
 vi.mock('@stem/network/api/scene', () => ({
     renderingEditorToApi: vi.fn().mockReturnValue({ shadowMapType: 'basic' }),
 }));
@@ -90,11 +100,27 @@ vi.mock('./StringUtils', () => ({
     },
 }));
 
+vi.mock('@stem/editor-oss/showToast', () => ({
+    showToast: vi.fn(),
+}));
+
+import * as THREE from "three";
 import global from '../global';
 import { ElementsUtils } from './ElementsUtils';
-import { exportSceneToJson } from './ExportUtils';
+import { exportSceneToJson, exportSceneToSTL } from './ExportUtils';
 import { minifyKeys } from './JSONMinifyUtils';
 import StringUtils from './StringUtils';
+import {showToast} from '@stem/editor-oss/showToast';
+
+const addDeepChain = (root: THREE.Object3D, depth = 12_000): THREE.Object3D => {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new THREE.Object3D();
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
+};
 
 //const expandKeyMap = invert(shortKeyMap);
 
@@ -102,6 +128,7 @@ describe('ExportUtils', () => {
     beforeEach(() => {
         vi.resetAllMocks();
         (ElementsUtils.querySceneName as any).mockResolvedValue('test-scene');
+        mockStlState.parse.mockClear();
     });
 
     describe('exportSceneToJson', () => {
@@ -113,6 +140,10 @@ describe('ExportUtils', () => {
                 expect.any(String),
                 'test-scene.json',
             );
+            expect(showToast).toHaveBeenCalledWith({
+                type: 'success',
+                title: 'Scene source exported as JSON.',
+            });
 
             // Verify the saved JSON content
             const savedData = (StringUtils.saveString as any).mock.calls[0][0];
@@ -197,50 +228,6 @@ describe('ExportUtils', () => {
             expect(sceneSettings.sceneSettings.userData?.snapping).toEqual(global.app!.scene.userData.snapping);
         });
 
-        it('should export the SceneTraverser beta flag when present on scene userData', async () => {
-            global.app!.scene.userData = {
-                ...global.app!.scene.userData,
-                useSceneTraverser: true,
-            };
-
-            await exportSceneToJson({ includeAssets: false });
-
-            const savedData = (StringUtils.saveString as any).mock.calls[0][0];
-            const parsedData = JSON.parse(savedData);
-            const sceneSettings = parsedData.find((item: any) => item.sceneSettings);
-
-            expect(sceneSettings.sceneSettings.userData?.useSceneTraverser).toBe(true);
-        });
-
-        it('should export useSceneTraverser: false when explicitly set', async () => {
-            global.app!.scene.userData = {
-                ...global.app!.scene.userData,
-                useSceneTraverser: false,
-            };
-
-            await exportSceneToJson({ includeAssets: false });
-
-            const savedData = (StringUtils.saveString as any).mock.calls[0][0];
-            const parsedData = JSON.parse(savedData);
-            const sceneSettings = parsedData.find((item: any) => item.sceneSettings);
-
-            expect(sceneSettings.sceneSettings.userData?.useSceneTraverser).toBe(false);
-        });
-
-        it('should omit useSceneTraverser from userData when not set on scene', async () => {
-            // Ensure no useSceneTraverser key on userData
-            global.app!.scene.userData = { Server: true };
-
-            await exportSceneToJson({ includeAssets: false });
-
-            const savedData = (StringUtils.saveString as any).mock.calls[0][0];
-            const parsedData = JSON.parse(savedData);
-            const sceneSettings = parsedData.find((item: any) => item.sceneSettings);
-
-            // userData should either be absent or not contain useSceneTraverser
-            expect(sceneSettings.sceneSettings.userData?.useSceneTraverser).toBeUndefined();
-        });
-
         it('should handle missing app or editor gracefully', async () => {
             const originalApp = global.app;
 
@@ -289,6 +276,17 @@ describe('ExportUtils', () => {
             expect(StringUtils.saveString).not.toHaveBeenCalled();
         });
 
+        it('uses scene-source language when export fails without a specific error message', async () => {
+            vi.mocked(ElementsUtils.querySceneName).mockRejectedValueOnce('export failed');
+
+            await exportSceneToJson({ includeAssets: false });
+
+            expect(showToast).toHaveBeenCalledWith({
+                type: 'error',
+                title: 'Failed to export scene source',
+            });
+        });
+
         it.skip('should preserve all editor settings in scene settings', async () => {
             // Set up specific editor settings
             global.app!.editor = {
@@ -328,6 +326,55 @@ describe('ExportUtils', () => {
                 Description: 'Custom description',
                 Tags: '["custom","test","scene"]',
             });
+        });
+    });
+
+    describe('exportSceneToSTL', () => {
+        it('exports deep scenes without recursive traversal or per-object debug logs', async () => {
+            const scene = new THREE.Scene();
+            const leaf = addDeepChain(scene);
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+            mesh.name = 'DeepExportMesh';
+            leaf.add(mesh);
+            const traverse = vi.spyOn(scene, 'traverse');
+            const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+            const originalApp = global.app;
+            const originalCreateObjectURL = URL.createObjectURL;
+            const originalRevokeObjectURL = URL.revokeObjectURL;
+            const originalClick = HTMLAnchorElement.prototype.click;
+            const createObjectURL = vi.fn(() => 'blob:mock-stl');
+            const revokeObjectURL = vi.fn();
+            const click = vi.fn();
+
+            global.app = {
+                ...originalApp,
+                scene,
+                editor: {
+                    ...originalApp!.editor,
+                    scene,
+                    component: {handleLoading: vi.fn()},
+                },
+            } as any;
+            URL.createObjectURL = createObjectURL as any;
+            URL.revokeObjectURL = revokeObjectURL as any;
+            HTMLAnchorElement.prototype.click = click;
+
+            try {
+                await exportSceneToSTL();
+
+                expect(traverse).not.toHaveBeenCalled();
+                expect(mockStlState.parse).toHaveBeenCalledTimes(1);
+                expect(mockStlState.parse.mock.calls[0]?.[0].children).toHaveLength(1);
+                expect(click).toHaveBeenCalledTimes(1);
+                expect(createObjectURL).toHaveBeenCalledTimes(1);
+                expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-stl');
+                expect(log).not.toHaveBeenCalled();
+            } finally {
+                global.app = originalApp;
+                URL.createObjectURL = originalCreateObjectURL;
+                URL.revokeObjectURL = originalRevokeObjectURL;
+                HTMLAnchorElement.prototype.click = originalClick;
+            }
         });
     });
 });

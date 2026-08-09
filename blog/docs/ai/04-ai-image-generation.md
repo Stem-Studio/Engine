@@ -9,6 +9,11 @@ prerequisites: [getting-started/02-editor-tour]
 
 # AI Image Generation
 
+> **Playground scope:** image-generation controls depend on a supported
+> browser-direct provider and a browser-stored key. Account-backed quotas,
+> remote upload libraries, and server-managed generation are not deployed
+> Playground features.
+
 StemStudio includes AI-powered image generation tools that let you create textures, skyboxes, and general-purpose images from text prompts. You can also edit existing images with background removal, inpainting (mask-and-replace), and upscaling.
 
 ## What This Page Is For
@@ -243,8 +248,8 @@ If your game uses a specific art style, reference it in every prompt to maintain
 
 ## Things To Know
 
-- Image generation requires sign-in.
-- Generation is subject to user quotas per account.
+- Image generation requires a supported provider key.
+- Provider quota, billing, CORS, and content policies apply.
 - Generated images are stored in your project's asset library.
 - All providers return image URLs that can be used directly as textures.
 - Skybox generation produces equirectangular images suitable for scene backgrounds.

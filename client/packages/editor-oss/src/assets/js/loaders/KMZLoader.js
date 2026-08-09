@@ -1,4 +1,4 @@
-import { KMZLoader as ThreeKMZLoader } from "three/examples/jsm/loaders/KMZLoader.js";
+import { KMZLoader as ThreeKMZLoader } from "three/addons/loaders/KMZLoader.js";
 
 import BaseLoader from "./BaseLoader";
 

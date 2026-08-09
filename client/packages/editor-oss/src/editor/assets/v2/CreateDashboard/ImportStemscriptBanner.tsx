@@ -1,9 +1,9 @@
 import {useState} from "react";
 import styled from "styled-components";
 
-import {stageStemscriptImport} from "@stem/editor-oss/agent/script-tool/stemscriptImportStaging";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {isFileSystemAccessSupported} from "@stem/editor-oss/persistence";
+import type {StagedStemscriptImport} from "@stem/editor-oss/agent/script-tool/stemscriptImportStaging";
+import {isFileSystemAccessSupported} from "@stem/editor-oss/persistence/fileSystemAccess";
+import {importProjectBundleFiles} from "@stem/editor-oss/persistence/projectBundleImport";
 import {openEditorRoute} from "../../../../v2/pages/editorHandoff";
 import {generateProjectLink} from "../../../../v2/pages/links";
 
@@ -85,6 +85,12 @@ const Action = styled.button`
     }
 `;
 
+const Actions = styled.div`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+`;
+
 const Hint = styled.span`
     opacity: 0.75;
     font-size: 11px;
@@ -154,15 +160,12 @@ function mimeFor(name: string): string {
 }
 
 /**
- * Dashboard banner that lets a user drop in an existing stemscript-format
- * game (a folder containing `<name>.stemscript` plus referenced models /
- * textures / audio). On click we walk the folder, base64-encode every
- * file, stage the payload in sessionStorage, and navigate to a fresh
- * project page — the editor on mount detects the staged import, executes
- * the script (creating scene objects + behaviors + asset records inline),
- * and the resulting scene is auto-saved through the active ProjectStore
- * so the user ends up with a fully self-contained `.stemscript.json` (or
- * IndexedDB entry) they can immediately edit / play / re-save.
+ * Dashboard banner that lets a user import either an exported local project
+ * bundle (`.stemscript.json` plus the matching sidecar asset folder) or an
+ * existing stemscript-format game folder (a `.stemscript` file plus referenced
+ * models / textures / audio). Project bundles are committed directly through
+ * the active local ProjectStore. Legacy script folders keep using the
+ * cross-navigation staged exec path.
  *
  * Companion files live alongside the stemscript and are matched by
  * relative path — same convention the Copilot terminal's exec builtin
@@ -170,13 +173,70 @@ function mimeFor(name: string): string {
  * cleanly through `exec` there.
  */
 export const ImportStemscriptBanner = () => {
-    const [supported] = useState<boolean>(() => IS_OSS && isFileSystemAccessSupported());
+    const [supported] = useState<boolean>(() => isFileSystemAccessSupported());
     const [busy, setBusy] = useState(false);
     const [hint, setHint] = useState<string | null>(null);
 
-    if (!IS_OSS || !supported) return null;
+    if (!supported) return null;
 
-    const handleClick = async () => {
+    const openProject = (projectId: string) => {
+        openEditorRoute(generateProjectLink(projectId));
+    };
+
+    const importProjectFiles = async (files: File[]) => {
+        let total = 0;
+        for (const f of files) total += f.size;
+        if (total > MAX_TOTAL_BYTES) {
+            throw new Error(`Selection is ${(total / 1024 / 1024).toFixed(0)}MB — exceeds the ${(MAX_TOTAL_BYTES / 1024 / 1024).toFixed(0)}MB cap.`);
+        }
+        const result = await importProjectBundleFiles(files);
+        openProject(result.meta.id);
+    };
+
+    const handleProjectFileClick = async () => {
+        setBusy(true);
+        setHint("Reading project file…");
+        try {
+            const picker = (window as unknown as {
+                showOpenFilePicker?: (opts?: {
+                    multiple?: boolean;
+                    types?: Array<{description: string; accept: Record<string, string[]>}>;
+                }) => Promise<Array<{getFile(): Promise<File>}>>;
+            }).showOpenFilePicker;
+            if (!picker) {
+                setHint("File picker is not supported in this browser.");
+                return;
+            }
+            const handles = await picker({
+                multiple: false,
+                types: [{
+                    description: "StemStudio project",
+                    accept: {"application/json": [".json"]},
+                }],
+            });
+            const file = await handles[0]?.getFile();
+            if (!file) {
+                setHint("No project file selected.");
+                return;
+            }
+            if (!file.name.toLowerCase().endsWith(".stemscript.json")) {
+                setHint("Select a .stemscript.json project file.");
+                return;
+            }
+            await importProjectFiles([file]);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (/AbortError|aborted|cancell?ed/i.test(message)) {
+                setHint(null);
+            } else {
+                setHint(`Import failed: ${message}`);
+            }
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleFolderClick = async () => {
         setBusy(true);
         setHint("Reading folder…");
         try {
@@ -189,6 +249,10 @@ export const ImportStemscriptBanner = () => {
             }
             const dir = (await picker({mode: "read"})) as FsDir;
             const files = await walkDirectory(dir);
+            if (files.some(f => ((f as File & {webkitRelativePath?: string}).webkitRelativePath || f.name).toLowerCase().endsWith(".stemscript.json"))) {
+                await importProjectFiles(files);
+                return;
+            }
             const scriptFile = files.find(f =>
                 ((f as File & {webkitRelativePath?: string}).webkitRelativePath || f.name).toLowerCase().endsWith(".stemscript"),
             );
@@ -205,7 +269,7 @@ export const ImportStemscriptBanner = () => {
 
             const scriptContent = await scriptFile.text();
             const companion = files.filter(f => f !== scriptFile);
-            const staged: Parameters<typeof stageStemscriptImport>[0] = {
+            const staged: Omit<StagedStemscriptImport, "stagedAt"> = {
                 content: scriptContent,
                 label: dir.name,
                 files: await Promise.all(
@@ -216,6 +280,7 @@ export const ImportStemscriptBanner = () => {
                     })),
                 ),
             };
+            const {stageStemscriptImport} = await import("@stem/editor-oss/agent/script-tool/stemscriptImportStaging");
             const ok = await stageStemscriptImport(staged);
             if (!ok) {
                 setHint("Could not stage import — local storage is unavailable.");
@@ -244,18 +309,28 @@ export const ImportStemscriptBanner = () => {
                 </svg>
             </Icon>
             <Body>
-                <Title>Import stemscript</Title>
+                <Title>Import project</Title>
                 <Text>
-                    Have a <code>.stemscript</code> game folder? Pick it and StemStudio will import every asset and save a new project you can edit.
+                    Bring in a local <code>.stemscript.json</code> project bundle, or a legacy <code>.stemscript</code> game folder.
                 </Text>
-                <Action
-                    type="button"
-                    onClick={handleClick}
-                    disabled={busy}
-                    data-testid="import-stemscript-button"
-                >
-                    {busy ? "Importing…" : "Import stemscript folder"}
-                </Action>
+                <Actions>
+                    <Action
+                        type="button"
+                        onClick={handleProjectFileClick}
+                        disabled={busy}
+                        data-testid="import-project-file-button"
+                    >
+                        {busy ? "Importing…" : "Import project file"}
+                    </Action>
+                    <Action
+                        type="button"
+                        onClick={handleFolderClick}
+                        disabled={busy}
+                        data-testid="import-stemscript-button"
+                    >
+                        {busy ? "Importing…" : "Import project folder"}
+                    </Action>
+                </Actions>
                 {hint && <Hint>{hint}</Hint>}
             </Body>
         </Panel>

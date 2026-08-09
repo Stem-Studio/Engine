@@ -17,6 +17,8 @@ class RandomizedSpawnerBehavior extends BehaviorBase {
     private hasSpawnedThisCollision: boolean = false;
     private collisionStartTime: number = 0;
     private isColliding: boolean = false;
+    private readonly playerBounds = new THREE.Box3();
+    private readonly spawnBounds = new THREE.Box3();
 
     private spawnerData = {
         target: {} as THREE.Object3D,
@@ -31,7 +33,7 @@ class RandomizedSpawnerBehavior extends BehaviorBase {
         this.spawnerData.target = this.target!;
 
         // Preload all prefabs from randomList
-        const randomList: PrefabListItem[] = this.attributes.randomList;
+        const randomList = this.getRandomList();
         
         if (randomList && randomList.length > 0) {
             const preloadPromises: Promise<void>[] = [];
@@ -56,12 +58,13 @@ class RandomizedSpawnerBehavior extends BehaviorBase {
 
     private checkCollision(): void {
         if (!this.game || !this.target || this.isPaused) return;
+        if (!this.hasSpawnablePrefab()) return;
 
         const player = this.game.player;
         if (!player) return;
 
-        const playerBox = new THREE.Box3().setFromObject(player);
-        const spawnBox = new THREE.Box3().setFromObject(this.target);
+        const playerBox = this.playerBounds.setFromObject(player);
+        const spawnBox = this.spawnBounds.setFromObject(this.target);
 
         if (playerBox.intersectsBox(spawnBox)) {
             this.onCollision();
@@ -111,7 +114,7 @@ class RandomizedSpawnerBehavior extends BehaviorBase {
             this.lastSpawnedObject = undefined;
         }
 
-        const randomList: PrefabListItem[] = this.attributes.randomList;
+        const randomList = this.getRandomList();
         if (!randomList || randomList.length === 0) {
             console.warn("[RandomizedSpawner] No prefabs in randomList");
             return;
@@ -166,6 +169,18 @@ class RandomizedSpawnerBehavior extends BehaviorBase {
         if (msg === "trigger" && this.attributes.startOnTrigger) {
             void this.spawnPrefab();
         }
+    }
+
+    private getRandomList(): PrefabListItem[] {
+        return Array.isArray(this.attributes.randomList) ? this.attributes.randomList : [];
+    }
+
+    private hasSpawnablePrefab(): boolean {
+        for (const item of this.getRandomList()) {
+            if (item?.prefabId) return true;
+        }
+
+        return false;
     }
 }
 

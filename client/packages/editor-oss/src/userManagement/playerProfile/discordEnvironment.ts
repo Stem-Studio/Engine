@@ -11,3 +11,15 @@ export function isInDiscordEnvironment() {
 export function getDiscordClientIdFromUrl() {
     return location.host.split(".")[0];
 }
+
+export function isInCrazyGamesEnvironment() {
+    const hasCrazyGamesSDK = typeof window !== "undefined" && !!(window as any).CrazyGames;
+    const isCrazyGamesDomain =
+        typeof window !== "undefined" &&
+        (window.location.hostname.includes("crazygames.com") || window.location.hostname.includes("crazygames."));
+    const platformParam =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("platform") === "crazygames";
+
+    return hasCrazyGamesSDK || isCrazyGamesDomain || platformParam;
+}

@@ -6,7 +6,7 @@ Please read the full text at the link above before participating in this communi
 
 ## Reporting
 
-If you experience or witness conduct that violates the Code, report it privately to the maintainers by opening a [private security advisory](https://github.com/your-org/stemstudio/security/advisories/new) on GitHub. Reports are handled confidentially. We aim to respond within 5 business days.
+If you experience or witness conduct that violates the Code, report it privately to the maintainers by opening a [private security advisory](https://github.com/Stem-Studio/Engine/security/advisories/new) on GitHub. Reports are handled confidentially. We aim to respond within 5 business days.
 
 ## Enforcement
 

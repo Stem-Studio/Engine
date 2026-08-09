@@ -1,8 +1,24 @@
-import { Group, Mesh, BoxGeometry, MeshBasicMaterial } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Group, Mesh, BoxGeometry, MeshBasicMaterial, Object3D, Scene } from 'three';
+import { afterEach, vi } from 'vitest';
 
-import { cloneObject } from './ObjectUtils';
+import { TemplateType } from '../types/TemplateType';
+import { cloneObject, getObjectTemplateFromScene, getVertexCount, setObjectTemplate } from './ObjectUtils';
+
+function addDeepChain(root: Object3D, depth = 12_000): Object3D {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
+}
 
 describe('cloneObject', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
     it('should clone an object with new UUIDs', () => {
         const original = new Group();
         original.name = 'Parent';
@@ -182,5 +198,113 @@ describe('cloneObject', () => {
         expect(clone.userData.behaviors[0].uuid).toMatch(
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
         );
+    });
+
+    it('should clone userData without stringifying the source payload', () => {
+        const stringify = vi.spyOn(JSON, 'stringify');
+        const object = new Group();
+        object.userData = {
+            label: 'clone-source',
+            nested: { count: 2 },
+            list: [1, { enabled: true }],
+        };
+
+        const clone = cloneObject(object);
+
+        expect(stringify.mock.calls.some(call => call[0] === object.userData)).toBe(false);
+        expect(clone.userData).toEqual(object.userData);
+        expect(clone.userData).not.toBe(object.userData);
+        expect(clone.userData.nested).not.toBe(object.userData.nested);
+        expect(clone.userData.list).not.toBe(object.userData.list);
+    });
+
+    it('should reuse cloned material and geometry for repeated source references', () => {
+        const parent = new Group();
+        const geometry = new BoxGeometry();
+        const material = new MeshBasicMaterial();
+        const first = new Mesh(geometry, material);
+        const second = new Mesh(geometry, material);
+        parent.add(first, second);
+
+        const clone = cloneObject(parent, {cloneMaterials: true, cloneGeometry: true});
+        const firstClone = clone.children[0] as Mesh;
+        const secondClone = clone.children[1] as Mesh;
+
+        expect(firstClone.material).not.toBe(material);
+        expect(firstClone.geometry).not.toBe(geometry);
+        expect(firstClone.material).toBe(secondClone.material);
+        expect(firstClone.geometry).toBe(secondClone.geometry);
+    });
+
+    it('should clone deep non-skinned hierarchies without recursive traversal', () => {
+        const root = new Group();
+        root.userData.children = [];
+        const leaf = addDeepChain(root);
+        leaf.userData.behaviors = [{
+            id: 'deep-behavior',
+            uuid: 'deep-behavior-uuid',
+            attributesData: {
+                target: root.uuid,
+            },
+        }];
+        const traverse = vi.spyOn(root, 'traverse');
+
+        const clone = cloneObject(root);
+
+        let clonedLeaf: Object3D = clone;
+        for (let i = 0; i < 12_000; i++) {
+            clonedLeaf = clonedLeaf.children[0]!;
+        }
+
+        expect(traverse).not.toHaveBeenCalled();
+        expect(clone.uuid).not.toBe(root.uuid);
+        expect(clone.userData.children).toHaveLength(1);
+        expect(clonedLeaf.userData.behaviors[0].attributesData.target).toBe(clone.uuid);
+        expect(clonedLeaf.userData.behaviors[0].uuid).not.toBe('deep-behavior-uuid');
+    });
+});
+
+describe('getVertexCount', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should count vertices in deep hierarchies without recursive traversal', () => {
+        const root = new Object3D();
+        const leaf = addDeepChain(root);
+        const geometry = new BufferGeometry();
+        geometry.setAttribute("position", new Float32BufferAttribute([
+            0, 0, 0,
+            1, 0, 0,
+            0, 1, 0,
+        ], 3));
+        leaf.add(new Mesh(geometry, new MeshBasicMaterial()));
+        const traverse = vi.spyOn(root, 'traverse');
+
+        expect(getVertexCount(root)).toBe(3);
+        expect(traverse).not.toHaveBeenCalled();
+    });
+});
+
+describe('getObjectTemplateFromScene', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should find UUID templates in deep scenes without recursive Three lookups', () => {
+        const scene = new Scene();
+        const target = addDeepChain(scene);
+        const object = new Object3D();
+        setObjectTemplate(object, TemplateType.UUID, target.uuid);
+        const getObjectByProperty = vi.spyOn(scene, 'getObjectByProperty').mockImplementation(() => {
+            throw new Error('recursive object lookup should not be used');
+        });
+        const traverse = vi.spyOn(scene, 'traverse').mockImplementation(() => {
+            throw new Error('recursive traversal should not be used');
+        });
+
+        expect(getObjectTemplateFromScene(object, scene)).toBe(target);
+        expect(getObjectByProperty).not.toHaveBeenCalled();
+        expect(traverse).not.toHaveBeenCalled();
     });
 });

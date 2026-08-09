@@ -1,4 +1,9 @@
-export type {StemEngineInterface, StemBehaviors} from "./StemEngineInterface";
+export type {
+    StemEngineInterface,
+    StemBehaviors,
+    StemRuntime,
+    StemRuntimeProcessInBatchesOptions,
+} from "./StemEngineInterface";
 export type {StemAI, Generate3dModelParams, Generate3dModelResult} from "./ai/StemAI";
 export type {StemAsset, StemAssetModel, StemAssetStem, CreateFromUrlParams} from "./asset/StemAsset";
 export type {StemScene} from "./scene/StemScene";

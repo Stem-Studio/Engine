@@ -6,7 +6,7 @@ import BaseLoader from './BaseLoader';
 /**
  * BlendLoader - Placeholder for Blender file format
  *
- * Blender's .blend format is a proprietary binary format that contains:
+ * Blender's .blend format is Blender's native binary project format and contains:
  * - Complete scene data including modifiers, animations, materials
  * - Blender-specific features like node trees, constraints, drivers
  * - Python scripts and custom properties

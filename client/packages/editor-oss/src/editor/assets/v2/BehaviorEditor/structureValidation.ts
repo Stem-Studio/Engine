@@ -3,7 +3,9 @@
  * Produces Monaco-compatible markers (squiggly underlines).
  */
 
-import {parseScriptImports} from "../../../../script-runtime/scriptImports";
+import * as acorn from "acorn";
+
+import {parseScriptImports} from "../../../../script-runtime/scriptImportCore";
 
 export type ScriptType = "behavior" | "lambda";
 
@@ -43,6 +45,8 @@ const DEPRECATED_BEHAVIOR: Record<string, string> = {
     onAdded: "Use 'onStart' instead of 'onAdded' (deprecated).",
     onRemoved: "Use 'onStop' instead of 'onRemoved' (deprecated).",
 };
+
+const BEHAVIOR_STARTUP_LIFECYCLE = new Set(["init", "onStart", "onAdded", "onReset"]);
 
 const LAMBDA_INSTANCE_PROPS = ["_registeredObjects", "_game"];
 
@@ -125,6 +129,156 @@ function checkImportResolution(
         endColumn: startColumn + specifier.length,
         message: `Import "${specifier}" was not found in this scene. Add an Import asset with this name or id.`,
     };
+}
+
+type AcornNode = acorn.Node & Record<string, any>;
+
+const isAstNode = (value: unknown): value is AcornNode =>
+    typeof value === "object" && value !== null && typeof (value as {type?: unknown}).type === "string";
+
+const isFunctionNode = (node: unknown): node is AcornNode =>
+    isAstNode(node) && (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression"
+    );
+
+const isAsyncFunctionNode = (node: unknown): node is AcornNode =>
+    isFunctionNode(node) && node.async === true;
+
+const getThisMemberName = (node: unknown): string | null => {
+    if (!isAstNode(node) || node.type !== "MemberExpression" || node.object?.type !== "ThisExpression") {
+        return null;
+    }
+
+    if (node.computed === true) {
+        return typeof node.property?.value === "string" ? node.property.value : null;
+    }
+
+    return typeof node.property?.name === "string" ? node.property.name : null;
+};
+
+const visitChildNodes = (node: AcornNode, visitor: (child: AcornNode) => void): void => {
+    for (const [key, value] of Object.entries(node)) {
+        if (
+            key === "type" ||
+            key === "start" ||
+            key === "end" ||
+            key === "loc" ||
+            key === "range"
+        ) {
+            continue;
+        }
+
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (isAstNode(item)) visitor(item);
+            }
+        } else if (isAstNode(value)) {
+            visitor(value);
+        }
+    }
+};
+
+const walkAst = (
+    node: AcornNode,
+    enter: (node: AcornNode, parent: AcornNode | null) => void,
+    parent: AcornNode | null = null,
+): void => {
+    enter(node, parent);
+    visitChildNodes(node, child => walkAst(child, enter, node));
+};
+
+const walkStartupHookBody = (
+    node: AcornNode,
+    enter: (node: AcornNode, parent: AcornNode | null) => void,
+    parent: AcornNode | null = null,
+): void => {
+    enter(node, parent);
+    visitChildNodes(node, child => {
+        if (isFunctionNode(child)) {
+            return;
+        }
+        walkStartupHookBody(child, enter, node);
+    });
+};
+
+const isStartupHookFunction = (node: AcornNode, parent: AcornNode | null): boolean => {
+    if (node.type === "FunctionDeclaration") {
+        return BEHAVIOR_STARTUP_LIFECYCLE.has(node.id?.name);
+    }
+
+    if (!isFunctionNode(node) || parent?.type !== "AssignmentExpression" || parent.right !== node) {
+        return false;
+    }
+
+    const hookName = getThisMemberName(parent.left);
+    return hookName !== null && BEHAVIOR_STARTUP_LIFECYCLE.has(hookName);
+};
+
+function collectStartupAsyncCallWarnings(code: string): ValidationMarker[] {
+    let ast: AcornNode;
+    try {
+        ast = acorn.parse(code, {
+            ecmaVersion: "latest",
+            sourceType: "script",
+            locations: true,
+        }) as AcornNode;
+    } catch {
+        return [];
+    }
+
+    const asyncThisMethods = new Set<string>();
+    walkAst(ast, node => {
+        if (node.type !== "AssignmentExpression" || !isAsyncFunctionNode(node.right)) {
+            return;
+        }
+
+        const name = getThisMemberName(node.left);
+        if (name) asyncThisMethods.add(name);
+    });
+
+    if (asyncThisMethods.size === 0) {
+        return [];
+    }
+
+    const markers: ValidationMarker[] = [];
+    walkAst(ast, (node, parent) => {
+        if (!isStartupHookFunction(node, parent)) {
+            return;
+        }
+
+        const body = node.body;
+        if (!isAstNode(body)) {
+            return;
+        }
+
+        walkStartupHookBody(body, (child, childParent) => {
+            if (
+                child.type !== "CallExpression" ||
+                childParent?.type !== "ExpressionStatement" ||
+                childParent.expression !== child
+            ) {
+                return;
+            }
+
+            const calleeName = getThisMemberName(child.callee);
+            if (!calleeName || !asyncThisMethods.has(calleeName) || !child.loc) {
+                return;
+            }
+
+            markers.push({
+                severity: "Warning",
+                startLineNumber: child.loc.start.line,
+                startColumn: child.loc.start.column + 1,
+                endLineNumber: child.loc.end.line,
+                endColumn: child.loc.end.column + 1,
+                message: `Startup hook calls async this.${calleeName}() without await/return/void. Await or return the startup promise, or use this.erth.runtime.processInBatches(...) for heavy setup.`,
+            });
+        });
+    });
+
+    return markers;
 }
 
 /**
@@ -211,6 +365,10 @@ export function validateScript(
             });
         }
         return markers; // Don't continue checking if syntax is invalid
+    }
+
+    if (type === "behavior") {
+        markers.push(...collectStartupAsyncCallWarnings(parsedImports.code));
     }
 
     // 2. Scan for function declarations (skip comments)

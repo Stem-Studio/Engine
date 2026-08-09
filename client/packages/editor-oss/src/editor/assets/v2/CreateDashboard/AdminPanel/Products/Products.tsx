@@ -25,7 +25,7 @@ import {
     setStripeMockMode,
     updateAdminProduct,
 } from "@stem/network/api/stripe";
-import {useAppGlobalContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {ModelUtils} from "@stem/editor-oss/utils/ModelUtils";
 import {NumericInput} from "../../../common/NumericInput";

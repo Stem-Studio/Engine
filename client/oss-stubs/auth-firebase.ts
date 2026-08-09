@@ -1,11 +1,8 @@
 /**
- * OSS-mode stub for `@stem/auth-firebase`.
+ * OSS stub for `@stem/auth-firebase`.
  *
- * Vite's `define` aliases `@stem/auth-firebase` to this file when
- * `BUILD_MODE=oss` (or `VITE_BUILD_MODE=oss`). The real package's
- * side-effect import installs `FirebaseAuthProvider` into the editor-oss
- * auth factory; this stub does nothing, so the factory falls through to
- * its OSS default (`NullAuthProvider`).
+ * The package is not part of this repository. This stub does nothing, so the
+ * auth factory uses its local `NullAuthProvider` default.
  *
  * Importing `FirebaseAuthProvider` or `installFirebaseAuthProvider` from
  * the real package is a programmer error in OSS code — the boundary lint

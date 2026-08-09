@@ -4,7 +4,7 @@ If you believe you have found a vulnerability in StemStudio, please report it pr
 
 ## How to report
 
-Open a [private security advisory](https://github.com/your-org/stemstudio/security/advisories/new) with:
+Open a [private security advisory](https://github.com/Stem-Studio/Engine/security/advisories/new) with:
 
 - A description of the issue and the impact you observed.
 - Steps to reproduce, including any required configuration.
@@ -23,15 +23,21 @@ Please do **not** open a public GitHub issue for vulnerabilities.
 
 In scope:
 
-- The editor and player in `client/packages/editor-oss/`.
-- The AI proxy server in `server/cmd/ai-server/`.
-- The local multiplayer sidecar in the multiplayer submodule.
+- The Playground, editor, player, and browser-local persistence code.
+- BYOK key storage, provider requests, and the optional local AI proxy in
+  `server/cmd/ai-server/`.
+- The optional local multiplayer sidecar.
+- Build, export, and deployment tooling shipped in this repository.
 
 Out of scope:
 
 - Issues in third-party dependencies — please report those upstream.
+- Hosted scene, gallery, publishing, collaboration, and share-link services;
+  those remote services are not deployed by this repository.
 - Vulnerabilities that require a malicious local user with full filesystem access (this project is designed to run on a developer's machine).
-- BYOK key handling on the user's own machine — keys are stored client-side by design; treat the machine running StemStudio as trusted.
+
+Local storage of BYOK keys is expected behavior, but unintended disclosure to
+another origin, provider, project, log, or user remains in scope.
 
 ## Supported versions
 

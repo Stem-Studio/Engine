@@ -19,7 +19,7 @@ vi.mock('../global', () => ({
     },
 }));
 
-import { Object3D, PerspectiveCamera, Scene } from 'three';
+import { Mesh, Object3D, PerspectiveCamera, Scene } from 'three';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import Converter from './Converter';
@@ -37,6 +37,17 @@ const makeScene = () => {
     scene.name = "ConverterTestScene";
     scene.add(makeServerObject());
     return scene;
+};
+
+const addDeepChain = (root: Object3D, depth = 12_000) => {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        child.name = `deep-${i}`;
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
 };
 
 describe('Converter', () => {
@@ -92,9 +103,57 @@ describe('Converter', () => {
                 expect(serverObjects[0].userData.Url.toString()).toEqual(expectedUrl);
             });
         });
+
+        it('serializes deep hierarchies without recursive converter traversal', () => {
+            const scene = new Scene();
+            const leaf = addDeepChain(scene);
+            const runtimeOnly = new Object3D();
+            runtimeOnly.userData.isRuntimeOnly = true;
+            leaf.add(runtimeOnly);
+            const converter = new Converter();
+            const traverse = vi.spyOn(converter as any, 'traverse');
+
+            const output = converter.toJSON({
+                options: {},
+                camera: new PerspectiveCamera(),
+                scripts: [],
+                scene,
+            });
+
+            expect(traverse).toHaveBeenCalledTimes(1);
+            expect(output.some((item: any) => item.uuid === runtimeOnly.uuid)).toBe(false);
+
+            const sceneJson = output.find((item: any) => item.uuid === scene.uuid);
+            let children = sceneJson?.userData?.children;
+            for (let i = 0; i < 12_000; i++) {
+                expect(children).toHaveLength(1);
+                children = children[0].children;
+            }
+            expect(children).toHaveLength(0);
+        });
     });
 
     describe('fromJson', () => {
+        it('hydrates production-minified scene metadata by shape', async () => {
+            const json = [{
+                metadata: {generator: 'Sn'},
+                uuid: 'scene-minified',
+                name: 'Minified Playground Scene',
+                userData: {children: []},
+            }];
+
+            const result = await new Converter().fromJson(json, {
+                camera: new PerspectiveCamera(),
+                server: '',
+                domWidth: 100,
+                domHeight: 100,
+                assetResolutionContext: {},
+                assetLoader: undefined,
+            });
+
+            expect(result.scene?.name).toBe('Minified Playground Scene');
+        });
+
         // Test absolute / relative URL handling
         // fromJson always converts to relative URLs
         [
@@ -157,6 +216,136 @@ describe('Converter', () => {
 
                 expect(mockLoad.mock.calls[0]?.[0]).toBe(expectedUrl);
             });
+        });
+    });
+
+    describe('deserializeObject', () => {
+        it('returns the resolved object when mesh geometry deserialization is async', async () => {
+            const { TeapotGeometry } = await import('three/addons/geometries/TeapotGeometry.js');
+            const geometry = new TeapotGeometry(2, 4, true, true, true, true, true);
+            (geometry as any).type = 'TeapotGeometry';
+            (geometry as any).parameters = {
+                size: 2,
+                segments: 4,
+                bottom: true,
+                lid: true,
+                body: true,
+                fitLid: true,
+                blinn: true,
+            };
+
+            const scene = new Scene();
+            const mesh = new Mesh(geometry);
+            mesh.name = 'Lazy Teapot';
+            scene.add(mesh);
+
+            const [meshJson] = new Converter().toJSON({
+                options: {},
+                camera: new PerspectiveCamera(),
+                scripts: [],
+                scene,
+            }).filter((item: any) => item.metadata?.generator === 'MeshSerializer');
+
+            const data = new Converter().deserializeObject(meshJson, {
+                options: {},
+                camera: new PerspectiveCamera(),
+                scripts: [],
+            });
+
+            await data.promise;
+
+            expect(data.object).toBeInstanceOf(Mesh);
+            expect(data.object.name).toBe('Lazy Teapot');
+            expect(data.object.geometry.type).toBe('TeapotGeometry');
+        });
+    });
+
+    describe('parseScene', () => {
+        it('reuses scene lookup maps while rebuilding nested children', () => {
+            const converter = new Converter();
+            const scene = new Scene();
+            scene.uuid = 'scene-root';
+            const parent = new Object3D();
+            parent.uuid = 'parent';
+            const child = new Object3D();
+            child.uuid = 'child';
+            const grandchild = new Object3D();
+            grandchild.uuid = 'grandchild';
+            const parts = [scene, parent, child, grandchild];
+            const children = [
+                {
+                    uuid: parent.uuid,
+                    children: [
+                        {
+                            uuid: child.uuid,
+                            children: [
+                                {
+                                    uuid: grandchild.uuid,
+                                    children: [],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ];
+            const createSceneLookupMaps = vi.spyOn(converter as any, 'createSceneLookupMaps');
+
+            (converter as any).parseScene(scene, children, parts, [], {options: {}});
+
+            expect(createSceneLookupMaps).toHaveBeenCalledTimes(1);
+            expect(parent.parent).toBe(scene);
+            expect(child.parent).toBe(parent);
+            expect(grandchild.parent).toBe(child);
+        });
+
+        it('rebuilds deep children arrays without recursive scene assembly', () => {
+            const converter = new Converter();
+            const scene = new Scene();
+            const parts: Object3D[] = [scene];
+            const children: Array<{uuid: string; children: unknown[]}> = [];
+            let currentChildren = children;
+            for (let i = 0; i < 12_000; i++) {
+                const object = new Object3D();
+                object.uuid = `deep-${i}`;
+                parts.push(object);
+                const child = {uuid: object.uuid, children: []};
+                currentChildren.push(child);
+                currentChildren = child.children;
+            }
+            const parseSceneBasedOnChildrenArr = vi.spyOn(converter as any, 'parseSceneBasedOnChildrenArr');
+
+            (converter as any).parseSceneBasedOnChildrenArr(scene, children, parts, [], {options: {}});
+
+            expect(parseSceneBasedOnChildrenArr).toHaveBeenCalledTimes(1);
+            let cursor: Object3D = scene;
+            for (let i = 0; i < 12_000; i++) {
+                expect(cursor.children).toHaveLength(1);
+                cursor = cursor.children[0]!;
+            }
+        });
+    });
+
+    describe('legacy unsupported object metadata', () => {
+        it('serializes Globe-tagged generic objects without requiring a removed serializer', () => {
+            const scene = new Scene();
+            const globe = new Object3D();
+            globe.uuid = 'legacy-globe-object';
+            globe.userData.type = 'Globe';
+            scene.add(globe);
+            let output: any[] = [];
+
+            expect(() => {
+                output = new Converter().toJSON({
+                    options: {},
+                    camera: new PerspectiveCamera(),
+                    scripts: [],
+                    scene,
+                });
+            }).not.toThrow();
+
+            const globeJson = output.find(item => item.uuid === globe.uuid);
+            expect(globeJson?.metadata?.generator).toBe('Object3DSerializer');
+            expect(globeJson?.userData?.type).toBe('Globe');
         });
     });
 

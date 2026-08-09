@@ -66,8 +66,7 @@ class ConsumableBehavior extends BehaviorBase {
         EventBus.instance.send(IN_GAME_EVENTS.CONSUMABLE_COLLIDED, this.consumableData);
         switch (this.attributes.consumableType) {
             case CONSUMABLE_TYPES.PRESS_E:
-                // if (this.game!.inputManager.getAction('use')) { // TODO: use this instead of hardcoded 'pressE'
-                if (this.game?.player?.userData?.pressE) { // HACK: this is a temporary solution for mobile controls
+                if (this.isUseActionPressed()) {
                     this.collectObject();
                 }
                 break;
@@ -81,10 +80,15 @@ class ConsumableBehavior extends BehaviorBase {
 
     }
 
+    private isUseActionPressed(): boolean {
+        return (
+            this.game?.inputManager?.getAction("use") === true ||
+            this.game?.scene?.userData?.pressE === true ||
+            this.game?.player?.userData?.pressE === true
+        );
+    }
+
     collectObject() {
-        //TODO work with Natalia on this
-        //const invObj: IInventory = { Amount: 1, UUID: this.target!.uuid, Name: this.target!.name };
-        //dispatchCustomInventoryEvent(EVENTS.INVENTORY_ADD, invObj);
         if (this.collectedObject) return {};
         EventBus.instance.send(IN_GAME_EVENTS.GAME_HEALTH_INC, this.attributes.healthAmount);
         EventBus.instance.send(IN_GAME_EVENTS.CONSUMABLE_COLLECTED, this.consumableData);

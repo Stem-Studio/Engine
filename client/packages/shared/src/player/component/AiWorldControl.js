@@ -1,5 +1,4 @@
 import PlayerComponent from "./PlayerComponent";
-import AIWorldController from "../../controls/AiWorldController/AiWorldController";
 
 class AiWorldControl extends PlayerComponent {
     constructor(app) {
@@ -11,11 +10,9 @@ class AiWorldControl extends PlayerComponent {
         return this._createControl(scene, camera, renderer, sceneId, player);
     }
 
-    _createControl(scene, camera, renderer, sceneId, player) {
-        return new Promise(resolve => {
-            this.control = AIWorldController.getInstance(player);
-            resolve();
-        });
+    async _createControl(scene, camera, renderer, sceneId, player) {
+        const {default: AIWorldController} = await import("../../controls/AiWorldController/AiWorldController");
+        this.control = AIWorldController.getInstance(player);
     }
 
     update(clock, deltaTime) {

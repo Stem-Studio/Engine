@@ -24,6 +24,19 @@ function createTexturedMesh(name: string, width: number, height: number): THREE.
     return mesh;
 }
 
+function addDeepObjectChain(root: THREE.Object3D, depth = 12_000): THREE.Object3D {
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new THREE.Object3D();
+        child.name = `node-${i}`;
+        current.add(child);
+        current = child;
+    }
+
+    return current;
+}
+
 describe("BudgetInspector", () => {
     it("collects avatar, plot, and texture residency summaries", () => {
         const scene = new THREE.Scene();
@@ -91,6 +104,39 @@ describe("BudgetInspector", () => {
         expect(snapshot.texture.states.reduced).toBe(1);
         expect(snapshot.rows[0]!.name).toBe("plot");
         expect(snapshot.rows[0]!.textureBytes).toBe(32 * 1024 * 1024);
+    });
+
+    it("collects advisor data from deep scenes without recursive Object3D traversal", () => {
+        const scene = new THREE.Scene();
+        const leaf = addDeepObjectChain(scene);
+        const avatar = createObject("deep-avatar");
+        avatar.add(createTexturedMesh("deep-avatar-mesh", 2048, 1024));
+        leaf.add(avatar);
+        markRemotePlayerAvatar(avatar, {
+            stats: {
+                triangles: 15000,
+                drawCalls: 8,
+                bones: 120,
+                bounds: new THREE.Vector3(2, 2, 2),
+                textureBytes: 40 * MB,
+                textureCount: 1,
+            },
+        });
+        const sceneTraverseSpy = vi.spyOn(scene, "traverse");
+        const avatarTraverseSpy = vi.spyOn(avatar, "traverse");
+
+        const snapshot = collectBudgetInspection(scene, {}, {
+            enableAdvisor: true,
+            allowAdvisor: true,
+            maxAdvisorWarnings: 20,
+        });
+
+        expect(snapshot.avatar.total).toBe(1);
+        expect(snapshot.rows[0]!.name).toBe("deep-avatar");
+        expect(snapshot.rows[0]!.maxTextureDimension).toBe(2048);
+        expect(snapshot.advisor?.warnings.some(warning => warning.metric === "textureDimension")).toBe(true);
+        expect(sceneTraverseSpy).not.toHaveBeenCalled();
+        expect(avatarTraverseSpy).not.toHaveBeenCalled();
     });
 
     it("includes manager stats and limits top rows", () => {

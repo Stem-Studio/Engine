@@ -130,7 +130,7 @@ export function recordFrameRuntimeTrace(event) {
         store.dropped++;
     }
 
-    if (config.console && (event.kind === "orchestrator-frame" || event.kind === "render-frame")) {
+    if (config.console && (event.kind === "runtime-frame" || event.kind === "render-frame")) {
         console.debug(`[FrameRuntimeTrace] ${event.kind}`, entry);
     }
 }

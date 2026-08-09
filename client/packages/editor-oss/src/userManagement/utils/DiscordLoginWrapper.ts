@@ -1,12 +1,12 @@
-import moment from "moment";
-
 import * as discordApi from "@stem/network/api/discord";
 import {IDiscordUser} from "@stem/network/api/discord";
 import {getAuthProvider} from "../../auth";
 import {getRemoteDocStore} from "../../data";
 import ApplicationAuthStore from "../editorProfile/ApplicationAuthStore";
-import {DiscordController} from "../playerProfile/game-service-controllers";
+import {isInDiscordEnvironment} from "../playerProfile/discordEnvironment";
 import {IUser} from "../types";
+
+const unixSeconds = () => Math.floor(Date.now() / 1000);
 
 export const discordAuthenticateWithCode = async (args: {
     authManager: ApplicationAuthStore;
@@ -87,7 +87,7 @@ export const discordAuthenticateWithRefreshToken = async (
  * @param discordUser
  */
 async function loginWithCustomToken(customToken: string, discordUser: IDiscordUser) {
-    if (DiscordController.isInDiscord()) {
+    if (isInDiscordEnvironment()) {
         // No Firebase in the Discord embedded app — build IUser directly from Discord identity.
         return {
             id: discordUser.id,
@@ -122,7 +122,7 @@ async function loginWithCustomToken(customToken: string, discordUser: IDiscordUs
                 username: discordUser.username,
                 email: discordUser.email,
                 avatar: discordUser.avatarUrl,
-                memberSince: moment().unix(),
+                memberSince: unixSeconds(),
             };
 
             await store.setDoc("users", authUser.uid, newUser);

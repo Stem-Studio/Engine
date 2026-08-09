@@ -27,10 +27,10 @@
 See `~/.claude/stemstudio-docs/physics-system.md` "Physics Defaults by Genre" — row `racing-kart`. Summary:
 
 - **Gravity:** `-9.81` (Earth-like).
-- **Engine choice:** `ammo` (default). **Rapier has NO vehicle support** — `addVehicleObject` is a runtime error there. Set the engine via `set_physics_engine` (`stemstudio-physics` skill).
+- **Engine choice:** `ammo` (default) or `rapier`. Set the engine via `set_physics_engine` (`stemstudio-physics` skill).
 - **Vehicle body type — pick one:**
   - **Arcade racer (custom controller writes position):** `Kinematic` box chassis. Engine doesn't apply gravity; controller owns ground sampling. Raycast ground logic is acceptable here.
-  - **Sim racer:** `Dynamic` chassis with `addVehicleObject` on Ammo/Jolt/PhysX.
+  - **Sim racer:** `Dynamic` chassis with `addVehicleObject` on Ammo.
 - **Track:** `Static` `concaveHull`. `bounciness_preset:"Ground"`. Use `"Slippery Ground"` for drift zones, `"Ice"` for hazard patches.
 - **Material zone trick:** invisible `Static` `box` triggers over surface variants; switch friction logic on `on_enter`.
 - **Pitfall:** `Dynamic` body + manual position writes → engine gravity fights controller → kart sinks/jitters. Either fully `Kinematic` or fully `Dynamic`; do not mix.

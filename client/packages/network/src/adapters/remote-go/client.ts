@@ -5,7 +5,7 @@ import {auth} from "@web-shared/firebase";
 import global from "@web-shared/global";
 import {AssetsApi, JobsApi, ScenesApi} from "./client/api";
 import {Configuration} from "./client/configuration";
-import {DiscordController} from "@web-shared/userManagement/playerProfile/game-service-controllers";
+import {isInDiscordEnvironment} from "@web-shared/userManagement/playerProfile/discordEnvironment";
 import {baseApiUrl} from "@web-shared/utils/UrlUtils";
 
 /**
@@ -59,7 +59,7 @@ const createAxiosWithAuth = () => {
         // proxy-base headers so the backend can remap presigned URLs.
         // The env vars contain just the path prefix (e.g., "/.proxy/stem-assets");
         // we prepend the current origin so the backend gets a full base URL.
-        if (DiscordController.isInDiscord()) {
+        if (isInDiscordEnvironment()) {
             const origin = `${window.location.protocol}//${window.location.host}`;
             const getProxyPath = process.env.REACT_APP_ASSET_GET_PROXY_BASE;
             const putProxyPath = process.env.REACT_APP_ASSET_PUT_PROXY_BASE;

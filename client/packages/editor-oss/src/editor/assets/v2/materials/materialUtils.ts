@@ -25,6 +25,21 @@ type ManagedTextureOptions = {
     stableAssetKey?: string;
 };
 
+type EditableMaterialMesh = THREE.Mesh | THREE.SkinnedMesh;
+
+type MaterialSlot = {
+    material: THREE.Material;
+    mesh: EditableMaterialMesh;
+    index: number;
+    pathParts: string[];
+};
+
+type MaterialSlotIndex = {
+    exact: Map<string, MaterialSlot>;
+    suffix: Map<string, MaterialSlot>;
+    slots: MaterialSlot[];
+};
+
 const roundCacheNumber = (value: number): string => value.toFixed(4);
 
 const getManagedTextureColorSpaceKey = (targetKey: TextureTargetKey): "srgb" | "linear" => {
@@ -38,19 +53,71 @@ const inferMaterialType = (mat: THREE.Material | undefined | null): MATERIAL_TYP
     return MATERIAL_TYPES.SPECULAR;
 };
 
-const getFirstMaterialFromObject = (object: THREE.Object3D): THREE.Material | undefined => {
-    let firstMaterial: THREE.Material | undefined;
+const isEditableMaterialMesh = (object: THREE.Object3D): object is EditableMaterialMesh => {
+    return object instanceof THREE.Mesh || object instanceof THREE.SkinnedMesh;
+};
 
-    object.traverse(child => {
-        if (firstMaterial || (!(child instanceof THREE.Mesh) && !(child instanceof THREE.SkinnedMesh))) {
+const forEachEditableMaterialMesh = (
+    root: THREE.Object3D,
+    callback: (mesh: EditableMaterialMesh) => false | void,
+): void => {
+    const stack: THREE.Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const object = stack.pop();
+        if (!object) continue;
+
+        if (isEditableMaterialMesh(object) && callback(object) === false) {
             return;
         }
 
-        const meshMaterial = child.material as THREE.Material | THREE.Material[];
-        const material = Array.isArray(meshMaterial) ? meshMaterial[0] : meshMaterial;
-        if (material) {
-            firstMaterial = material;
+        for (let i = object.children.length - 1; i >= 0; i--) {
+            const child = object.children[i];
+            if (child) stack.push(child);
         }
+    }
+};
+
+const getMaterialPathParts = (
+    mesh: EditableMaterialMesh,
+    rootObject: THREE.Object3D,
+): string[] => {
+    const pathParts: string[] = [];
+    let current: THREE.Object3D | null = mesh;
+
+    while (current && current !== rootObject) {
+        pathParts.unshift(current.name || current.uuid);
+        current = current.parent;
+    }
+
+    return pathParts;
+};
+
+const forEachMaterialSlot = (
+    root: THREE.Object3D,
+    callback: (slot: MaterialSlot) => false | void,
+): void => {
+    forEachEditableMaterialMesh(root, mesh => {
+        const pathParts = getMaterialPathParts(mesh, root);
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+        for (let index = 0; index < materials.length; index++) {
+            const material = materials[index] as THREE.Material | undefined;
+            if (!material) continue;
+
+            if (callback({material, mesh, index, pathParts}) === false) {
+                return false;
+            }
+        }
+    });
+};
+
+const getFirstMaterialFromObject = (object: THREE.Object3D): THREE.Material | undefined => {
+    let firstMaterial: THREE.Material | undefined;
+
+    forEachMaterialSlot(object, slot => {
+        firstMaterial = slot.material;
+        return false;
     });
 
     return firstMaterial;
@@ -213,19 +280,80 @@ export const generateMaterialPathKey = (
     materialIndex: number,
     rootObject: THREE.Object3D,
 ): string => {
-    const pathParts: string[] = [];
-    let current: THREE.Object3D | null = mesh;
-
-    // Build path from mesh to root
-    while (current && current !== rootObject) {
-        pathParts.unshift(current.name || current.uuid);
-        current = current.parent;
-    }
+    const pathParts = getMaterialPathParts(mesh, rootObject);
 
     // Add root
     pathParts.unshift("root");
 
     return `${pathParts.join("///")}::${materialIndex}`;
+};
+
+const splitMaterialPath = (path: string, separator: string): string[] => path.split(separator);
+
+const materialSlotLookupKey = (
+    separator: string,
+    pathParts: string[],
+    materialIndex: number,
+): string => `${separator}${pathParts.join(separator)}::${materialIndex}`;
+
+const setFirstMaterialSlot = (
+    map: Map<string, MaterialSlot>,
+    key: string,
+    slot: MaterialSlot,
+): void => {
+    if (!map.has(key)) {
+        map.set(key, slot);
+    }
+};
+
+const buildMaterialSlotIndex = (rootObject: THREE.Object3D): MaterialSlotIndex => {
+    const exact = new Map<string, MaterialSlot>();
+    const suffix = new Map<string, MaterialSlot>();
+    const slots: MaterialSlot[] = [];
+    const rootName = rootObject.name || "root";
+
+    forEachMaterialSlot(rootObject, slot => {
+        slots.push(slot);
+
+        for (const separator of ["///", "."]) {
+            const stablePathParts = ["root", ...slot.pathParts];
+            const namedRootPathParts = [rootName, ...slot.pathParts];
+
+            setFirstMaterialSlot(exact, materialSlotLookupKey(separator, stablePathParts, slot.index), slot);
+            setFirstMaterialSlot(exact, materialSlotLookupKey(separator, namedRootPathParts, slot.index), slot);
+            setFirstMaterialSlot(exact, materialSlotLookupKey(separator, slot.pathParts, slot.index), slot);
+            setFirstMaterialSlot(suffix, materialSlotLookupKey(separator, slot.pathParts, slot.index), slot);
+        }
+    });
+
+    return {exact, suffix, slots};
+};
+
+const parseMaterialPathKey = (pathKey: string): {path: string; materialIndex: number} | null => {
+    const [path, indexStr] = pathKey.split("::");
+    const materialIndex = parseInt(indexStr || "0", 10);
+
+    if (!path || Number.isNaN(materialIndex)) return null;
+    return {path, materialIndex};
+};
+
+const findMaterialSlotByPathKey = (
+    index: MaterialSlotIndex,
+    pathKey: string,
+): {material: THREE.Material; mesh: THREE.Mesh | THREE.SkinnedMesh; index: number} | null => {
+    const parsed = parseMaterialPathKey(pathKey);
+    if (!parsed) return null;
+
+    const separator = parsed.path.includes("///") ? "///" : ".";
+    const pathParts = splitMaterialPath(parsed.path, separator);
+    const exact = index.exact.get(materialSlotLookupKey(separator, pathParts, parsed.materialIndex));
+    if (exact) {
+        return {material: exact.material, mesh: exact.mesh, index: exact.index};
+    }
+
+    const suffixParts = pathParts.slice(1);
+    const suffix = index.suffix.get(materialSlotLookupKey(separator, suffixParts, parsed.materialIndex));
+    return suffix ? {material: suffix.material, mesh: suffix.mesh, index: suffix.index} : null;
 };
 
 /**
@@ -238,42 +366,7 @@ export const findMaterialByPathKey = (
     object: THREE.Object3D,
     pathKey: string,
 ): {material: THREE.Material; mesh: THREE.Mesh | THREE.SkinnedMesh; index: number} | null => {
-    const [path, indexStr] = pathKey.split("::");
-    const materialIndex = parseInt(indexStr || "0", 10);
-
-    if (!path) return null;
-
-    let result: {material: THREE.Material; mesh: THREE.Mesh | THREE.SkinnedMesh; index: number} | null = null;
-
-    object.traverse(child => {
-        if (result) return; // Already found
-        if (!(child instanceof THREE.Mesh) && !(child instanceof THREE.SkinnedMesh)) return;
-
-        // Build path for this child
-        const childPathParts: string[] = [];
-        let current: THREE.Object3D | null = child;
-
-        while (current && current !== object) {
-            childPathParts.unshift(current.name || current.uuid);
-            current = current.parent;
-        }
-        // FIXME: Parent can be renamed, causing mismatch, so we skip adding root name
-        // Find a better way to handle root identification
-        // childPathParts.unshift(object.name || "root");
-
-        // Detect separator from pathKey to support backward compatibility
-        const separator = path.includes("///") ? "///" : ".";
-        const childPath = childPathParts.join(separator);
-        if (path.endsWith(childPath)) {
-            const materials = Array.isArray(child.material) ? child.material : [child.material];
-            const targetMaterial = materials[materialIndex] as THREE.Material | undefined;
-            if (targetMaterial) {
-                result = {material: targetMaterial, mesh: child, index: materialIndex};
-            }
-        }
-    });
-
-    return result;
+    return findMaterialSlotByPathKey(buildMaterialSlotIndex(object), pathKey);
 };
 
 type MaterialWithMaps = THREE.Material &
@@ -378,13 +471,13 @@ const applyOrClearMap = (params: {
  */
 export const isAssetId = (value: string): boolean => {
     if (typeof value !== "string" || !value) return false;
-    // Mongo-style 24-hex id or UUID (integrated builds).
+    // Mongo-style 24-hex id or UUID from server-backed asset stores.
     if (/^([a-f0-9]{24}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(value)) {
         return true;
     }
-    // OSS synthesizes asset ids as `oss-asset-<timestamp>-<rand>` (see
+    // Local imports synthesize asset ids as `oss-asset-<timestamp>-<rand>` (see
     // network/.../asset/index.ts). These are real asset ids, not URLs. Without
-    // this, a material texture backed by an imported OSS image asset fails both
+    // this, a material texture backed by an imported local image asset fails both
     // the apply path (treated as a URL → TextureLoader 404 → blank texture) and
     // the resolve path (skipped entirely), so the texture renders empty.
     return value.startsWith("oss-asset-");
@@ -477,6 +570,7 @@ export const applyMaterialSettingsToObject = (
     if (!settingsMap) return;
 
     let map: IMaterialSettingsMap;
+    const materialSlotIndex = buildMaterialSlotIndex(object);
 
     // Handle legacy single settings object - convert to map
     if ("materialType" in settingsMap && "textures" in settingsMap) {
@@ -484,16 +578,10 @@ export const applyMaterialSettingsToObject = (
         const legacySettings = settingsMap as IMaterialSettings;
         map = {};
 
-        // Convert legacy settings to map by traversing all materials
-        object.traverse(child => {
-            if (!(child instanceof THREE.Mesh) && !(child instanceof THREE.SkinnedMesh)) return;
-            const mesh = child as THREE.Mesh | THREE.SkinnedMesh;
-
-            const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-            materials.forEach((material, index) => {
-                const pathKey = generateMaterialPathKey(mesh, index, object);
-                map[pathKey] = {...legacySettings};
-            });
+        // Convert legacy settings to map from the already-indexed material slots.
+        materialSlotIndex.slots.forEach(slot => {
+            const pathKey = generateMaterialPathKey(slot.mesh, slot.index, object);
+            map[pathKey] = {...legacySettings};
         });
 
         object.userData.materialSettings = map;
@@ -513,7 +601,7 @@ export const applyMaterialSettingsToObject = (
     const keysToRemove = new Set<string>();
 
     Object.entries(map).forEach(([pathKey, settings]) => {
-        const found = findMaterialByPathKey(object, pathKey);
+        const found = findMaterialSlotByPathKey(materialSlotIndex, pathKey);
         if (found) {
             resolvedTargets.push({key: pathKey, settings, found});
 
@@ -722,10 +810,9 @@ const replaceMaterialInObject = (
     fallbackIndex: number,
 ) => {
     if (newMat !== oldMat) {
-        root.traverse(child => {
-            if (!(child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh)) return;
-            if (Array.isArray(child.material)) {
-                const materials = child.material;
+        forEachEditableMaterialMesh(root, mesh => {
+            if (Array.isArray(mesh.material)) {
+                const materials = mesh.material;
                 let replaced = false;
                 let newMaterials: THREE.Material[] | undefined;
 
@@ -740,10 +827,10 @@ const replaceMaterialInObject = (
                 }
 
                 if (replaced && newMaterials) {
-                    child.material = newMaterials;
+                    mesh.material = newMaterials;
                 }
-            } else if (child.material === oldMat) {
-                child.material = newMat;
+            } else if (mesh.material === oldMat) {
+                mesh.material = newMat;
             }
         });
     } else {

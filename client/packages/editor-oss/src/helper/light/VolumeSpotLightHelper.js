@@ -3,19 +3,17 @@
  * Purpose: Contains logic for volume spot light helper.
  */
 
-import * as THREE from "three";
-
-
-class VolumeSpotLightHelper extends THREE.SpotLightHelper {
+import {Mesh, MeshBasicMaterial, SphereGeometry, SpotLightHelper} from "three";
+class VolumeSpotLightHelper extends SpotLightHelper {
     constructor(light, color) {
         super(light, color);
-        var geometry = new THREE.SphereGeometry(2, 4, 2);
-        var material = new THREE.MeshBasicMaterial({
+        var geometry = new SphereGeometry(2, 4, 2);
+        var material = new MeshBasicMaterial({
             color: 0xff0000,
             visible: false,
         });
 
-        this.picker = new THREE.Mesh(geometry, material);
+        this.picker = new Mesh(geometry, material);
         this.picker.name = "picker";
         this.add(this.picker);
     }

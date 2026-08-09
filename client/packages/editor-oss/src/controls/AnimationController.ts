@@ -1,41 +1,48 @@
-﻿import * as THREE from "three";
-
+﻿import {AnimationAction, AnimationClip, AnimationMixer, AnimationObjectGroup, Camera, LoopOnce, Object3D, Timer, type Clock} from "three";
 import GameManager from "@stem/editor-oss/behaviors/game/GameManager";
 import {AvatarBudgetPolicy, configureAvatarBudgetPolicyFromEngine} from "@stem/editor-oss/core/budget/AvatarBudgetPolicy";
 import global from "@stem/editor-oss/global";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+import {setRuntimeUserDataValue} from "@stem/editor-oss/utils/userDataRuntime";
 
 export type BlendedAnimationParams = {
-    name: string | THREE.AnimationClip;
+    name: string | AnimationClip;
     weight?: number;
     speed?: number;
     fadeDuration?: number;
 };
 
 export type StoredAnimationData = {
-    mixer: THREE.AnimationMixer;
+    mixer: AnimationMixer;
     speed: number;
-    actions: THREE.AnimationAction[];
+    actions: AnimationAction[];
     blends: BlendedAnimationParams[];
     paused: boolean;
     onComplete?: () => void;
     //DEPRECATED: for backward compatibility only
-    clip?: THREE.AnimationClip;
-    action?: THREE.AnimationAction;
+    clip?: AnimationClip;
+    action?: AnimationAction;
+};
+
+type AnimationSourceObject = Object3D & {
+    _obj?: {
+        animations?: AnimationClip[];
+    };
 };
 
 export class AnimationController {
     game?: GameManager | null;
     animations: StoredAnimationData[];
     requestAnimationFrameId: number;
-    clock?: THREE.Clock;
+    clock?: Pick<Clock, "getDelta">;
     gameStarted: boolean = false;
     private frameCount = 0;
+    private readonly fallbackTimer = new Timer();
     private readonly avatarBudgetPolicy = new AvatarBudgetPolicy();
 
     constructor() {
         this.animations = [];
         this.requestAnimationFrameId = -1;
-        this.clock = new THREE.Clock();
     }
 
     start = (gameManager: GameManager) => {
@@ -46,7 +53,7 @@ export class AnimationController {
     };
 
     playAnimation = (
-        object: THREE.Object3D,
+        object: Object3D,
         animationName: string,
         speed: number,
         playOnce?: boolean,
@@ -62,8 +69,8 @@ export class AnimationController {
     };
 
     playCustomAnimation = (
-        object: THREE.Object3D,
-        clip: THREE.AnimationClip,
+        object: Object3D,
+        clip: AnimationClip,
         speed: number,
         playOnce?: boolean,
         fadeDuration: number = 0.5,
@@ -71,28 +78,28 @@ export class AnimationController {
         this.playBlendedAnimations(object, [{name: clip, speed: speed, fadeDuration: fadeDuration}], playOnce);
     };
 
-    getMixer = (object: THREE.Object3D): THREE.AnimationMixer => {
+    getMixer = (object: Object3D): AnimationMixer => {
         const animation = AnimationController.getStoredAnimationData(object);
         if (animation) {
             return animation.mixer;
         }
-        return new THREE.AnimationMixer(object);
+        return new AnimationMixer(object);
     };
 
-    private static getCurrentAnimation(object: THREE.Object3D): StoredAnimationData {
+    private static getCurrentAnimation(object: Object3D): StoredAnimationData {
         // TODO: probably better to not expose StoredAnimationData publicly
         // since it may contain private fields
         // TODO: should this be object.userData.animation? (no 's')
         return object.userData.animation as StoredAnimationData;
     }
 
-    static getCurrentAnimationParams(object: THREE.Object3D): BlendedAnimationParams[] | undefined {
+    static getCurrentAnimationParams(object: Object3D): BlendedAnimationParams[] | undefined {
         // TODO: should this be object.userData.animation? (no 's')
         const animation = object.userData.animation as StoredAnimationData;
         return animation ? animation.blends : undefined;
     }
 
-    stopAnimation = (object: THREE.Object3D) => {
+    stopAnimation = (object: Object3D) => {
         const animation = AnimationController.getStoredAnimationData(object);
         if (animation?.mixer) {
             animation.mixer.stopAllAction();
@@ -101,52 +108,58 @@ export class AnimationController {
         delete object.userData.animation;
     };
 
-    setAnimationPaused = (object: THREE.Object3D, paused: boolean) => {
+    setAnimationPaused = (object: Object3D, paused: boolean) => {
         const animation = AnimationController.getStoredAnimationData(object);
         if (animation) {
             animation.paused = paused;
         }
     };
 
-    update = () => {
+    update = (deltaTime?: number) => {
         if (!this.game || !this.game.isGameStarted()) {
             return;
         }
 
-        const delta = this.clock?.getDelta() || 0;
+        const delta = this.getFrameDelta(deltaTime);
         this.frameCount++;
         const camera = this.game.camera;
         configureAvatarBudgetPolicyFromEngine(this.avatarBudgetPolicy, this.game.engine);
 
         if (this.animations.length > 0) {
-            this.animations.forEach(animation => {
-                if (animation && !animation.paused) {
-                    const root = animation.mixer.getRoot();
-                    if (camera) {
-                        if (root instanceof THREE.Object3D && this.avatarBudgetPolicy.isEnabled(root)) {
-                            const decision = this.avatarBudgetPolicy.decide(root, camera);
-                            this.avatarBudgetPolicy.applyVisibilityState(root, decision);
-                            if (!this.avatarBudgetPolicy.shouldRunAnimationUpdate(root, decision, delta)) return;
-                        } else {
-                            const skip = this.getSkipFrames(root, camera);
-                            if (skip > 0 && root instanceof THREE.Object3D) {
-                                let hash = root.userData._animHash as number | undefined;
-                                if (hash === undefined) {
-                                    hash = this.stableHash(root.uuid);
-                                    root.userData._animHash = hash;
+            if (camera) {
+                this.avatarBudgetPolicy.beginFrame(camera);
+            }
+            try {
+                for (let i = 0; i < this.animations.length; i++) {
+                    const animation = this.animations[i];
+                    if (animation && !animation.paused) {
+                        const root = animation.mixer.getRoot();
+                        if (camera) {
+                            if (root instanceof Object3D && this.avatarBudgetPolicy.isEnabled(root)) {
+                                const decision = this.avatarBudgetPolicy.decide(root, camera);
+                                this.avatarBudgetPolicy.applyVisibilityState(root, decision);
+                                if (!this.avatarBudgetPolicy.shouldRunAnimationUpdate(root, decision, delta)) continue;
+                            } else {
+                                const skip = this.getSkipFrames(root, camera);
+                                if (skip > 0 && root instanceof Object3D) {
+                                    const hash = this.getObjectAnimationHash(root);
+                                    if ((this.frameCount + hash) % (skip + 1) !== 0) continue;
                                 }
-                                if ((this.frameCount + hash) % (skip + 1) !== 0) return;
                             }
                         }
+                        animation.mixer.update(delta * animation.speed);
                     }
-                    animation.mixer.update(delta * animation.speed);
                 }
-            });
+            } finally {
+                if (camera) {
+                    this.avatarBudgetPolicy.endFrame();
+                }
+            }
         }
     };
 
-    private getSkipFrames(root: THREE.Object3D | THREE.AnimationObjectGroup, camera: THREE.Camera): number {
-        const obj = root as THREE.Object3D;
+    private getSkipFrames(root: Object3D | AnimationObjectGroup, camera: Camera): number {
+        const obj = root as Object3D;
         if (!obj.matrixWorld) return 0;
         const e = obj.matrixWorld.elements;
         const ce = camera.matrixWorld.elements;
@@ -165,6 +178,24 @@ export class AnimationController {
         return Math.abs(h);
     }
 
+    private getObjectAnimationHash(object: Object3D): number {
+        let hash = object.userData._animHash;
+        if (typeof hash !== "number" || !Number.isFinite(hash)) {
+            hash = this.stableHash(object.uuid);
+            this.cacheObjectAnimationHash(object, hash);
+            return hash;
+        }
+
+        if (Object.prototype.propertyIsEnumerable.call(object.userData, "_animHash")) {
+            this.cacheObjectAnimationHash(object, hash);
+        }
+        return hash;
+    }
+
+    private cacheObjectAnimationHash(object: Object3D, hash: number): void {
+        setRuntimeUserDataValue(object, "_animHash", hash);
+    }
+
     stop = () => {
         if (this.requestAnimationFrameId !== -1) {
             cancelAnimationFrame(this.requestAnimationFrameId);
@@ -174,7 +205,7 @@ export class AnimationController {
 
     dispose = () => {
         const scene = this.game?.scene;
-        scene?.traverse(object => {
+        if (scene) traverseObjectDepthFirst(scene, object => {
             const animation = AnimationController.getStoredAnimationData(object);
             if (animation) {
                 const {mixer} = animation;
@@ -187,37 +218,52 @@ export class AnimationController {
         });
         this.requestAnimationFrameId = -1;
         global.app?.on("gameStarted.AnimationController", null);
+        this.fallbackTimer.dispose();
     };
+
+    private getFrameDelta(deltaTime?: number): number {
+        if (deltaTime !== undefined) {
+            return deltaTime;
+        }
+        if (this.clock) {
+            return this.clock.getDelta();
+        }
+
+        this.fallbackTimer.update();
+        return this.fallbackTimer.getDelta();
+    }
 
     /**
      * Play and blend multiple animations on an object.
-     * @param object The THREE.Object3D to animate
+     * @param object The Object3D to animate
      * @param blends Array of { name, weight, speed, fadeDuration }
      * @param playOnce If true, all actions will play once
      * @param onComplete Optional callback invoked when a non-looping animation finishes
      */
     playBlendedAnimations = (
-        object: THREE.Object3D,
+        object: Object3D,
         blends: BlendedAnimationParams[],
         playOnce?: boolean,
         onComplete?: () => void,
     ) => {
         if (!object) return;
         const mixer = this.getMixer(object);
+        const wrapped = object as AnimationSourceObject;
         const animations =
-            (object as any)._obj?.animations?.length > 0
-                ? ((object as any)._obj.animations as THREE.AnimationClip[])
+            (wrapped._obj?.animations?.length ?? 0) > 0
+                ? (wrapped._obj?.animations as AnimationClip[])
                 : object.animations;
         if (!animations || blends.length === 0) return;
 
         // Track actions to keep
-        const activeActions: THREE.AnimationAction[] = [];
+        const activeActions: AnimationAction[] = [];
+        const activeActionSet = new Set<AnimationAction>();
 
         for (let i = 0; i < blends.length; i++) {
             const blend = blends[i];
             if (!blend) continue;
             const {name, weight = 1, speed = 1, fadeDuration = 0.5} = blend;
-            const clip = name instanceof THREE.AnimationClip ? name : animations.find(c => c.name === name);
+            const clip = name instanceof AnimationClip ? name : animations.find(c => c.name === name);
             if (!clip) {
                 if (name && name !== "none") {
                     console.warn(`AnimationController: clip ${name} not found on object ${object.name}`);
@@ -233,10 +279,11 @@ export class AnimationController {
             action.play();
             action.timeScale = speed;
             if (playOnce) {
-                action.setLoop(THREE.LoopOnce, 1);
+                action.setLoop(LoopOnce, 1);
                 action.clampWhenFinished = true;
             }
             activeActions.push(action);
+            activeActionSet.add(action);
         }
 
         // Fade out any other actions not in the blend set
@@ -245,7 +292,7 @@ export class AnimationController {
                 const clip = animations[i];
                 if (!clip) continue;
                 const action = mixer.existingAction(clip);
-                if (action && !activeActions.includes(action)) {
+                if (action && !activeActionSet.has(action)) {
                     action.fadeOut(0.3);
                 }
             }
@@ -284,10 +331,10 @@ export class AnimationController {
 
     /**
      * Update the weights of currently blended animations on an object.
-     * @param object The THREE.Object3D being animated
+     * @param object The Object3D being animated
      * @param weights An object mapping animation names to new weights
      */
-    updateBlendedAnimationWeights = (object: THREE.Object3D, weights: {[name: string]: number}) => {
+    updateBlendedAnimationWeights = (object: Object3D, weights: {[name: string]: number}) => {
         const animation = AnimationController.getStoredAnimationData(object);
         if (!Array.isArray(animation?.actions)) {
             return;
@@ -317,7 +364,7 @@ export class AnimationController {
         }
     };
 
-    private static getStoredAnimationData(object: THREE.Object3D): StoredAnimationData | undefined {
+    private static getStoredAnimationData(object: Object3D): StoredAnimationData | undefined {
         return object.userData.animation as StoredAnimationData | undefined;
     }
 }

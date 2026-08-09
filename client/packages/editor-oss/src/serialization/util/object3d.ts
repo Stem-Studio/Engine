@@ -5,6 +5,7 @@ import {AssetResolutionContext, getAssetResolutionContext} from "@stem/editor-os
 import { applyMaterialSettingsToObject } from '@stem/editor-oss/editor/assets/v2/materials/materialUtils';
 import global from "@stem/editor-oss/global";
 import { SerializedObject3D } from '../schema/Object3DSchema';
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 export const applyToObject3d = (object: Object3D, json: SerializedObject3D, context?: AssetResolutionContext | null) => {
     (object as Object3D & { parentUuid?: string }).parentUuid = json.parent;
@@ -33,24 +34,24 @@ export const applyToObject3d = (object: Object3D, json: SerializedObject3D, cont
         object.visible = json.visible;
     }
 
-    // Apply castShadow to the object and its descendants
-    if (json.castShadow !== undefined) {
-        const castShadow = json.castShadow;
-        object.castShadow = castShadow;
-        object.traverse((child) => {
-            if ((child as Object3D & { isMesh?: boolean }).isMesh) {
-                child.castShadow = castShadow;
-            }
-        });
+    const shouldApplyCastShadow = json.castShadow !== undefined;
+    const shouldApplyReceiveShadow = json.receiveShadow !== undefined;
+    if (shouldApplyCastShadow) {
+        object.castShadow = json.castShadow!;
     }
-
-    // Apply receiveShadow to the object and its descendants
-    if (json.receiveShadow !== undefined) {
-        const receiveShadow = json.receiveShadow;
-        object.receiveShadow = receiveShadow;
-        object.traverse((child) => {
-            if ((child as Object3D & { isMesh?: boolean }).isMesh) {
-                child.receiveShadow = receiveShadow;
+    if (shouldApplyReceiveShadow) {
+        object.receiveShadow = json.receiveShadow!;
+    }
+    if (shouldApplyCastShadow || shouldApplyReceiveShadow) {
+        traverseObjectDepthFirst(object, child => {
+            if (!(child as Object3D & { isMesh?: boolean }).isMesh) {
+                return;
+            }
+            if (shouldApplyCastShadow) {
+                child.castShadow = json.castShadow!;
+            }
+            if (shouldApplyReceiveShadow) {
+                child.receiveShadow = json.receiveShadow!;
             }
         });
     }

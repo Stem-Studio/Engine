@@ -1,9 +1,7 @@
 import type {AIProvider} from "./types";
 
 /**
- * BYOKKeyStore persists provider keys client-side. Used only in OSS mode —
- * integrated mode reads keys from the server's env and never touches the
- * client store.
+ * BYOKKeyStore persists provider keys client-side.
  *
  * The default implementation is IndexedDB-backed. The interface is here so a
  * desktop wrapper (Tauri, Electron) can plug in an OS-keychain implementation

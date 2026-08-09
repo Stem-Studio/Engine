@@ -1,10 +1,35 @@
 import * as THREE from "three";
-import {WebGPURenderer, RenderTarget, NearestFilter, NoColorSpace} from "three/webgpu";
+import {NoColorSpace, NearestFilter, RenderTarget} from "three";
 
 import BatchManager from "./BatchManager";
 
 let _cachedBatchManagerSupport: boolean | undefined;
 let _probePromise: Promise<boolean> | undefined;
+
+function publishBatchSupportDiagnostic(stage: string, data: Record<string, unknown> = {}) {
+    const diagnostics = globalThis as typeof globalThis & {
+        __STEM_BATCH_SUPPORT_DIAG_ENABLED__?: boolean;
+        __STEM_BATCH_SUPPORT_DIAG__?: unknown;
+        __STEM_BATCH_SUPPORT_DIAG_HISTORY__?: unknown[];
+    };
+    if (diagnostics.__STEM_BATCH_SUPPORT_DIAG_ENABLED__ === true) {
+        const entry = {stage, ...data};
+        diagnostics.__STEM_BATCH_SUPPORT_DIAG__ = entry;
+        const history = diagnostics.__STEM_BATCH_SUPPORT_DIAG_HISTORY__ ?? [];
+        history.push(entry);
+        // Keep the gated probe trace bounded; this function is called from the
+        // render loop after the one-time probe has settled. Preserve the first
+        // probe stages because the tail is otherwise dominated by cached
+        // render-loop reads before the harness samples the result.
+        if (history.length > 64) history.splice(16, history.length - 64);
+        diagnostics.__STEM_BATCH_SUPPORT_DIAG_HISTORY__ = history;
+    }
+}
+
+function elapsedSince(startedAt: number): number {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    return Math.max(0, Math.round((now - startedAt) * 10) / 10);
+}
 
 /**
  * Synchronous accessor with lazy async probe. Returns the last known result,
@@ -13,11 +38,16 @@ let _probePromise: Promise<boolean> | undefined;
  * @returns {boolean} last known support value (updates asynchronously)
  */
 export function isBatchManagerSupported(): boolean {
-    if (_cachedBatchManagerSupport !== undefined) return _cachedBatchManagerSupport;
+    if (_cachedBatchManagerSupport !== undefined) {
+        publishBatchSupportDiagnostic("cached", {supported: _cachedBatchManagerSupport});
+        return _cachedBatchManagerSupport;
+    }
     if (!_probePromise) {
+        publishBatchSupportDiagnostic("probe-scheduled");
         _probePromise = _probeBatchManagerSupport();
     }
     _cachedBatchManagerSupport = false;
+    publishBatchSupportDiagnostic("probe-pending", {supported: false});
     return _cachedBatchManagerSupport;
 }
 
@@ -25,34 +55,51 @@ export function isBatchManagerSupported(): boolean {
  * Explicit async probe for callers that can await.
  * @returns {Promise<boolean>} resolves to true when batching is supported
  */
-async function isBatchManagerSupportedAsync(): Promise<boolean> {
-    if (_cachedBatchManagerSupport !== undefined) return _cachedBatchManagerSupport;
-    if (!_probePromise) _probePromise = _probeBatchManagerSupport();
+export async function isBatchManagerSupportedAsync(): Promise<boolean> {
+    if (_probePromise) return _probePromise;
+    if (_cachedBatchManagerSupport !== undefined) {
+        publishBatchSupportDiagnostic("cached", {supported: _cachedBatchManagerSupport});
+        return _cachedBatchManagerSupport;
+    }
+    publishBatchSupportDiagnostic("probe-scheduled");
+    _probePromise = _probeBatchManagerSupport();
     return _probePromise;
 }
-void isBatchManagerSupportedAsync();
 
 /**
  * Internal: perform an offscreen WebGPU render to validate BatchManager path.
  * @returns {Promise<boolean>} true if 100 boxes with unique colors are rendered correctly via batched path
  */
 async function _probeBatchManagerSupport(): Promise<boolean> {
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    publishBatchSupportDiagnostic("probe-start");
     try {
+        // Avoid importing/initializing a WebGPURenderer on WebGL-only devices.
+        // In Chromium without an adapter, renderer.init() can monopolize the
+        // main thread for tens of seconds while the editor is trying to paint.
+        const gpu = typeof navigator !== "undefined" ? navigator.gpu : undefined;
+        if (!gpu || typeof gpu.requestAdapter !== "function") {
+            publishBatchSupportDiagnostic("probe-no-gpu", {durationMs: elapsedSince(startedAt)});
+            _cachedBatchManagerSupport = false;
+            return false;
+        }
+        const adapter = await gpu.requestAdapter();
+        if (!adapter) {
+            publishBatchSupportDiagnostic("probe-no-adapter", {durationMs: elapsedSince(startedAt)});
+            _cachedBatchManagerSupport = false;
+            return false;
+        }
+        publishBatchSupportDiagnostic("adapter-ready", {durationMs: elapsedSince(startedAt)});
+
+        const {WebGPURenderer} = await import("three/webgpu");
         const canvas = document.createElement("canvas");
         const size = 64;
         canvas.width = size;
         canvas.height = size;
 
-        canvas.style.position = "fixed";
-        canvas.style.left = "0";
-        canvas.style.top = "0";
-        canvas.style.zIndex = "10000";
-        canvas.style.border = "2px solid red";
-        canvas.style.backgroundColor = "white";
-        // document.body.appendChild(canvas);
-
         const renderer = new WebGPURenderer({canvas});
         await renderer.init();
+        publishBatchSupportDiagnostic("renderer-ready", {durationMs: elapsedSince(startedAt)});
 
         const scene = new THREE.Scene();
         scene.name = "BatchManagerProbeScene";
@@ -93,7 +140,9 @@ async function _probeBatchManagerSupport(): Promise<boolean> {
         try {
             const bm = new BatchManager(scene);
             bm.batchSceneMeshes();
+            publishBatchSupportDiagnostic("batch-scene-ready", {durationMs: elapsedSince(startedAt)});
         } catch (err) {
+            publishBatchSupportDiagnostic("batch-scene-failed", {durationMs: elapsedSince(startedAt), error: String(err)});
             console.error("[BatchManagerSupport] BatchManager failed:", err);
             try {
                 renderer.dispose();
@@ -139,6 +188,12 @@ async function _probeBatchManagerSupport(): Promise<boolean> {
 
         const colorThreshold = 100;
         const colorsFound = foundColors.size >= colorThreshold;
+        publishBatchSupportDiagnostic("probe-colors", {
+            durationMs: elapsedSince(startedAt),
+            colors: foundColors.size,
+            threshold: colorThreshold,
+            supported: colorsFound,
+        });
         console.log(`[BatchManagerSupport] Found ${foundColors.size}/${colorThreshold} colors. ${colorsFound ? "PASSED" : "FAILED"}`);
 
         try {
@@ -166,8 +221,10 @@ async function _probeBatchManagerSupport(): Promise<boolean> {
         }
 
         _cachedBatchManagerSupport = colorsFound;
+        publishBatchSupportDiagnostic("probe-complete", {durationMs: elapsedSince(startedAt), supported: colorsFound});
         return _cachedBatchManagerSupport;
     } catch (err) {
+        publishBatchSupportDiagnostic("probe-failed", {durationMs: elapsedSince(startedAt), error: String(err)});
         console.error("[BatchManagerSupport] Probe failed with error:", err);
         _cachedBatchManagerSupport = false;
         return false;

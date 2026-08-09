@@ -1,14 +1,13 @@
 
-import * as THREE from "three";
-import { Matrix4, Object3D } from "three";
-
+import {Euler, Matrix4, Object3D, Quaternion, Scene, Vector3} from "three";
+import type {EulerOrder} from "three";
 /**
  * Transform data structure containing position, quaternion, and scale
  */
 export interface TransformData {
-    position: THREE.Vector3;
-    quaternion: THREE.Quaternion;
-    scale: THREE.Vector3;
+    position: Vector3;
+    quaternion: Quaternion;
+    scale: Vector3;
 }
 
 /**
@@ -16,17 +15,18 @@ export interface TransformData {
  */
 export class TransformUtils {
     // Reusable objects to avoid memory allocation in hot paths
-    private static readonly _tempMatrix = new THREE.Matrix4();
-    private static readonly _tempPosition = new THREE.Vector3();
-    private static readonly _tempQuaternion = new THREE.Quaternion();
-    private static readonly _tempScale = new THREE.Vector3();
+    private static readonly _tempMatrix = new Matrix4();
+    private static readonly _tempMatrix2 = new Matrix4();
+    private static readonly _tempPosition = new Vector3();
+    private static readonly _tempQuaternion = new Quaternion();
+    private static readonly _tempScale = new Vector3();
 
     /**
      * Get world transform data for an object
      * @param object - The Three.js object
      * @returns World transform data containing position, quaternion, and scale
      */
-    static getWorldTransform(object: THREE.Object3D): TransformData {
+    static getWorldTransform(object: Object3D, target?: TransformData): TransformData {
         // Update matrices to ensure accurate world transforms
         object.updateMatrixWorld(true);
 
@@ -37,11 +37,12 @@ export class TransformUtils {
             this._tempScale,
         );
 
-        return {
-            position: this._tempPosition.clone(),
-            quaternion: this._tempQuaternion.clone(),
-            scale: this._tempScale.clone(),
-        };
+        return this.copyTransformComponentsToTarget(
+            this._tempPosition,
+            this._tempQuaternion,
+            this._tempScale,
+            target,
+        );
     }
 
     /**
@@ -50,7 +51,7 @@ export class TransformUtils {
      * @param worldTransform - World transform data
      * @returns Local transform data
      */
-    static worldToLocalTransform(object: THREE.Object3D, worldTransform: TransformData): TransformData {
+    static worldToLocalTransform(object: Object3D, worldTransform: TransformData): TransformData {
         if (!this.isChildObject(object)) {
             // For root objects, world and local coordinates are the same
             return {
@@ -62,19 +63,19 @@ export class TransformUtils {
 
         // For child objects, convert world to local coordinates
         const parentMatrixInverse = this._tempMatrix.copy(object.parent!.matrixWorld).invert();
-        
+
         // Create world matrix from transform components
-        const worldMatrix = new THREE.Matrix4().compose(
+        const worldMatrix = this._tempMatrix2.compose(
             worldTransform.position,
             worldTransform.quaternion,
             worldTransform.scale,
         );
 
         // Convert to local matrix: localMatrix = parentMatrixInverse * worldMatrix
-        const localMatrix = new THREE.Matrix4().multiplyMatrices(parentMatrixInverse, worldMatrix);
+        parentMatrixInverse.multiply(worldMatrix);
 
         // Extract local transform components
-        localMatrix.decompose(this._tempPosition, this._tempQuaternion, this._tempScale);
+        parentMatrixInverse.decompose(this._tempPosition, this._tempQuaternion, this._tempScale);
 
         return {
             position: this._tempPosition.clone(),
@@ -89,7 +90,7 @@ export class TransformUtils {
      * @param localTransform - Local transform data
      * @returns World transform data
      */
-    static localToWorldTransform(object: THREE.Object3D, localTransform: TransformData): TransformData {
+    static localToWorldTransform(object: Object3D, localTransform: TransformData): TransformData {
         if (!this.isChildObject(object)) {
             // For root objects, local and world coordinates are the same
             return {
@@ -107,7 +108,10 @@ export class TransformUtils {
         );
 
         // Convert to world matrix: worldMatrix = parentMatrix * localMatrix
-        const worldMatrix = new THREE.Matrix4().multiplyMatrices(object.parent!.matrixWorld, localMatrix);
+        const worldMatrix = this._tempMatrix2.multiplyMatrices(
+            object.parent!.matrixWorld,
+            localMatrix,
+        );
 
         // Extract world transform components
         worldMatrix.decompose(this._tempPosition, this._tempQuaternion, this._tempScale);
@@ -124,7 +128,7 @@ export class TransformUtils {
      * @param object - The target object
      * @param worldTransform - World transform data to apply
      */
-    static applyWorldTransform(object: THREE.Object3D, worldTransform: TransformData): void {
+    static applyWorldTransform(object: Object3D, worldTransform: TransformData): void {
         if (!object || !worldTransform) {
             return;
         }
@@ -132,7 +136,7 @@ export class TransformUtils {
         if (this.isChildObject(object)) {
             // For child objects, convert world coordinates to local coordinates
             const localTransform = this.worldToLocalTransform(object, worldTransform);
-            
+
             // Apply local transforms
             object.position.copy(localTransform.position);
             object.quaternion.copy(localTransform.quaternion);
@@ -152,7 +156,7 @@ export class TransformUtils {
      * @param object - The target object
      * @param localTransform - Local transform data to apply
      */
-    static applyLocalTransform(object: THREE.Object3D, localTransform: TransformData): void {
+    static applyLocalTransform(object: Object3D, localTransform: TransformData): void {
         if (!object || !localTransform) {
             return;
         }
@@ -169,22 +173,21 @@ export class TransformUtils {
      * @param current - Current transform state
      * @returns Delta transformation matrix
      */
-    static calculateDeltaMatrix(initial: TransformData, current: TransformData): THREE.Matrix4 {
+    static calculateDeltaMatrix(initial: TransformData, current: TransformData, target?: Matrix4): Matrix4 {
         // Create matrices from transform data
-        const initialMatrix = new THREE.Matrix4().compose(
+        const initialMatrix = this._tempMatrix.compose(
             initial.position,
             initial.quaternion,
             initial.scale,
         );
 
-        const currentMatrix = new THREE.Matrix4().compose(
+        const deltaMatrix = (target || new Matrix4()).compose(
             current.position,
             current.quaternion,
             current.scale,
         );
 
         // Calculate delta: deltaMatrix = currentMatrix * initialMatrix^-1
-        const deltaMatrix = currentMatrix.clone();
         deltaMatrix.multiply(initialMatrix.invert());
 
         return deltaMatrix;
@@ -196,7 +199,7 @@ export class TransformUtils {
      * @param deltaMatrix - Delta transformation matrix
      * @returns New transform after applying delta
      */
-    static applyDeltaTransform(baseTransform: TransformData, deltaMatrix: THREE.Matrix4): TransformData {
+    static applyDeltaTransform(baseTransform: TransformData, deltaMatrix: Matrix4): TransformData {
         // Create matrix from base transform
         const baseMatrix = this._tempMatrix.compose(
             baseTransform.position,
@@ -225,9 +228,9 @@ export class TransformUtils {
      * @returns Transform data structure
      */
     static createTransform(
-        position: THREE.Vector3,
-        quaternion: THREE.Quaternion,
-        scale: THREE.Vector3,
+        position: Vector3,
+        quaternion: Quaternion,
+        scale: Vector3,
     ): TransformData {
         return {
             position: position.clone(),
@@ -249,17 +252,37 @@ export class TransformUtils {
         };
     }
 
+    private static copyTransformComponentsToTarget(
+        position: Vector3,
+        quaternion: Quaternion,
+        scale: Vector3,
+        target?: TransformData,
+    ): TransformData {
+        if (target) {
+            target.position.copy(position);
+            target.quaternion.copy(quaternion);
+            target.scale.copy(scale);
+            return target;
+        }
+
+        return {
+            position: position.clone(),
+            quaternion: quaternion.clone(),
+            scale: scale.clone(),
+        };
+    }
+
     /**
      * Check if an object is a child of another object (not a root object)
      * @param object - The Three.js object to check
      * @returns True if the object is a child of another object, false if it is a root object
      */
-    private static isChildObject(object: THREE.Object3D): boolean {
+    private static isChildObject(object: Object3D): boolean {
         if (!object || !object.parent) {
             return false;
         }
 
-        return !(object.parent instanceof THREE.Scene);
+        return !(object.parent instanceof Scene);
     }
 
     /**
@@ -268,8 +291,8 @@ export class TransformUtils {
      * @param order - Euler order (default: 'XYZ')
      * @returns Euler angles
      */
-    static quaternionToEuler(quaternion: THREE.Quaternion, order: THREE.EulerOrder = 'XYZ'): THREE.Euler {
-        return new THREE.Euler().setFromQuaternion(quaternion, order);
+    static quaternionToEuler(quaternion: Quaternion, order: EulerOrder = 'XYZ'): Euler {
+        return new Euler().setFromQuaternion(quaternion, order);
     }
 
     /**
@@ -277,11 +300,11 @@ export class TransformUtils {
      * @param euler - Input Euler angles
      * @returns Quaternion
      */
-    static eulerToQuaternion(euler: THREE.Euler): THREE.Quaternion {
-        return new THREE.Quaternion().setFromEuler(euler);
+    static eulerToQuaternion(euler: Euler): Quaternion {
+        return new Quaternion().setFromEuler(euler);
     }
   
-    static setWorldTransform(object: Object3D, matrixWorld: Matrix4) {
+    static setWorldTransform(object: Object3D, matrixWorld: Matrix4): void {
         object.matrixWorld.copy(matrixWorld);
 
         // Set object.matrix
@@ -295,7 +318,19 @@ export class TransformUtils {
         }
 
         object.matrix.decompose(object.position, object.quaternion, object.scale);
-        object.matrixWorldNeedsUpdate = false;
+        TransformUtils.markWorldMatrixDirty(object);
+    }
+
+    static markWorldMatrixDirty(object: Object3D): void {
+        object.matrixWorldNeedsUpdate = true;
+
+        const children = object.children;
+        for (let i = 0, l = children.length; i < l; i++) {
+            const child = children[i];
+            if (child) {
+                TransformUtils.markWorldMatrixDirty(child);
+            }
+        }
     }
 }
 

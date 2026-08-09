@@ -8,26 +8,14 @@ import {
     LoginContainer,
     LoginForm,
     LoginHeader,
-    LoginButton,
     InputWrapper,
     ReminderMessage,
+    SubmitBtn,
 } from "./InGameLogin.style";
-import {getAuthProvider, type IAuthUser} from "../../../auth";
 import EventBus, { IN_GAME_EVENTS } from "../../../behaviors/event/EventBus";
 import global from "../../../global";
 import { IUser } from "../../../userManagement/types";
-import appleicon from "../../../v2/assets/apple-icon.svg";
-import googleicon from "../../../v2/assets/google-icon.svg";
-
-interface ButtonConfig {
-    component: React.FC<any>;
-    text: string;
-    icon?: string;
-    action: () => void;
-    $apple?: boolean;
-    $guest?: boolean;
-    or?: boolean;
-}
+import {OSS_LOCAL_USER_ID} from "@web-shared/ossUser";
 
 export type LoginProviderType = "email" | "google" | "apple" | "guest" | "discord";
 
@@ -46,6 +34,8 @@ interface Props {
     setIsGuest: React.Dispatch<React.SetStateAction<boolean>>
 }
 
+const OSS_DUMMY_TOKEN = "stemstudio-token";
+
 export const InGameLogin = ({ isReminder, cleanupPopup, setIsGuest }: Props) => {
     const {t} = useTranslation();
 
@@ -60,96 +50,29 @@ export const InGameLogin = ({ isReminder, cleanupPopup, setIsGuest }: Props) => 
         return `guest${randomNumber}`;
     };
 
-
-    const appleLogin = async () => {
-        const authUser = await getAuthProvider().signInWithOAuth("apple.com", ["name", "email"]);
-        if (!authUser) {
-            throw new Error("No user returned from login");
-        }
-
-        const idToken = await authUser.getIdToken();
-        onAuthCompleted(authUser, idToken);
-
-        // MVP - pass token to game. Later replace with backend-issued access token
-        const userData: GameLoginData = {
-            username: authUser.displayName || authUser.email?.split("@")[0] || generateGuestUsername(),
-            email: authUser.email || null,
-            provider: "google", //TODO: switch back to "apple" when Farm game is updated
-            token: idToken,
-            isGuest: false,
-            avatarUrl: authUser.photoURL,
-        };
-
-        closePopup(userData);
-    };
-
-    const googleLogin = async () => {
-        const provider = getAuthProvider();
-        try {
-            const current = provider.getCurrentUser();
-
-            if (current && !current.isAnonymous) {
-                const idToken = await current.getIdToken();
-                onAuthCompleted(current, idToken);
-                closePopup({
-                    username: current.displayName || current.email?.split("@")[0] || generateGuestUsername(),
-                    email: current.email || null,
-                    provider: "google",
-                    token: idToken,
-                    isGuest: false,
-                    avatarUrl: current.photoURL,
-                });
-                return;
-            }
-
-            const authUser = await provider.signInWithGoogle();
-
-            if (!authUser) {
-                throw new Error("No user returned from login");
-            }
-
-            const idToken = await authUser.getIdToken();
-            onAuthCompleted(authUser, idToken);
-
-            // MVP - pass token to game. Later replace with backend-issued access token
-            const userData: GameLoginData = {
-                username: authUser.displayName || authUser.email?.split("@")[0] || generateGuestUsername(),
-                email: authUser.email || null,
-                provider: "google",
-                token: idToken,
-                isGuest: false,
-                avatarUrl: authUser.photoURL,
-
-            };
-
-            closePopup(userData);
-        } catch (error) {
-            console.error(`Google login failed:`, error);
-        }
-    };
-
-    const onAuthCompleted = (authUser: IAuthUser, token: string) => {
-        //set user and token
+    const continueAsLocalPlayer = () => {
+        const username = global.app?.authManager.getUserName() || "local";
+        const token = global.app?.authManager.getAuthToken() || OSS_DUMMY_TOKEN;
         const user: IUser = {
-            id: authUser.uid,
-            name: authUser.displayName ?? "guest",
-            email: authUser.email,
-            firebaseId: authUser.uid,
+            id: OSS_LOCAL_USER_ID,
+            name: username || generateGuestUsername(),
+            email: null,
+            firebaseId: OSS_LOCAL_USER_ID,
             avatar: "",
-            username: authUser.displayName,
-            token: token,
-            isGuest: authUser.isAnonymous,
-            platform: "firebase",
+            username,
+            token,
+            isGuest: false,
+            platform: "anonymous",
         };
-        console.log("[IN_GAME_AUTH] setting user and token", authUser, user, token);
         global.app?.authManager.setUserAndToken(user, token);
+        closePopup({
+            username,
+            email: null,
+            provider: "guest",
+            token,
+            isGuest: false,
+        });
     };
-    //Removed guest button.
-    const BUTTONS: ButtonConfig[] = [
-        { component: LoginButton, text: t("Login with Google"), icon: googleicon, action: googleLogin },
-        { component: LoginButton, text: t("Login with Apple"), icon: appleicon, $apple: true, action: appleLogin },
-        // { component: SubmitBtn, text: "LOGIN AS GUEST", $guest: true, action: guestLogin },
-    ];
 
     return (
         <UILogin>
@@ -173,30 +96,13 @@ export const InGameLogin = ({ isReminder, cleanupPopup, setIsGuest }: Props) => 
                     <InputWrapper>
                         {isReminder &&
                             <ReminderMessage>
-                                {t("Not signed in")} <br /> {t("Log in now to save garden progress")}
+                                {t("Local progress is stored on this device.")}
                             </ReminderMessage>
                         }
                     </InputWrapper>
-                    {BUTTONS.map((btn, index) => {
-                        const Component = btn.component;
-                        if (isReminder && btn.$guest) return;
-                        return (
-                            <React.Fragment key={index}>
-                                <Component
-                                    $apple={btn.$apple}
-                                    $guest={btn.$guest}
-                                    className='no-highligh'
-                                    onClick={btn.action}
-                                >
-                                    {btn.icon && <img src={btn.icon}
-                                        alt=""
-                                        className="icon"
-                                                 />}
-                                    <span className="btnLabel">{btn.text}</span>
-                                </Component>
-                            </React.Fragment>
-                        );
-                    })}
+                    <SubmitBtn className="no-highlight" onClick={continueAsLocalPlayer}>
+                        <span className="btnLabel">{t("Continue")}</span>
+                    </SubmitBtn>
                 </LoginForm>
             </LoginContainer>
         </UILogin>

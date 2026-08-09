@@ -17,7 +17,7 @@ type ProviderStatus struct {
 
 // CapabilitiesResponse is the shape returned by the capabilities endpoint.
 type CapabilitiesResponse struct {
-	BuildMode string                    `json:"buildMode"` // "integrated" | "oss"
+	BuildMode string                    `json:"buildMode"` // "oss"
 	Providers map[string]ProviderStatus `json:"providers"`
 }
 
@@ -42,11 +42,6 @@ func init() {
 // Used by the editor to decide which AI features to enable and which to gate
 // behind a "configure key" prompt (OSS / BYOK flow).
 func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
-	buildMode := os.Getenv("BUILD_MODE")
-	if buildMode == "" {
-		buildMode = "integrated"
-	}
-
 	providers := make(map[string]ProviderStatus, len(providerEnvVars))
 	for name, envVars := range providerEnvVars {
 		status := ProviderStatus{Status: "missing-key", Source: ""}
@@ -70,7 +65,7 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(CapabilitiesResponse{
-		BuildMode: buildMode,
+		BuildMode: "oss",
 		Providers: providers,
 	})
 }

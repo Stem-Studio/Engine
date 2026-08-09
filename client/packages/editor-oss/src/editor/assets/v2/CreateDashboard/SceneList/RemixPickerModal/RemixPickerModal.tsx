@@ -14,7 +14,7 @@ import {
     RemixDate,
     Footer,
 } from "./RemixPickerModal.style";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {useEscapeDismiss} from "../../../common/hooks/useEscapeDismiss";
 import {StyledButton} from "../../../common/StyledButton";
 import scenePlaceholder from "../../../icons/stem-studio-project-placeholder.png";

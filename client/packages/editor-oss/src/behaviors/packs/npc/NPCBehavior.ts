@@ -54,7 +54,9 @@ class NPCBehavior extends BehaviorBase {
     //animation
     currentAnimationName: string = "";
     animationController: AnimationController | null = null;
-    private playerCheckInterval: NodeJS.Timeout | null = null;
+    private readonly yAxis = new THREE.Vector3(0, 1, 0);
+    private readonly forwardDirection = new THREE.Vector3();
+    private readonly targetDirection = new THREE.Vector3();
 
     init(game: GameManager) {
         this.game = game;
@@ -68,48 +70,37 @@ class NPCBehavior extends BehaviorBase {
         CameraUtils.disableCameraCollision(this.target);
         this.originalPosition.copy(this.target.position);
 
-        // Wait for player to be available
-        this.waitForPlayer();
+        this.resolvePlayer();
     }
 
     onRemoved(): void {
-        // Clear the interval when behavior is removed
-        if (this.playerCheckInterval) {
-            clearInterval(this.playerCheckInterval);
-            this.playerCheckInterval = null;
-        }
+        this.player = null;
     }
 
     onReset() {}
 
-    private waitForPlayer(): void {
-        if (this.game?.player) {
-            this.player = this.game.player;
-            this.onPlayerSet();
-            return;
+    private resolvePlayer(): boolean {
+        const player = this.game?.player;
+        if (!player) {
+            return this.player !== null;
         }
 
-        this.playerCheckInterval = setInterval(() => {
-            if (this.game?.player) {
-                this.player = this.game.player;
-                this.onPlayerSet();
+        if (this.player !== player) {
+            this.player = player;
+            this.onPlayerSet();
+        }
 
-                if (this.playerCheckInterval) {
-                    clearInterval(this.playerCheckInterval);
-                    this.playerCheckInterval = null;
-                }
-            }
-        }, 100);
+        return true;
     }
 
     update(deltaTime: number) {
-        if (!this.player) {
+        if (!this.resolvePlayer() || !this.player) {
             return;
         }
 
         this.player.getWorldPosition(this.playerPosition);
 
-        const playerMoved = this.playerPosition.distanceTo(this.prevPlayerPosition) > 0;
+        const playerMoved = this.playerPosition.distanceToSquared(this.prevPlayerPosition) > 0;
         if (playerMoved) {
             this.prevPlayerPosition.copy(this.playerPosition);
             this.lastPlayerMoveTime = Date.now();
@@ -192,25 +183,23 @@ class NPCBehavior extends BehaviorBase {
             );
         }
 
-        this.currentRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), targetRotation);
+        this.currentRotation.setFromAxisAngle(this.yAxis, targetRotation);
 
         // Apply physics movement
         this.physics!.setRotation(this.target.uuid, this.currentRotation);
 
-        const forwardDirection = new THREE.Vector3(0, 0, 1);
-        forwardDirection.applyQuaternion(this.currentRotation);
-        forwardDirection.normalize();
+        const forwardDirection = this.forwardDirection
+            .set(0, 0, 1)
+            .applyQuaternion(this.currentRotation)
+            .normalize()
+            .multiplyScalar(this.speed);
+        forwardDirection.y -= this.speed / 2;
 
-        const forwardVelocity = forwardDirection.multiplyScalar(this.speed);
-
-        const downwardVelocity = new THREE.Vector3(0, -this.speed / 2, 0);
-        const totalVelocity = forwardVelocity.add(downwardVelocity);
-
-        this.physics!.setLinearVelocity(this.target.uuid, totalVelocity);
+        this.physics!.setLinearVelocity(this.target.uuid, forwardDirection);
     }
 
     private onPlayerSet() {
-        this.prevPlayerPosition.copy(this.player!.position);
+        this.player!.getWorldPosition(this.prevPlayerPosition);
     }
 
     private isDead() {
@@ -258,7 +247,7 @@ class NPCBehavior extends BehaviorBase {
     private moveInRandomDirection = (directionDuration: number, deltaTime: number) => {
         if (this.moveTimer <= 0) {
             this.moveTimer = Math.random() * directionDuration + directionDuration;
-            this.moveDirection = new THREE.Vector3(Math.random() * 2 - 1, 0, Math.random() * 2 - 1).normalize();
+            this.moveDirection.set(Math.random() * 2 - 1, 0, Math.random() * 2 - 1).normalize();
         }
         this.moveTimer -= deltaTime;
     };
@@ -270,14 +259,8 @@ class NPCBehavior extends BehaviorBase {
     npcApproach(deltaTime: number) {
         this.playAnimation(this.attributes.walkAnimation);
 
-        console.log(
-            "Distance to original position:",
-            this.distanceToOriginalPosition,
-            "Roam Distance:",
-            this.attributes.roamDistance,
-        );
         if (this.distanceToOriginalPosition > this.attributes.roamDistance) {
-            this.moveDirection = this.originalPosition.clone().sub(this.target.position).normalize();
+            this.moveDirection.copy(this.originalPosition).sub(this.target.position).normalize();
         } else {
             this.moveInRandomDirection(this.directionDuration, deltaTime);
         }
@@ -286,7 +269,7 @@ class NPCBehavior extends BehaviorBase {
     npcRetreat() {
         this.playAnimation(this.attributes.walkAnimation);
 
-        this.moveDirection = new THREE.Vector3(
+        this.moveDirection.set(
             this.target.position.x - this.playerPosition.x,
             0,
             this.target.position.z - this.playerPosition.z,
@@ -298,7 +281,7 @@ class NPCBehavior extends BehaviorBase {
     npcEngage() {
         this.playAnimation(this.attributes.attackingAnimation);
 
-        const targetDirection = new THREE.Vector3(
+        const targetDirection = this.targetDirection.set(
             this.playerPosition.x - this.target.position.x,
             0,
             this.playerPosition.z - this.target.position.z,
@@ -315,17 +298,14 @@ class NPCBehavior extends BehaviorBase {
 
     smoothDirectionChange(targetDirection: THREE.Vector3) {
         const smoothingFactor = this.smoothingFactor;
-        this.moveDirection = this.moveDirection.lerp(targetDirection, smoothingFactor);
+        this.moveDirection.lerp(targetDirection, smoothingFactor);
 
         const targetRotation = Math.atan2(this.moveDirection.x, this.moveDirection.z);
         this.target.rotation.y = THREE.MathUtils.lerp(this.target.rotation.y, targetRotation, smoothingFactor);
     }
 
     dispose = () => {
-        if (this.playerCheckInterval) {
-            clearInterval(this.playerCheckInterval);
-            this.playerCheckInterval = null;
-        }
+        this.player = null;
     };
 }
 

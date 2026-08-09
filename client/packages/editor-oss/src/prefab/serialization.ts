@@ -19,6 +19,7 @@ import BehaviorData from "../behaviors/BehaviorData";
 import type {LambdaComponentData} from "../lambdas/Lambda";
 import Converter from "../serialization/Converter";
 import {cloneObject, processChildData} from "../utils/ObjectUtils";
+import {traverseObjectDepthFirst} from "../utils/SceneTraverser";
 
 export type SerializePrefabResult = {
     data: string;
@@ -68,7 +69,7 @@ export const serializePrefab = (object: Object3D): SerializePrefabResult => {
 
     // Generate persistent UUIDs for each behavior and lambda component (if they
     // don't have one). If they already have one, we want to maintain the existing UUID.
-    clone.traverse(child => {
+    traverseObjectDepthFirst(clone, child => {
         if (child.userData?.behaviors) {
             for (const behavior of child.userData.behaviors as BehaviorData[]) {
                 if (!behavior.prefabBehaviorUuid) {
@@ -158,7 +159,7 @@ export const deserializePrefab = async (
     // tracking old-to-new mappings so we can remap object attribute references.
     const uuidMap = new Map<string, string>();
 
-    prefab.traverse(object => {
+    traverseObjectDepthFirst(prefab, object => {
         const oldUuid = object.uuid;
         object.uuid = MathUtils.generateUUID();
         uuidMap.set(oldUuid, object.uuid);

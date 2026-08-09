@@ -17,6 +17,7 @@ import {BehaviorConfig} from "../../editor/behaviors/BehaviorConfig";
 import {createBehavior, createBehaviorRevision} from "../../editor/behaviors/util";
 import EngineRuntime from "../../EngineRuntime";
 import global from "../../global";
+import {findObjectByUuidOrNameDepthFirst, findObjectDepthFirst} from "../../utils/SceneTraverser";
 import {queryClient} from "@web-shared/queryClient";
 import {CommandResult} from "../types/ACPTypes";
 import {getObjectBaseMetaData} from "../utils/serialization";
@@ -359,13 +360,11 @@ export class BehaviorHandlers {
         // in the scene, skip silently instead of showing an error toast.
         const bhvConfig = this.engine.editor?.behaviorConfigRegistry?.getConfig(resolvedBehaviorId);
         if (bhvConfig?.isSingleton) {
-            let alreadyInScene = false;
-            this.engine.editor?.scene.traverse((child: THREE.Object3D) => {
+            const scene = this.engine.editor?.scene;
+            const alreadyInScene = scene ? findObjectDepthFirst(scene, child => {
                 const behaviors: Array<Record<string, unknown>> | undefined = child.userData.behaviors;
-                if (behaviors?.some(b => b.id === resolvedBehaviorId || b.id === behaviorId)) {
-                    alreadyInScene = true;
-                }
-            });
+                return behaviors?.some(b => b.id === resolvedBehaviorId || b.id === behaviorId) ?? false;
+            }) !== null : false;
             if (alreadyInScene) {
                 return {
                     status: "success",
@@ -828,15 +827,7 @@ export class BehaviorHandlers {
     }
 
     private findObject(identifier: string): THREE.Object3D | null {
-        // Try by UUID first
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-
-        // Try by name if UUID search fails
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
-
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
     }
 
     private validateConfigAttributes = (attributesData?: Record<string, unknown>) => {

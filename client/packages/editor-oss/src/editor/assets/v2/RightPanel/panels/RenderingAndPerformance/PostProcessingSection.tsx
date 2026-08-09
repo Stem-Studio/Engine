@@ -4,6 +4,7 @@ import styled from "styled-components";
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
 import { POST_PROCESSING_DEFAULTS } from "../../../../../../render/postprocessing/defaults";
+import { normalizePostProcessingConfig } from "../../../../../../render/postprocessing/normalizePostProcessingConfig";
 import { showToast } from "@stem/editor-oss/showToast";
 import { CollapsibleEditorSection } from "../../common/CollapsibleEditorSection/CollapsibleEditorSection";
 import { NumericInputRow } from "../../common/NumericInputRow";
@@ -172,8 +173,6 @@ const AssetInfo = styled.div`
 const AO_ADVANCED_DEFAULTS = {
     resolutionScale: POST_PROCESSING_DEFAULTS.ao.resolutionScale,
     thickness: POST_PROCESSING_DEFAULTS.ao.thickness,
-    distanceExponent: POST_PROCESSING_DEFAULTS.ao.distanceExponent,
-    distanceFallOff: POST_PROCESSING_DEFAULTS.ao.distanceFallOff,
 };
 
 /**
@@ -203,43 +202,7 @@ export default function PostProcessingSection() {
     }, [app?.editor?.scene?.userData?.postProcessing]);
 
     const mergedPP = useMemo(() => {
-        const pp = postProcessing || {};
-        return {
-            ...POST_PROCESSING_DEFAULTS,
-            ...pp,
-            ao: {
-                ...POST_PROCESSING_DEFAULTS.ao,
-                ...pp.ao ?? pp.ssao ?? {},
-            },
-            bloom: {
-                ...POST_PROCESSING_DEFAULTS.bloom,
-                ...pp.bloom ?? {},
-            },
-            ssr: {
-                ...POST_PROCESSING_DEFAULTS.ssr,
-                ...pp.ssr ?? {},
-            },
-            outline: {
-                ...POST_PROCESSING_DEFAULTS.outline,
-                ...pp.outline ?? {},
-            },
-            dof: {
-                ...POST_PROCESSING_DEFAULTS.dof,
-                ...pp.dof ?? {},
-            },
-            lut: {
-                ...POST_PROCESSING_DEFAULTS.lut,
-                ...pp.lut ?? {},
-            },
-            film: {
-                ...POST_PROCESSING_DEFAULTS.film,
-                ...pp.film ?? {},
-            },
-            chromaticAberration: {
-                ...POST_PROCESSING_DEFAULTS.chromaticAberration,
-                ...pp.chromaticAberration ?? {},
-            },
-        };
+        return normalizePostProcessingConfig(postProcessing);
     }, [postProcessing]);
 
     const handlePostProcessingChange = (key: string, value: any) => {
@@ -433,30 +396,6 @@ export default function PostProcessingSection() {
                         width="90px"
                         $margin="0 0 8px"
                         labelTooltip="Thickness assumption used to reduce haloing and edge leaks. Typical values are small and scene-dependent. Increase cautiously if thin geometry produces unstable AO."
-                    />
-                    <NumericInputRow
-                        label="Distance Exponent"
-                        value={mergedPP.ao.distanceExponent}
-                        setValue={value => handlePostProcessingChange("ao", { distanceExponent: value })}
-                        min={0}
-                        max={5}
-                        dragStep={0.01}
-                        decimalPlaces={2}
-                        width="90px"
-                        $margin="0 0 8px"
-                        labelTooltip="Shapes how quickly AO influence drops off over distance. Typical values are around 1-2. Higher values keep the effect tighter near contact points."
-                    />
-                    <NumericInputRow
-                        label="Distance FallOff"
-                        value={mergedPP.ao.distanceFallOff}
-                        setValue={value => handlePostProcessingChange("ao", { distanceFallOff: value })}
-                        min={0}
-                        max={10}
-                        dragStep={0.01}
-                        decimalPlaces={2}
-                        width="90px"
-                        $margin="0 0 8px"
-                        labelTooltip="Extra falloff shaping for AO fade. Use small adjustments here; large changes can make the AO feel inconsistent or detached from geometry."
                     />
                     <ResetAdvancedButton onClick={handleResetAOAdvancedSettings}>
                         Reset Advanced to Default

@@ -6,7 +6,7 @@ import {IPhysics} from "../../../physics/common/types";
 import MotionStateHelper from "../../../physics/MotionStateHelper";
 import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
 import {BehaviorBase} from "../../Behavior";
-import CollisionDetector from "../../collisions/CollisionDetector";
+import CollisionDetector, {type CollisionContext} from "../../collisions/CollisionDetector";
 import GameManager from "../../game/GameManager";
 
 export enum CalculationMode {
@@ -22,6 +22,11 @@ class JumppadBehavior extends BehaviorBase {
     private listenerId?: string;
     private lastActivationTime: number = 0;
     private readonly COOLDOWN_MS: number = 500;
+    private readonly impulse = new THREE.Vector3();
+    private readonly angleAxis = new THREE.Vector3(0, 0, 1);
+    private readonly movementDirection = new THREE.Vector3();
+    private readonly padForward = new THREE.Vector3();
+    private readonly crossDirection = new THREE.Vector3();
 
     init(game: GameManager) {
         this.game = game;
@@ -41,7 +46,7 @@ class JumppadBehavior extends BehaviorBase {
 
     onReset() {}
 
-    onCollision() {
+    onCollision(context?: CollisionContext) {
         if (this.attributes.strength <= 0 || !this.target || this.isPaused) {
             return;
         }
@@ -52,7 +57,7 @@ class JumppadBehavior extends BehaviorBase {
             return;
         }
 
-        const object = this.game?.player; // TODO: get collision object instead of player
+        const object = context?.other ?? this.game?.player;
 
         if (!object || !object.userData.physics?.enabled) {
             return;
@@ -68,16 +73,14 @@ class JumppadBehavior extends BehaviorBase {
         }
 
         const radians = angle * Math.PI / 180;
-        const impulse = new THREE.Vector3(0, 1, 0);
-        impulse.applyAxisAngle(new THREE.Vector3(0, 0, 1), radians);
+        const impulse = this.impulse.set(0, 1, 0);
+        impulse.applyAxisAngle(this.angleAxis, radians);
         impulse.multiplyScalar(strength);
 
         // rotate impulse to match object rotation
-        const quaternion = this.target.quaternion.clone();
-        impulse.applyQuaternion(quaternion);
+        impulse.applyQuaternion(this.target.quaternion);
 
-        //apply impulse to the player object
-        //TODO: MP support is needed for multiple player instances
+        // Apply impulse to the object that actually triggered this collision.
         this.physics?.applyImpulseToPlayer(object.uuid, impulse);
         EventBus.instance.send(IN_GAME_EVENTS.JUMPPAD_ACTIVATED, {
             target: this.target,
@@ -127,17 +130,17 @@ class JumppadBehavior extends BehaviorBase {
                 if (motionState && this.target) {
                     const velocity = motionState.linearVelocity;
                     // Calculate movement direction in world space
-                    const moveDir = new THREE.Vector3(velocity.x, 0, velocity.z);
+                    const moveDir = this.movementDirection.set(velocity.x, 0, velocity.z);
                     if (moveDir.lengthSq() > 0.01) {
                         moveDir.normalize();
                         // Get jump pad's forward direction
-                        const padForward = new THREE.Vector3(0, 0, 1);
+                        const padForward = this.padForward.set(0, 0, 1);
                         padForward.applyQuaternion(this.target.quaternion);
                         padForward.y = 0;
                         padForward.normalize();
                         // Calculate angle between movement and pad forward
                         const dot = moveDir.dot(padForward);
-                        const cross = moveDir.clone().cross(padForward);
+                        const cross = this.crossDirection.copy(moveDir).cross(padForward);
                         const signedAngle = Math.atan2(cross.y, dot) * (180 / Math.PI);
                         // Clamp to allowed range
                         return MathUtils.clamp(signedAngle, minAngle, maxAngle);

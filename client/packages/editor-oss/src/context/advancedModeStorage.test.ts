@@ -48,32 +48,20 @@ describe("advancedModeStorage", () => {
         expect(readProjectAdvancedModePreference("regular-scene")).toBe(true);
     });
 
-    it("defaults AiPromptMode projects to non-advanced when no explicit project preference exists", () => {
+    it("ignores AiPromptMode outside the playground", () => {
         const resolved = resolveAdvancedModePreferenceForProject({
             sceneID: "ai-scene",
             aiPromptMode: true,
         });
 
-        expect(resolved).toEqual({value: false, source: "aiPromptMode"});
-        expect(readProjectAdvancedModePreference("ai-scene")).toBe(false);
-    });
-
-    it("ignores AiPromptMode for OSS projects outside the playground", () => {
-        const resolved = resolveAdvancedModePreferenceForProject({
-            sceneID: "oss-ai-scene",
-            aiPromptMode: true,
-            isOSS: true,
-        });
-
         expect(resolved).toEqual({value: true, source: "default"});
-        expect(readProjectAdvancedModePreference("oss-ai-scene")).toBe(true);
+        expect(readProjectAdvancedModePreference("ai-scene")).toBe(true);
     });
 
-    it("honours AiPromptMode for OSS projects inside the playground", () => {
+    it("honours AiPromptMode inside the playground", () => {
         const resolved = resolveAdvancedModePreferenceForProject({
             sceneID: "playground-ai-scene",
             aiPromptMode: true,
-            isOSS: true,
             isPlayground: true,
         });
 
@@ -85,7 +73,6 @@ describe("advancedModeStorage", () => {
         const resolved = resolveAdvancedModePreferenceForProject({
             sceneID: "playground-keyed-scene",
             aiPromptMode: true,
-            isOSS: true,
             isPlayground: true,
             hasCopilotKeys: true,
         });
@@ -97,7 +84,6 @@ describe("advancedModeStorage", () => {
         const resolved = resolveAdvancedModePreferenceForProject({
             sceneID: "playground-keyless-scene",
             aiPromptMode: true,
-            isOSS: true,
             isPlayground: true,
             hasCopilotKeys: false,
         });

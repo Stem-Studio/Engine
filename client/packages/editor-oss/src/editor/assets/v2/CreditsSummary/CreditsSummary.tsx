@@ -3,7 +3,7 @@ import {toast} from "toastywave";
 
 import {SummaryCard, SummaryRow, ButtonRow, ActionButton} from "./CreditsSummary.style";
 import {getSubscriptionStatus, openBillingPortal, SubscriptionStatus} from "@stem/network/api/stripe";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {isStripeCreditsPurchasingEnabled} from "@stem/editor-oss/utils/featureFlags";
 import {CreditsPurchaseModal} from "../CreditsPurchaseModal/CreditsPurchaseModal";
 import {Heading} from "../CreateDashboard/SettingsPage/SettingsPage.style";

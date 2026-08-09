@@ -1,6 +1,6 @@
-import {DiscordController} from "../userManagement/playerProfile/game-service-controllers";
+import {isInDiscordEnvironment} from "../userManagement/playerProfile/discordEnvironment";
 
-export const REACT_APP_MULTIPLAYER_SERVER_URL = DiscordController.isInDiscord()
+export const REACT_APP_MULTIPLAYER_SERVER_URL = isInDiscordEnvironment()
     ? `wss://${window.location.host}/.proxy/multiplayer`
     : process.env.REACT_APP_MULTIPLAYER_SERVER_URL
       ? process.env.REACT_APP_MULTIPLAYER_SERVER_URL

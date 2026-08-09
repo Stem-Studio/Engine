@@ -203,8 +203,8 @@ export const validateImportJob = (
     } else if (status === 'failed') {
         if (importItem.type === DomainAssetType.AssetTypePrefab) {
             reason = 'The server failed to download or process this stem. ' +
-                'This usually means the stem revision is private/unreleased or belongs to a user ' +
-                'who is not present in the target environment.';
+                'This usually means the stem revision is unavailable in this environment ' +
+                'or its source project cannot be resolved.';
         } else {
             reason = 'The server failed to download or process the asset. ' +
                 'The source URL may be inaccessible or the file may be corrupted.';
@@ -846,26 +846,60 @@ const mapAssetRef = (
     };
 };
 
-const migrateAssetRefRecursive = (
-    container: Record<string, any> | any[],
-    key: string | number,
+const migrateAssetRefsInValue = (
+    root: Record<string, any> | any[],
     assetIdMap: Map<string, string>,
     assetRevisionIdMap: Map<string, string>,
 ): void => {
-    const value = (container as any)[key];
-    if (isAssetRef(value)) {
-        const mapped = mapAssetRef(value, assetIdMap, assetRevisionIdMap);
-        (container as any)[key] = mapped ?? value;
-    } else if (Array.isArray(value)) {
-        value.forEach((_, i) => migrateAssetRefRecursive(value, i, assetIdMap, assetRevisionIdMap));
-    } else if (value && typeof value === "object") {
-        Object.keys(value).forEach(k => migrateAssetRefRecursive(value, k, assetIdMap, assetRevisionIdMap));
+    const stack: Array<{container: Record<string, any> | any[]; key: string | number}> = [];
+    const seen = new WeakSet<object>();
+
+    if (Array.isArray(root)) {
+        for (let i = root.length - 1; i >= 0; i--) {
+            stack.push({container: root, key: i});
+        }
+    } else {
+        const keys = Object.keys(root);
+        for (let i = keys.length - 1; i >= 0; i--) {
+            stack.push({container: root, key: keys[i]!});
+        }
+    }
+
+    while (stack.length > 0) {
+        const {container, key} = stack.pop()!;
+        const value = (container as any)[key];
+        if (isAssetRef(value)) {
+            const mapped = mapAssetRef(value, assetIdMap, assetRevisionIdMap);
+            (container as any)[key] = mapped ?? value;
+            continue;
+        }
+
+        if (!value || typeof value !== "object") {
+            continue;
+        }
+
+        if (seen.has(value)) {
+            continue;
+        }
+        seen.add(value);
+
+        if (Array.isArray(value)) {
+            for (let i = value.length - 1; i >= 0; i--) {
+                stack.push({container: value, key: i});
+            }
+            continue;
+        }
+
+        const keys = Object.keys(value);
+        for (let i = keys.length - 1; i >= 0; i--) {
+            stack.push({container: value, key: keys[i]!});
+        }
     }
 };
 
 /**
  * Migrates asset references within behavior attributes to new IDs.
- * Recurses into nested objects and arrays (e.g. group/array attribute types).
+ * Scans nested objects and arrays (e.g. group/array attribute types).
  *
  * @param behavior - The behavior data containing attributes to migrate
  * @param assetIdMap - Map of old asset ID to new asset ID
@@ -881,9 +915,7 @@ const migrateBehaviorAttributeAssetRefs = (
         return;
     }
 
-    for (const key of Object.keys(attributesData)) {
-        migrateAssetRefRecursive(attributesData, key, assetIdMap, assetRevisionIdMap);
-    }
+    migrateAssetRefsInValue(attributesData, assetIdMap, assetRevisionIdMap);
 };
 
 /**
@@ -954,6 +986,58 @@ const migrateLegacyUserData = (userData: any, assetIdMap: Map<string, string>): 
     return false;
 };
 
+const migrateMaterialAssetIds = (
+    material: Record<string, any> | any[],
+    assetIdMap: Map<string, string>,
+): void => {
+    const stack: unknown[] = [material];
+    const seen = new WeakSet<object>();
+
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current || typeof current !== 'object') {
+            continue;
+        }
+
+        const currentObject = current as Record<string, any> | any[];
+        if (seen.has(currentObject)) {
+            continue;
+        }
+        seen.add(currentObject);
+
+        if (Array.isArray(currentObject)) {
+            for (let i = currentObject.length - 1; i >= 0; i--) {
+                const value = currentObject[i];
+                if (typeof value === 'string') {
+                    const newAssetId = assetIdMap.get(value);
+                    if (newAssetId) {
+                        currentObject[i] = newAssetId;
+                    }
+                } else if (value && typeof value === 'object') {
+                    stack.push(value);
+                }
+            }
+            continue;
+        }
+
+        for (const key of Object.keys(currentObject)) {
+            const value = currentObject[key];
+            if (typeof value === 'string') {
+                const assetId = extractLegacyAssetId(value);
+                const newAssetId = assetIdMap.get(assetId);
+                if (newAssetId) {
+                    currentObject[key] = newAssetId;
+                }
+            } else if (value && typeof value === 'object') {
+                if (key === 'userData') {
+                    migrateLegacyUserData(value, assetIdMap);
+                }
+                stack.push(value);
+            }
+        }
+    }
+};
+
 /**
  * Migrates all asset references in scene data to new IDs.
  *
@@ -1016,7 +1100,7 @@ const migrateAssetRefs = (
                     `  • Asset ID: ${item.modelId}`,
                     `  • Object: ${item.name || item.uuid || 'unknown'}`,
                     ``,
-                    `  This may happen if the model was deleted or belongs to another user.`,
+                    `  This may happen if the model was deleted or is missing from this environment.`,
                 ].join('\n');
                 throw new Error(errorMsg);
             }
@@ -1034,7 +1118,7 @@ const migrateAssetRefs = (
                     `  • Asset ID: ${item.prefabId}`,
                     `  • Object: ${item.name || item.uuid || 'unknown'}`,
                     ``,
-                    `  This may happen if the prefab was deleted or belongs to another user.`,
+                    `  This may happen if the prefab was deleted or is missing from this environment.`,
                 ].join('\n');
                 throw new Error(errorMsg);
             }
@@ -1052,7 +1136,7 @@ const migrateAssetRefs = (
                     `  • Prefab ID: ${oldPrefabId}`,
                     `  • Object: ${item.name || item.uuid || 'unknown'}`,
                     ``,
-                    `  This may happen if the prefab was deleted or belongs to another user.`,
+                    `  This may happen if the prefab was deleted or is missing from this environment.`,
                 ].join('\n');
                 throw new Error(errorMsg);
             }
@@ -1109,43 +1193,9 @@ const migrateAssetRefs = (
             }
         }
 
-        // Migrate material textures (recursively find any asset IDs in materials)
+        // Migrate material textures by scanning nested material payloads.
         if (item.material) {
-            const traverseAndReplace = (obj: any) => {
-                if (!obj || typeof obj !== 'object') return;
-
-                if (Array.isArray(obj)) {
-                    for (let i = 0; i < obj.length; i++) {
-                        const value = obj[i];
-                        if (typeof value === 'string') {
-                            const newAssetId = assetIdMap.get(value);
-                            if (newAssetId) {
-                                obj[i] = newAssetId;
-                            }
-                        } else {
-                            traverseAndReplace(value);
-                        }
-                    }
-                } else {
-                    for (const key in obj) {
-                        const value = obj[key];
-                        if (typeof value === 'string') {
-                            const assetId = extractLegacyAssetId(value);
-                            const newAssetId = assetIdMap.get(assetId);
-                            if (newAssetId) {
-                                obj[key] = newAssetId;
-                            }
-                        } else if (typeof value === 'object' && value !== null) {
-                            if (key === 'userData') {
-                                migrateLegacyUserData(value, assetIdMap);
-                            }
-                            traverseAndReplace(value);
-                        }
-                    }
-                }
-            };
-            
-            traverseAndReplace(item.material);
+            migrateMaterialAssetIds(item.material, assetIdMap);
         }
     }
 };

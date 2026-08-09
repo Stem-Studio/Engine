@@ -5,6 +5,7 @@ import {
     setAssetResolutionContext,
 } from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
 import type {PerspectiveCamera} from "three";
 
 import Converter from "../../../../serialization/Converter";
@@ -185,7 +186,7 @@ const cloneSceneJson = (sceneJson: unknown[]): unknown[] => {
     if (typeof structuredClone === "function") {
         return structuredClone(sceneJson);
     }
-    return JSON.parse(JSON.stringify(sceneJson)) as unknown[];
+    return cloneJsonCompatible(sceneJson);
 };
 
 export const createCopilotPreviewSnapshotFromSceneJson = (

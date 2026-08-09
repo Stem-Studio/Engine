@@ -113,7 +113,7 @@ class Add3dObjectCommand extends Command {
     async redo(): Promise<{message: string; status: "success" | "info" | "error"} | void> {
         if (this.model) {
             const addCommand = new AddObjectCommand(this.model);
-            return addCommand.execute() as {message: string; status: "success" | "error" | "info"};
+            return await addCommand.execute() as {message: string; status: "success" | "error" | "info"};
         } else {
             return await this.execute();
         }

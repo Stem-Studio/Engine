@@ -3,7 +3,7 @@ import {Object3D, Quaternion, Vector3, Euler} from "three";
 import EventBus, { IN_GAME_EVENTS } from "../../../behaviors/event/EventBus";
 import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
 import { BehaviorBase } from "../../Behavior";
-import CollisionDetector from "../../collisions/CollisionDetector";
+import CollisionDetector, {type CollisionContext} from "../../collisions/CollisionDetector";
 import GameManager from "../../game/GameManager";
 import CharacterBehavior from "../character/CharacterBehavior";
 
@@ -15,6 +15,9 @@ class TeleportBehavior extends BehaviorBase {
     private teleportData = {
         target: {} as Object3D,
     };
+    private readonly teleportPosition = new Vector3();
+    private readonly teleportQuaternion = new Quaternion();
+    private readonly teleportEuler = new Euler();
 
     init(game: GameManager) {
         this.game = game;
@@ -32,13 +35,13 @@ class TeleportBehavior extends BehaviorBase {
 
     onReset() {}
 
-    onCollision() {
+    onCollision(context?: CollisionContext) {
         if (!this.attributes.teleportTargetUuid || this.isPaused) {
             return;
         }
 
-        const teleportTarget = this.game?.scene?.getObjectByProperty("uuid", this.attributes.teleportTargetUuid);
-        const object = this.game?.player; // TODO: get collision object instead of player
+        const teleportTarget = this.game?.getObjectByUUID(this.attributes.teleportTargetUuid);
+        const object = context?.other ?? this.game?.player;
 
         if (!teleportTarget || !object) {
             return;
@@ -51,9 +54,9 @@ class TeleportBehavior extends BehaviorBase {
         }
         this.game?.cameraControl?.resetCamera();
 
-        const position = teleportTarget.getWorldPosition(new Vector3());
-        const quaternion = teleportTarget.getWorldQuaternion(new Quaternion());
-        const rotationEuler = new Euler();
+        const position = teleportTarget.getWorldPosition(this.teleportPosition);
+        const quaternion = teleportTarget.getWorldQuaternion(this.teleportQuaternion);
+        const rotationEuler = this.teleportEuler;
         rotationEuler.setFromQuaternion(quaternion);
 
         characterBehavior.setPosition(position);

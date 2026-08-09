@@ -2,6 +2,7 @@ import { Object3D } from "three";
 
 import BehaviorData from "@stem/editor-oss/behaviors/BehaviorData";
 import { LambdaBase } from "../../LambdaBase";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 type MatchBy = "id" | "uuid";
 type SetBehaviorEnabledComponentData = {
@@ -79,7 +80,7 @@ export default class SetBehaviorEnabledLambda extends LambdaBase {
             }
 
             if (includeChildren) {
-                object.traverse(target => this.applyToTarget(target, componentData));
+                traverseObjectDepthFirst(object, target => this.applyToTarget(target, componentData));
             } else {
                 this.applyToTarget(object, componentData);
             }

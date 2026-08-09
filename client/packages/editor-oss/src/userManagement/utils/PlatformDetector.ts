@@ -6,8 +6,7 @@
  */
 
 import {DetectDevice} from "../../utils/DetectDevice";
-import CrazyGamesController from "../playerProfile/game-service-controllers/CrazyGamesController";
-import {DiscordController} from "../playerProfile/game-service-controllers/DiscordController";
+import {isInCrazyGamesEnvironment, isInDiscordEnvironment} from "../playerProfile/discordEnvironment";
 
 export enum PlatformType {
     BROWSER = "browser",
@@ -65,14 +64,14 @@ export class PlatformDetector {
      * Check if running in Discord embedded app
      */
     static isDiscord(): boolean {
-        return DiscordController.isInDiscord();
+        return isInDiscordEnvironment();
     }
 
     /**
      * Check if running in CrazyGames environment
      */
     static isCrazyGames(): boolean {
-        return CrazyGamesController.isInCrazyGames();
+        return isInCrazyGamesEnvironment();
     }
 
     /**
@@ -234,7 +233,7 @@ export class PlatformDetector {
      * @param platformType
      */
     static isCrazyGamesAvailable(platformType: PlatformType): boolean {
-        return platformType === PlatformType.CRAZYGAMES && CrazyGamesController.isInCrazyGames();
+        return platformType === PlatformType.CRAZYGAMES && isInCrazyGamesEnvironment();
     }
 
     /**
@@ -243,7 +242,7 @@ export class PlatformDetector {
      */
     static getGameServiceAvailability(platformType: PlatformType): GameServiceAvailability {
         return {
-            discord: DiscordController.isInDiscord(),
+            discord: isInDiscordEnvironment(),
             gameCenter: this.isGameCenterAvailable(platformType),
             googlePlay: this.isGooglePlayAvailable(platformType),
             steam: this.isSteamAvailable(platformType),

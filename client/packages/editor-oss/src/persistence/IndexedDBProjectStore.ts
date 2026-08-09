@@ -130,6 +130,51 @@ export class IndexedDBProjectStore implements ProjectStore {
         return meta;
     }
 
+    async commitProject(body: ProjectBody, assets: StoredAsset[]): Promise<ProjectMeta> {
+        const meta: ProjectMeta = {
+            ...body.meta,
+            id: body.meta.id || newId(),
+            createdAt: body.meta.createdAt || nowIso(),
+            updatedAt: nowIso(),
+        };
+        const toStore: ProjectBody = {...body, meta};
+
+        await openDb().then(
+            db =>
+                new Promise<void>((resolve, reject) => {
+                    const tx = db.transaction([STORE_NAME, ASSET_STORE_NAME], "readwrite");
+                    const projects = tx.objectStore(STORE_NAME);
+                    const assetStore = tx.objectStore(ASSET_STORE_NAME);
+                    projects.put(toStore);
+
+                    // Delete and repopulate inside this same transaction. Any
+                    // request failure aborts both the scene and asset changes,
+                    // leaving the previous project generation reloadable.
+                    const cursorRequest = assetStore.index("byProjectId").openKeyCursor(IDBKeyRange.only(meta.id));
+                    cursorRequest.onsuccess = () => {
+                        const cursor = cursorRequest.result;
+                        if (cursor) {
+                            assetStore.delete(cursor.primaryKey);
+                            cursor.continue();
+                            return;
+                        }
+                        for (const asset of assets) {
+                            const row: StoredAssetRow = {
+                                key: `${meta.id}::${asset.assetId}`,
+                                projectId: meta.id,
+                                asset,
+                            };
+                            assetStore.put(row);
+                        }
+                    };
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error ?? new Error("IndexedDB project commit failed"));
+                    tx.onabort = () => reject(tx.error ?? new Error("IndexedDB project commit aborted"));
+                }),
+        );
+        return meta;
+    }
+
     async delete(id: string): Promise<void> {
         await txGet("readwrite", store => store.delete(id));
         await this.clearAssets(id);
@@ -174,19 +219,27 @@ export class IndexedDBProjectStore implements ProjectStore {
     }
 
     async saveAssets(projectId: string, assets: StoredAsset[]): Promise<void> {
-        // Replace the project's asset set so a re-save drops assets no
-        // longer referenced rather than leaking them forever.
-        await this.clearAssets(projectId);
-        if (assets.length === 0) return;
+        // Replace in one transaction. The old implementation cleared in one
+        // transaction and inserted in another, so quota/failure between them
+        // permanently erased the last-known-good asset set.
         await assetTx("readwrite", store => {
-            for (const asset of assets) {
-                const row: StoredAssetRow = {
-                    key: `${projectId}::${asset.assetId}`,
-                    projectId,
-                    asset,
-                };
-                store.put(row);
-            }
+            const request = store.index("byProjectId").openKeyCursor(IDBKeyRange.only(projectId));
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (cursor) {
+                    store.delete(cursor.primaryKey);
+                    cursor.continue();
+                    return;
+                }
+                for (const asset of assets) {
+                    const row: StoredAssetRow = {
+                        key: `${projectId}::${asset.assetId}`,
+                        projectId,
+                        asset,
+                    };
+                    store.put(row);
+                }
+            };
         });
     }
 

@@ -1,7 +1,6 @@
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 
-import {IS_OSS} from "../../../buildMode";
 
 export type ParticleBackendData = {
     ID: string;
@@ -92,22 +91,7 @@ export const getParticle = async (id: string): Promise<ParticleBackendData & {Da
 };
 
 export const getParticlesList = async (): Promise<ParticleBackendData[]> => {
-    if (IS_OSS) return [];
-    try {
-        const response = await Ajax.get({
-            url: backendUrlFromPath(`/api/Particle/List`),
-        });
-
-        if (response?.data.Code !== 200) {
-            throw new Error(response?.data.Msg || "Failed to list particles.");
-        }
-
-        return response.data.Data;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("Error listing particles:", message || error);
-        throw new Error(message || "Failed to list particles.");
-    }
+    return [];
 };
 
 export const deleteParticle = async (id: string): Promise<any> => {

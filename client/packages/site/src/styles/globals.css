@@ -11,9 +11,20 @@
     --accent-2: #39d4a8;
     --accent-3: #ff8a4c;
     --danger: #ff5d6c;
+    --accent-2-soft: rgba(57, 212, 168, 0.12);
+    --accent-2-border: rgba(57, 212, 168, 0.32);
+    --accent-2-text: #9be9cf;
     --max-width: 1180px;
     --radius: 14px;
     --radius-sm: 8px;
+    --radius-pill: 999px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-2-5: 10px;
+    --space-3: 12px;
+    --space-3-5: 14px;
+    --space-4: 16px;
+    --space-5: 20px;
 }
 
 * {
@@ -516,19 +527,37 @@ button {
 .playground-bar {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 10px 20px;
+    gap: var(--space-4);
+    padding: 10px var(--space-5);
     background: var(--bg-elev);
     border-bottom: 1px solid var(--border);
     font-size: 0.9rem;
 }
 
+.playground-actions {
+    margin-left: auto;
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+}
+
+.playground-capabilities {
+    color: var(--text-dim);
+}
+
+.playground-action {
+    padding: 6px var(--space-3);
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+}
+
 .playground-bar .pill {
     padding: 3px 10px;
-    border-radius: 999px;
-    background: rgba(57, 212, 168, 0.12);
-    border: 1px solid rgba(57, 212, 168, 0.32);
-    color: #9be9cf;
+    border-radius: var(--radius-pill);
+    background: var(--accent-2-soft);
+    border: 1px solid var(--accent-2-border);
+    color: var(--accent-2-text);
     font-size: 0.78rem;
     font-weight: 500;
 }
@@ -538,6 +567,37 @@ button {
     width: 100%;
     border: 0;
     background: var(--bg);
+}
+
+@media (max-width: 720px) {
+    .playground-bar {
+        flex-wrap: wrap;
+        gap: var(--space-2-5);
+        padding: var(--space-2-5) var(--space-3-5);
+    }
+
+    .playground-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+        overflow-x: auto;
+    }
+}
+
+/* Phone-height landscape is the Playground editor's only supported mobile
+ * orientation. The editor already exposes project navigation, Play/Edit, and
+ * Save, so the public-site utility bar is redundant here and would otherwise
+ * consume almost one sixth of the usable height. */
+/* Account for the wrapper bar itself: below 600px outer height, retaining the
+ * bar can make the iframe shorter than the editor's 480px compact threshold. */
+@media (max-width: 960px) and (max-height: 600px) and (orientation: landscape) {
+    .playground-bar {
+        display: none;
+    }
+
+    .playground-frame {
+        min-height: 100%;
+    }
 }
 
 /* ===== Docs ===== */

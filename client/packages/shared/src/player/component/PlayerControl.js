@@ -1,7 +1,7 @@
-import {FlyControls} from "three/examples/jsm/controls/FlyControls.js";
-import {OrbitControls} from "three/examples/jsm/controls/OrbitControls.js";
-import {PointerLockControls} from "three/examples/jsm/controls/PointerLockControls.js";
-import {TrackballControls} from "three/examples/jsm/controls/TrackballControls.js";
+import {FlyControls} from "three/addons/controls/FlyControls.js";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {PointerLockControls} from "three/addons/controls/PointerLockControls.js";
+import {TrackballControls} from "three/addons/controls/TrackballControls.js";
 
 import PlayerComponent from "./PlayerComponent";
 import PackageManager from "../../package/PackageManager";
@@ -10,11 +10,23 @@ import {CAMERA_TYPES} from "../../types/editor";
 class PlayerControl extends PlayerComponent {
     constructor(app) {
         super(app);
-        this.packageManager = new PackageManager();
-        this.require = this.packageManager.require;
+        this._packageManager = null;
+        this.require = names => this.packageManager.require(names);
 
         this.control = null;
         this.input = null;
+    }
+
+    get packageManager() {
+        if (this._packageManager === null) {
+            this._packageManager = new PackageManager();
+        }
+
+        return this._packageManager;
+    }
+
+    set packageManager(packageManager) {
+        this._packageManager = packageManager;
     }
 
     create(physics, scene, camera, renderer, player) {

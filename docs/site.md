@@ -5,6 +5,12 @@ from this repository. The site lives in `client/packages/site/` and is
 built as a sibling Vite entry alongside the existing editor / player /
 app-shell bundles.
 
+> **Deployment boundary:** the current target is the local-first Playground.
+> The static build contains remote-oriented routes and adapters, but the
+> scene/asset API mode is not deployed. A successful static deployment does
+> not make `/play/:projectID`, accounts, publishing, or cloud projects
+> functional.
+
 ## URL surface
 
 | URL pattern                | Served by             | Notes                                   |
@@ -12,10 +18,10 @@ app-shell bundles.
 | `/`                        | `site/index.html`     | Landing page                            |
 | `/docs`, `/docs/:slug`     | `site/index.html`     | Markdown docs SPA                       |
 | `/playground`              | `site/index.html`     | Iframe wrapper                          |
-| `/dashboard`               | `marketing` (shell)   | Project list, OSS bootstrap modal       |
+| `/dashboard`               | `marketing` (shell)   | Project list, local storage bootstrap   |
 | `/create/project[/*]`      | `editor/editor.html`  | Full editor                             |
 | `/stem-editor/*`           | `editor/editor.html`  | Asset-scoped editor view                |
-| `/play/:projectID`         | `play/play.html`      | Player-only runtime                     |
+| `/play/:projectID`         | `play/play.html`      | API-backed player route; remote data mode is not deployed |
 
 In dev (`bun run dev`), the Vite middleware in `vite.config.ts` routes
 each URL prefix to the matching `packages/*/index.html`. In production,
@@ -24,8 +30,9 @@ Pages, Netlify, Render Static) and `render.yaml` (Render-native routes).
 
 ## Playground mode
 
-The `/playground` route renders an iframe pointed at
-`/dashboard?mode=playground`. The editor reads that query param via
+The `/playground` route renders an iframe pointed at the standalone app shell
+`/shell.html?mode=playground` (with `/dashboard/index.html?mode=playground` as a
+static-host fallback). The editor reads that query param via
 `@web-shared/playgroundMode`, persists it to sessionStorage, and tags
 `<html data-playground-mode="true">` before React renders.
 
@@ -35,10 +42,12 @@ Components that should be hidden in playground mode either:
 - add `data-playground-hide` to their root element (CSS rule in
   `client/packages/shared/src/playgroundMode.css` does the rest).
 
-The OSS bootstrap modal is hidden automatically (it's tagged
-`data-oss-bootstrap-modal`). Surface-by-surface annotation of settings,
-BYOK panel, exports, multiplayer setup, asset uploads, and admin is
-incremental — open issues for any surface that leaks through.
+The local storage bootstrap modal is hidden automatically (it is tagged
+`data-oss-bootstrap-modal` for compatibility). Playground mode intentionally
+hides remote-only account, publishing, collaboration, multiplayer setup,
+upload, and admin surfaces. Local JSON scene/source and STL geometry exports
+may remain available; they are not publishing. Treat any exposed remote-only
+control as a bug rather than as a usable feature.
 
 ## Local development
 
@@ -83,7 +92,7 @@ build/public/
    when running the script).
 2. Either:
    - **Git-based** — point the Pages project at the GitHub repo, set the
-     build command to `BUILD_MODE=oss bun run build`, and the output
+     build command to `bun run build`, and the output
      directory to `build/public`. Cloudflare reads `wrangler.toml`
      automatically.
    - **CLI-based** — `bun run deploy:cloudflare` runs the build and
@@ -105,7 +114,7 @@ via `.github/workflows/pages.yml`. No CLI step is needed.
 2. Repo Settings → Pages → **Custom domain = `buildwithstem.com`**, then
    point the domain's DNS at GitHub Pages. (Only one host can own the
    domain — GitHub Pages or Cloudflare, not both.)
-3. Push to `main`. The workflow runs `BUILD_MODE=oss bun run build` and
+3. Push to `main`. The workflow runs `bun run build` and
    deploys `build/public`.
 
 Static-host routing on GitHub Pages differs from Cloudflare/Render:
@@ -116,7 +125,9 @@ classifies the path (mirroring `_redirects`), fetches the matching shell
 it with the URL preserved. `client/public/CNAME` carries the custom
 domain into the build. Both files are copied verbatim by Vite's
 `publicDir` and are inert on Cloudflare/Render (the `_redirects`
-catch-all means `404.html` never fires there).
+catch-all means `404.html` never fires there). The build also emits
+`playground/index.html` and `dashboard/index.html` as direct-entry fallbacks
+for hosts that support directory indexes.
 
 Tests run on every pull request and on merge to `main` via
 `.github/workflows/ci.yml` (typecheck, lint, unit tests, and the

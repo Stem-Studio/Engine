@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {MeshSurfaceSampler} from "three/examples/jsm/math/MeshSurfaceSampler.js";
+import {MeshSurfaceSampler} from "three/addons/math/MeshSurfaceSampler.js";
 
 /**
  * Options for a single scatter operation.
@@ -99,6 +99,7 @@ export function scatterOnSurface(
     const normal = new THREE.Vector3();
     const matrix = new THREE.Matrix4();
     const quaternion = new THREE.Quaternion();
+    const spinQuaternion = new THREE.Quaternion();
     const scaleVec = new THREE.Vector3();
     const up = new THREE.Vector3(0, 1, 0);
 
@@ -120,11 +121,11 @@ export function scatterOnSurface(
 
         if (rotationJitter > 0) {
             const spin = (rng() * 2 - 1) * rotationJitter;
-            const spinQ = new THREE.Quaternion().setFromAxisAngle(
+            spinQuaternion.setFromAxisAngle(
                 alignToNormal ? normal : up,
                 spin,
             );
-            quaternion.multiply(spinQ);
+            quaternion.multiply(spinQuaternion);
         }
 
         const s = scaleJitter > 0

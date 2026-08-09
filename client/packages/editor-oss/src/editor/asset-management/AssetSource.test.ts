@@ -300,6 +300,26 @@ describe("SceneAssetSource", () => {
             expect(setAssetRevision).toHaveBeenCalledWith(mockScene, "new-1", "rev-new-1");
             expect(result.id).toBe("new-1");
         });
+
+        it("can defer objectChanged while still updating the scene dependency context", async () => {
+            const scene = new Object3D();
+            setupApp(scene);
+            const created = makeAsset("new-1");
+            vi.mocked(createSceneAssetWithData).mockResolvedValue(created as any);
+
+            const source = new SceneAssetSource(sceneId);
+            await source.createAsset({
+                type: "behavior",
+                name: "New",
+                data: "{}",
+                format: "json",
+                contentType: "application/json",
+                deferSceneSync: true,
+            });
+
+            expect(setAssetRevision).toHaveBeenCalledWith(scene, "new-1", "rev-new-1");
+            expect((global as any).app.call).not.toHaveBeenCalledWith("objectChanged", null, scene);
+        });
     });
 
     describe("addDependencies", () => {

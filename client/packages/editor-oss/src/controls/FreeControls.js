@@ -44,9 +44,11 @@ class FreeControls extends BaseControls {
     }
 
     update() {
-        this.controls.maxDistance = this.camera.far;
+        if (this.controls.maxDistance !== this.camera.far) {
+            this.controls.maxDistance = this.camera.far;
+        }
 
-        this.controls.update();
+        return this.controls.update() === true;
     }
 
     dispose() {

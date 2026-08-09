@@ -11,6 +11,8 @@ import {
     normalizeGradientMode,
     normalizeShadowMapType,
 } from "../../utils/renderingSettingsNormalization";
+import {cloneJsonCompatible} from "../../utils/cloneJsonCompatible";
+import {findObjectByUuidOrNameDepthFirst} from "../../utils/SceneTraverser";
 import {CommandResult} from "../types/ACPTypes";
 
 // Default values matching the constants used in ProjectSettings
@@ -1044,9 +1046,7 @@ export class SettingsHandlers {
 
         const scene = this.engine.editor?.scene;
         if (!scene) return null;
-        let object = scene.getObjectByProperty("uuid", identifier);
-        if (!object) object = scene.getObjectByName(identifier);
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(scene, identifier);
     }
 
     private clonePlainValue<T>(value: T): T {
@@ -1055,7 +1055,7 @@ export class SettingsHandlers {
         }
 
         try {
-            return JSON.parse(JSON.stringify(value)) as T;
+            return cloneJsonCompatible(value);
         } catch {
             return value;
         }

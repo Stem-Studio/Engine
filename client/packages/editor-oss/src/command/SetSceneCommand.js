@@ -12,6 +12,7 @@ import Command from "./Command";
 import {SetUuidCommand} from "./SetUuidCommand";
 import {SetValueCommand} from "./SetValueCommand";
 import global from "../global";
+import {cloneJsonCompatible} from "../utils/cloneJsonCompatible";
 
 /**
  *
@@ -33,7 +34,7 @@ class SetSceneCommand extends Command {
             this.cmdArray.push(new SetUuidCommand(this.editor.scene, scene.uuid));
             this.cmdArray.push(new SetValueCommand(this.editor.scene, "name", scene.name));
             this.cmdArray.push(
-                new SetValueCommand(this.editor.scene, "userData", JSON.parse(JSON.stringify(scene.userData))),
+                new SetValueCommand(this.editor.scene, "userData", cloneJsonCompatible(scene.userData)),
             );
 
             while (scene.children.length > 0) {

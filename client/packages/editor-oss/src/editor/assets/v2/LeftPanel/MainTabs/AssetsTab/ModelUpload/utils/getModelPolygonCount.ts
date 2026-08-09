@@ -1,16 +1,20 @@
-import { Object3D } from 'three';
+import { Mesh, Object3D } from "three";
+
+import { traverseObjectDepthFirst } from "@stem/editor-oss/utils/SceneTraverser";
 
 export const getModelPolygonCount = (model: Object3D) => {
-    let polygonCount = 0;
+  let polygonCount = 0;
 
-    model.traverse(child => {
-        if ((child as any).isMesh) {
-            const geometry = (child as any).geometry;
-            polygonCount += geometry.index
-                ? geometry.index.count / 3
-                : geometry.attributes.position.count / 3;
-        }
-    });
+  traverseObjectDepthFirst(model, (child) => {
+    if (child instanceof Mesh) {
+      const geometry = child.geometry;
+      const position = geometry.getAttribute("position");
+      if (!position) return;
+      polygonCount += geometry.index
+        ? geometry.index.count / 3
+        : position.count / 3;
+    }
+  });
 
-    return polygonCount;
+  return polygonCount;
 };

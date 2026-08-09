@@ -1,5 +1,4 @@
-import * as THREE from "three";
-
+import {Material, MathUtils, Mesh, Object3D, Scene, Texture} from "three";
 import {DetectDevice} from "@stem/editor-oss/utils/DetectDevice";
 import {
     estimateTextureBytes,
@@ -12,6 +11,11 @@ import {
     type RuntimeBudgetPressure,
 } from "./RuntimeBudgetCoordinator";
 import type {IQualitySettings} from "../quality/interfaces/IQualityManager";
+import {traverseObjectDepthFirst} from "../../utils/SceneTraverser";
+import {
+    createProgressiveYieldController,
+    type ProgressiveYieldOptions,
+} from "../../utils/progressiveYield";
 
 export type TextureResidencyState = "resident" | "reduced" | "evicted";
 
@@ -60,6 +64,8 @@ export interface TextureResidencyOptions {
     protectSharedTextures?: boolean;
 }
 
+export type TextureResidencyRebuildProgressOptions = ProgressiveYieldOptions;
+
 type TextureSlot =
     | "alphaMap"
     | "aoMap"
@@ -85,14 +91,20 @@ type TextureSlot =
     | "thicknessMap"
     | "transmissionMap";
 
-type TextureMaterial = THREE.Material & Partial<Record<TextureSlot, THREE.Texture | null>>;
+type TextureMaterial = Material & Partial<Record<TextureSlot, Texture | null>>;
 
 interface MaterialTextureResidency {
-    slots?: Partial<Record<TextureSlot, THREE.Texture>>;
+    slots?: Partial<Record<TextureSlot, Texture>>;
 }
 
 interface ManagedTextureRoot {
-    root: THREE.Object3D;
+    root: Object3D;
+}
+
+interface TextureResidencyCollection {
+    materials: Set<Material>;
+    textures: Set<Texture>;
+    residentTextures: Set<Texture>;
 }
 
 const TEXTURE_SLOTS: TextureSlot[] = [
@@ -122,6 +134,8 @@ const TEXTURE_SLOTS: TextureSlot[] = [
 ];
 
 const REDUCED_KEEP_SLOTS = new Set<TextureSlot>(["map", "alphaMap"]);
+const TEXTURE_RESIDENCY_REBUILD_BATCH_SIZE = 32;
+const TEXTURE_RESIDENCY_REBUILD_FRAME_BUDGET_MS = 4;
 
 export class TextureResidencyPolicy {
     private options: Required<TextureResidencyOptions>;
@@ -182,7 +196,7 @@ export class TextureResidencyPolicy {
         return this.options;
     }
 
-    decide(object: THREE.Object3D, managedTextureBytes: number): TextureResidencyDecision {
+    decide(object: Object3D, managedTextureBytes: number): TextureResidencyDecision {
         const metadata = ensureTextureResidencyMetadata(object);
         metadata.stats ??= collectTextureResidencyStats(object);
 
@@ -259,7 +273,7 @@ export class TextureResidencyManager {
     private readonly rootIndexes = new Map<string, number>();
     private readonly materialOwners = new Map<string, Set<string>>();
     private readonly textureOwners = new Map<string, Set<string>>();
-    private scene?: THREE.Scene;
+    private scene?: Scene;
     private cursor = 0;
     private discoveryCursor = 0;
     private framesSinceOwnershipRefresh = Number.POSITIVE_INFINITY;
@@ -273,7 +287,7 @@ export class TextureResidencyManager {
         sharedMaterialCount: 0,
     };
 
-    constructor(scene?: THREE.Scene, options: TextureResidencyOptions = {}) {
+    constructor(scene?: Scene, options: TextureResidencyOptions = {}) {
         this.policy = new TextureResidencyPolicy(options);
         if (scene) {
             this.rebuild(scene);
@@ -288,24 +302,81 @@ export class TextureResidencyManager {
         this.policy.configureFromQuality(settings, overrides);
     }
 
-    rebuild(scene: THREE.Scene): void {
+    rebuild(scene: Scene): void {
         this.scene = scene;
         this.clear();
         for (const child of scene.children) {
-            this.registerObjectTree(child);
+            this.walkAndRegister(child, true);
         }
         this.refreshOwnership();
     }
 
-    registerObjectTree(root: THREE.Object3D): void {
+    async rebuildProgressive(scene: Scene, options: TextureResidencyRebuildProgressOptions = {}): Promise<void> {
+        this.scene = scene;
+        this.clear();
+        const maybeYield = createProgressiveYieldController(options, {
+            batchSize: TEXTURE_RESIDENCY_REBUILD_BATCH_SIZE,
+            frameBudgetMs: TEXTURE_RESIDENCY_REBUILD_FRAME_BUDGET_MS,
+        });
+        const stack: Object3D[] = [];
+
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child) stack.push(child);
+        }
+
+        let registered = false;
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current || isTextureResidencyExplicitlyDisabled(current)) {
+                await maybeYield();
+                continue;
+            }
+
+            if (isTextureResidencyCandidate(current)) {
+                registered = this.registerProgressive(current) || registered;
+                await maybeYield(true);
+                continue;
+            }
+
+            for (let i = current.children.length - 1; i >= 0; i--) {
+                const child = current.children[i];
+                if (child) stack.push(child);
+            }
+
+            await maybeYield();
+        }
+
+        if (registered) {
+            await this.refreshOwnershipProgressive(options);
+        }
+    }
+
+    registerObjectTree(root: Object3D): void {
         if (this.walkAndRegister(root)) {
             this.framesSinceOwnershipRefresh = Number.POSITIVE_INFINITY;
         }
     }
 
-    unregisterObjectTree(root: THREE.Object3D): void {
+    /**
+     * Register a single node during a shared post-initialization walk.
+     * Returning false prunes this consumer below a residency root while
+     * allowing other consumers to continue their own discovery.
+     */
+    registerObjectNode(object: Object3D): boolean {
+        if (isTextureResidencyExplicitlyDisabled(object)) return false;
+        if (isTextureResidencyCandidate(object)) {
+            if (this.register(object)) {
+                this.framesSinceOwnershipRefresh = Number.POSITIVE_INFINITY;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    unregisterObjectTree(root: Object3D): void {
         let removed = false;
-        root.traverse(object => {
+        traverseObjectDepthFirst(root, object => {
             removed = this.unregister(object) || removed;
         });
         if (removed) {
@@ -343,6 +414,10 @@ export class TextureResidencyManager {
         return {...this.stats};
     }
 
+    getStatsForFrame(): TextureResidencyStats {
+        return this.stats;
+    }
+
     getOptions(): Readonly<Required<TextureResidencyOptions>> {
         return this.policy.getOptions();
     }
@@ -372,40 +447,65 @@ export class TextureResidencyManager {
         this.clear();
     }
 
-    private walkAndRegister(object: THREE.Object3D): boolean {
-        if (isTextureResidencyExplicitlyDisabled(object)) return false;
-        if (isTextureResidencyCandidate(object)) {
-            return this.register(object);
+    private walkAndRegister(object: Object3D, deferStats = false): boolean {
+        const stack: Object3D[] = [object];
+        let registered = false;
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current || isTextureResidencyExplicitlyDisabled(current)) continue;
+
+            if (isTextureResidencyCandidate(current)) {
+                registered = this.register(current, deferStats) || registered;
+                continue;
+            }
+
+            for (let i = current.children.length - 1; i >= 0; i--) {
+                const child = current.children[i];
+                if (child) stack.push(child);
+            }
         }
 
-        let registered = false;
-        for (const child of object.children) {
-            registered = this.walkAndRegister(child) || registered;
-        }
         return registered;
     }
 
-    private register(root: THREE.Object3D): boolean {
+    private register(root: Object3D, deferStats = false): boolean {
         if (this.rootIndexes.has(root.uuid)) return false;
-        markObjectForTextureResidency(root, {enabled: true});
+        if (deferStats) {
+            ensureTextureResidencyMetadata(root).enabled = true;
+        } else {
+            markObjectForTextureResidency(root, {enabled: true});
+        }
         this.rootIndexes.set(root.uuid, this.roots.length);
         this.roots.push({root});
         return true;
     }
 
-    private unregister(root: THREE.Object3D): boolean {
+    private registerProgressive(root: Object3D): boolean {
+        if (this.rootIndexes.has(root.uuid)) return false;
+        ensureTextureResidencyMetadata(root).enabled = true;
+        this.rootIndexes.set(root.uuid, this.roots.length);
+        this.roots.push({root});
+        return true;
+    }
+
+    private unregister(root: Object3D): boolean {
         const index = this.rootIndexes.get(root.uuid);
         if (index === undefined) return false;
 
-        const [removed] = this.roots.splice(index, 1);
-        if (removed) {
-            restoreRootTextures(removed.root);
+        const removed = this.roots[index];
+        if (!removed) return false;
+
+        const lastIndex = this.roots.length - 1;
+        const last = this.roots[lastIndex];
+        if (index !== lastIndex && last) {
+            this.roots[index] = last;
+            this.rootIndexes.set(last.root.uuid, index);
         }
 
-        this.rootIndexes.clear();
-        for (let i = 0; i < this.roots.length; i++) {
-            this.rootIndexes.set(this.roots[i]!.root.uuid, i);
-        }
+        this.roots.pop();
+        this.rootIndexes.delete(root.uuid);
+        restoreRootTextures(removed.root);
         this.cursor = this.roots.length > 0 ? this.cursor % this.roots.length : 0;
         this.framesSinceOwnershipRefresh = Number.POSITIVE_INFINITY;
         return true;
@@ -438,19 +538,14 @@ export class TextureResidencyManager {
         let residentTextureBytes = 0;
 
         for (const managed of this.roots) {
-            const rootMaterials = new Set<THREE.Material>();
-            const rootTextures = new Set<THREE.Texture>();
-            const rootResidentTextures = new Set<THREE.Texture>();
-            collectMaterials(managed.root, rootMaterials);
-            collectTextures(managed.root, rootTextures);
-            collectResidentTextures(managed.root, rootResidentTextures);
+            const rootInfo = collectTextureResidencyInfo(managed.root);
 
-            for (const material of rootMaterials) {
+            for (const material of rootInfo.materials) {
                 materialIds.add(material.uuid);
                 addOwner(this.materialOwners, material.uuid, managed.root.uuid);
             }
 
-            for (const texture of rootTextures) {
+            for (const texture of rootInfo.textures) {
                 if (!textureIds.has(texture.uuid)) {
                     textureIds.add(texture.uuid);
                     textureBytes += estimateTextureBytes(texture);
@@ -458,13 +553,13 @@ export class TextureResidencyManager {
                 addOwner(this.textureOwners, texture.uuid, managed.root.uuid);
             }
 
-            for (const texture of rootResidentTextures) {
+            for (const texture of rootInfo.residentTextures) {
                 if (residentTextureIds.has(texture.uuid)) continue;
                 residentTextureIds.add(texture.uuid);
                 residentTextureBytes += estimateTextureBytes(texture);
             }
 
-            ensureTextureResidencyMetadata(managed.root).stats = collectTextureResidencyStats(managed.root);
+            ensureTextureResidencyMetadata(managed.root).stats = getTextureResidencyStatsFromInfo(rootInfo);
         }
 
         let sharedMaterialCount = 0;
@@ -484,7 +579,69 @@ export class TextureResidencyManager {
         this.framesSinceOwnershipRefresh = 0;
     }
 
-    private applyDecision(root: THREE.Object3D, decision: TextureResidencyDecision): void {
+    private async refreshOwnershipProgressive(options: TextureResidencyRebuildProgressOptions = {}): Promise<void> {
+        const maybeYield = createProgressiveYieldController(options, {
+            batchSize: TEXTURE_RESIDENCY_REBUILD_BATCH_SIZE,
+            frameBudgetMs: TEXTURE_RESIDENCY_REBUILD_FRAME_BUDGET_MS,
+        });
+        this.materialOwners.clear();
+        this.textureOwners.clear();
+        const materialIds = new Set<string>();
+        const textureIds = new Set<string>();
+        const residentTextureIds = new Set<string>();
+        let textureBytes = 0;
+        let residentTextureBytes = 0;
+
+        for (const managed of this.roots) {
+            const rootInfo = await collectTextureResidencyInfoProgressive(managed.root, options);
+
+            for (const material of rootInfo.materials) {
+                materialIds.add(material.uuid);
+                addOwner(this.materialOwners, material.uuid, managed.root.uuid);
+            }
+
+            for (const texture of rootInfo.textures) {
+                if (!textureIds.has(texture.uuid)) {
+                    textureIds.add(texture.uuid);
+                    textureBytes += estimateTextureBytes(texture);
+                }
+                addOwner(this.textureOwners, texture.uuid, managed.root.uuid);
+            }
+
+            for (const texture of rootInfo.residentTextures) {
+                if (residentTextureIds.has(texture.uuid)) continue;
+                residentTextureIds.add(texture.uuid);
+                residentTextureBytes += estimateTextureBytes(texture);
+            }
+
+            ensureTextureResidencyMetadata(managed.root).stats = getTextureResidencyStatsFromInfo(rootInfo);
+            await maybeYield(true);
+        }
+
+        let sharedMaterialCount = 0;
+        for (const owners of this.materialOwners.values()) {
+            if (owners.size > 1) sharedMaterialCount++;
+        }
+
+        this.managedTextureBytes = residentTextureBytes;
+        this.stats = {
+            textureBytes,
+            textureCount: textureIds.size,
+            residentTextureBytes,
+            residentTextureCount: residentTextureIds.size,
+            materialCount: materialIds.size,
+            sharedMaterialCount,
+        };
+        this.framesSinceOwnershipRefresh = 0;
+    }
+
+    private applyDecision(root: Object3D, decision: TextureResidencyDecision): void {
+        const metadata = ensureTextureResidencyMetadata(root);
+        if (metadata.state === decision.state) {
+            root.userData.textureResidencyState = decision.state;
+            return;
+        }
+
         if (decision.state === "resident") {
             restoreRootTextures(root);
         } else if (decision.state === "reduced") {
@@ -493,7 +650,6 @@ export class TextureResidencyManager {
             evictRootTextures(root, this.policy.getOptions(), this.materialOwners, this.textureOwners);
         }
 
-        const metadata = ensureTextureResidencyMetadata(root);
         metadata.state = decision.state;
         metadata.stats = collectTextureResidencyStats(root);
         root.userData.textureResidencyState = decision.state;
@@ -521,9 +677,9 @@ export function getTextureResidencyOptionsFromQuality(
     const rendering = settings.rendering;
     const scene = settings.scene;
     const textureTier = getTextureQualityTier(rendering?.textureQuality);
-    const cullingAggressiveness = THREE.MathUtils.clamp(scene?.cullingAggressiveness ?? 0.5, 0, 1);
-    const lodBias = THREE.MathUtils.clamp(rendering?.lodBias ?? 0, 0, 3);
-    const pressure = THREE.MathUtils.clamp(
+    const cullingAggressiveness = MathUtils.clamp(scene?.cullingAggressiveness ?? 0.5, 0, 1);
+    const lodBias = MathUtils.clamp(rendering?.lodBias ?? 0, 0, 3);
+    const pressure = MathUtils.clamp(
         (4 - textureTier) * 0.14 + cullingAggressiveness * 0.08 + lodBias * 0.08 + (isMobile ? 0.18 : 0),
         0,
         0.85,
@@ -550,7 +706,7 @@ export function getTextureResidencyOptionsFromQuality(
 }
 
 export function markObjectForTextureResidency(
-    object: THREE.Object3D,
+    object: Object3D,
     metadata: TextureResidencyMetadata = {},
 ): void {
     const current = ensureTextureResidencyMetadata(object);
@@ -561,52 +717,49 @@ export function markObjectForTextureResidency(
     current.stats = metadata.stats ?? current.stats ?? collectTextureResidencyStats(object);
 }
 
-export function getTextureResidencyMetadata(object: THREE.Object3D): TextureResidencyMetadata | undefined {
+export function getTextureResidencyMetadata(object: Object3D): TextureResidencyMetadata | undefined {
     return (object.userData as {textureResidency?: TextureResidencyMetadata}).textureResidency;
 }
 
-export function ensureTextureResidencyMetadata(object: THREE.Object3D): TextureResidencyMetadata {
+export function ensureTextureResidencyMetadata(object: Object3D): TextureResidencyMetadata {
     const data = object.userData as {textureResidency?: TextureResidencyMetadata};
     data.textureResidency ??= {};
     return data.textureResidency;
 }
 
-export function isTextureResidencyCandidate(object: THREE.Object3D): boolean {
+export function isTextureResidencyCandidate(object: Object3D): boolean {
     const metadata = getTextureResidencyMetadata(object);
     if (metadata?.enabled === true) return true;
     if (metadata?.enabled === false) return false;
     return getAvatarBudgetMetadata(object)?.enabled === true || getPlotBudgetMetadata(object)?.enabled === true;
 }
 
-export function collectTextureResidencyStats(root: THREE.Object3D): TextureResidencyStats {
-    const materials = new Set<THREE.Material>();
-    const textures = new Set<THREE.Texture>();
-    const residentTextures = new Set<THREE.Texture>();
-    collectMaterials(root, materials);
-    collectTextures(root, textures);
-    collectResidentTextures(root, residentTextures);
+export function collectTextureResidencyStats(root: Object3D): TextureResidencyStats {
+    return getTextureResidencyStatsFromInfo(collectTextureResidencyInfo(root));
+}
 
+function getTextureResidencyStatsFromInfo(info: TextureResidencyCollection): TextureResidencyStats {
     let textureBytes = 0;
-    for (const texture of textures) {
+    for (const texture of info.textures) {
         textureBytes += estimateTextureBytes(texture);
     }
     let residentTextureBytes = 0;
-    for (const texture of residentTextures) {
+    for (const texture of info.residentTextures) {
         residentTextureBytes += estimateTextureBytes(texture);
     }
 
     return {
         textureBytes,
-        textureCount: textures.size,
+        textureCount: info.textures.size,
         residentTextureBytes,
-        residentTextureCount: residentTextures.size,
-        materialCount: materials.size,
+        residentTextureCount: info.residentTextures.size,
+        materialCount: info.materials.size,
         sharedMaterialCount: 0,
     };
 }
 
 function reduceRootTextures(
-    root: THREE.Object3D,
+    root: Object3D,
     options: Required<TextureResidencyOptions>,
     materialOwners: Map<string, Set<string>>,
     textureOwners: Map<string, Set<string>>,
@@ -621,7 +774,7 @@ function reduceRootTextures(
 }
 
 function evictRootTextures(
-    root: THREE.Object3D,
+    root: Object3D,
     options: Required<TextureResidencyOptions>,
     materialOwners: Map<string, Set<string>>,
     textureOwners: Map<string, Set<string>>,
@@ -634,7 +787,7 @@ function evictRootTextures(
     });
 }
 
-function restoreRootTextures(root: THREE.Object3D): void {
+function restoreRootTextures(root: Object3D): void {
     visitMaterials(root, material => {
         const residency = getMaterialResidency(material);
         const slots = residency.slots;
@@ -678,8 +831,8 @@ function clearMaterialTextureSlot(
 }
 
 function isMaterialProtected(
-    material: THREE.Material,
-    root: THREE.Object3D,
+    material: Material,
+    root: Object3D,
     options: Required<TextureResidencyOptions>,
     materialOwners: Map<string, Set<string>>,
 ): boolean {
@@ -688,45 +841,88 @@ function isMaterialProtected(
     return !!owners && owners.size > 1 && owners.has(root.uuid);
 }
 
-function collectMaterials(root: THREE.Object3D, materials: Set<THREE.Material>): void {
+function collectTextureResidencyInfo(root: Object3D): TextureResidencyCollection {
+    const info: TextureResidencyCollection = {
+        materials: new Set<Material>(),
+        textures: new Set<Texture>(),
+        residentTextures: new Set<Texture>(),
+    };
     visitMaterials(root, material => {
-        materials.add(material);
+        info.materials.add(material);
+        addMaterialTextures(material, info.textures);
+        addResidentMaterialTextures(material, info.residentTextures);
     });
+    return info;
 }
 
-function collectTextures(root: THREE.Object3D, textures: Set<THREE.Texture>): void {
-    visitMaterials(root, material => {
-        for (const texture of getMaterialTextures(material)) {
-            textures.add(texture);
+async function collectTextureResidencyInfoProgressive(
+    root: Object3D,
+    options: TextureResidencyRebuildProgressOptions = {},
+): Promise<TextureResidencyCollection> {
+    const maybeYield = createProgressiveYieldController(options, {
+        batchSize: TEXTURE_RESIDENCY_REBUILD_BATCH_SIZE,
+        frameBudgetMs: TEXTURE_RESIDENCY_REBUILD_FRAME_BUDGET_MS,
+    });
+    const info: TextureResidencyCollection = {
+        materials: new Set<Material>(),
+        textures: new Set<Texture>(),
+        residentTextures: new Set<Texture>(),
+    };
+    const stack: Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const child = stack.pop();
+        if (!child) {
+            await maybeYield();
+            continue;
         }
-    });
-}
 
-function collectResidentTextures(root: THREE.Object3D, textures: Set<THREE.Texture>): void {
-    visitMaterials(root, material => {
-        for (const texture of getResidentMaterialTextures(material)) {
-            textures.add(texture);
+        const material = (child as Mesh).material;
+        if (material) {
+            if (Array.isArray(material)) {
+                for (const item of material) {
+                    if (!item) continue;
+                    info.materials.add(item);
+                    addMaterialTextures(item, info.textures);
+                    addResidentMaterialTextures(item, info.residentTextures);
+                }
+            } else {
+                info.materials.add(material);
+                addMaterialTextures(material, info.textures);
+                addResidentMaterialTextures(material, info.residentTextures);
+            }
         }
-    });
+
+        for (let i = child.children.length - 1; i >= 0; i--) {
+            const nested = child.children[i];
+            if (nested) stack.push(nested);
+        }
+
+        await maybeYield();
+    }
+
+    return info;
 }
 
-function visitMaterials(root: THREE.Object3D, visitor: (material: TextureMaterial) => void): void {
-    root.traverse(child => {
-        const material = (child as THREE.Mesh).material;
+function visitMaterials(root: Object3D, visitor: (material: TextureMaterial) => void): void {
+    traverseObjectDepthFirst(root, child => {
+        const material = (child as Mesh).material;
         if (!material) return;
-        const materials = Array.isArray(material) ? material : [material];
-        for (const item of materials) {
-            if (item) visitor(item);
+        if (Array.isArray(material)) {
+            for (const item of material) {
+                if (item) visitor(item);
+            }
+        } else {
+            visitor(material);
         }
     });
 }
 
-function getMaterialTextures(material: TextureMaterial): THREE.Texture[] {
-    const textures = new Map<string, THREE.Texture>();
+function addMaterialTextures(material: TextureMaterial, textures: Set<Texture>): void {
     for (const slot of TEXTURE_SLOTS) {
         const texture = material[slot];
         if (isTexture(texture)) {
-            textures.set(texture.uuid, texture);
+            textures.add(texture);
         }
     }
 
@@ -734,26 +930,22 @@ function getMaterialTextures(material: TextureMaterial): THREE.Texture[] {
     if (savedSlots) {
         for (const texture of Object.values(savedSlots)) {
             if (isTexture(texture)) {
-                textures.set(texture.uuid, texture);
+                textures.add(texture);
             }
         }
     }
-
-    return [...textures.values()];
 }
 
-function getResidentMaterialTextures(material: TextureMaterial): THREE.Texture[] {
-    const textures = new Map<string, THREE.Texture>();
+function addResidentMaterialTextures(material: TextureMaterial, textures: Set<Texture>): void {
     for (const slot of TEXTURE_SLOTS) {
         const texture = material[slot];
         if (isTexture(texture)) {
-            textures.set(texture.uuid, texture);
+            textures.add(texture);
         }
     }
-    return [...textures.values()];
 }
 
-function getMaterialResidency(material: THREE.Material): MaterialTextureResidency {
+function getMaterialResidency(material: Material): MaterialTextureResidency {
     const data = material.userData as {textureResidency?: MaterialTextureResidency};
     data.textureResidency ??= {};
     return data.textureResidency;
@@ -768,11 +960,11 @@ function addOwner(map: Map<string, Set<string>>, key: string, owner: string): vo
     owners.add(owner);
 }
 
-function isTextureResidencyExplicitlyDisabled(object: THREE.Object3D): boolean {
+function isTextureResidencyExplicitlyDisabled(object: Object3D): boolean {
     return getTextureResidencyMetadata(object)?.enabled === false;
 }
 
-function getObjectAvatarState(object: THREE.Object3D): {state: AvatarBudgetState; isLocal: boolean} | null {
+function getObjectAvatarState(object: Object3D): {state: AvatarBudgetState; isLocal: boolean} | null {
     const metadata = getAvatarBudgetMetadata(object);
     if (metadata?.enabled !== true) return null;
     return {
@@ -781,14 +973,14 @@ function getObjectAvatarState(object: THREE.Object3D): {state: AvatarBudgetState
     };
 }
 
-function getObjectPlotState(object: THREE.Object3D): PlotBudgetState | null {
+function getObjectPlotState(object: Object3D): PlotBudgetState | null {
     const metadata = getPlotBudgetMetadata(object);
     if (metadata?.enabled !== true) return null;
     return metadata.state ?? (object.userData.plotBudgetState as PlotBudgetState | undefined) ?? "near";
 }
 
-function isTexture(value: unknown): value is THREE.Texture {
-    return !!value && (value as THREE.Texture).isTexture === true;
+function isTexture(value: unknown): value is Texture {
+    return !!value && (value as Texture).isTexture === true;
 }
 
 function getTextureQualityTier(quality: IQualitySettings["rendering"]["textureQuality"] | undefined): number {

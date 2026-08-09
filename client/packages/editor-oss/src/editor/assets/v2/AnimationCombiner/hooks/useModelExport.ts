@@ -1,7 +1,7 @@
 import {useCallback} from "react";
 import {AnimationClip} from "three";
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter.js";
-import * as WebGLTextureUtils from "three/examples/jsm/utils/WebGLTextureUtils.js";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
+import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 import type {JSONDocument} from "@gltf-transform/core";
 import {toast} from "toastywave";
 

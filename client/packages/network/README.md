@@ -1,10 +1,8 @@
 # @stem/network
 
-Pluggable network layer for the StemStudio open-source editor. The editor's
-HTTP / REST traffic flows through this package's adapter so a fork can swap
-in a different backend (a self-hosted Node mock, an alternative cloud
-provider, an OpenAPI-compatible reimplementation, etc.) without touching
-the engine itself.
+Network compatibility layer for the StemStudio open-source editor. The
+no-configuration OSS and Playground path is browser-local; remote services are
+an explicit integration choice.
 
 ## What ships today
 
@@ -22,26 +20,36 @@ type BackendAdapter = {
 
 Mode resolution:
 
-1. Query string — `?backend=local|remote` (preferred for one-off testing).
-2. Local storage — `stem.backend.mode` (sticky once chosen via query).
-3. Env — `REACT_ENGINE_BACKEND_MODE`.
-4. Default — `remote` (canonical Go backend).
+1. Query string — `?backend=local|remote` (explicit override, sticky in local
+   storage).
+2. Playground session — always `local` unless the URL explicitly requests a
+   backend.
+3. Local storage — `stem.backend.mode`.
+4. Env — `REACT_ENGINE_BACKEND_MODE`.
+5. Default — `local`.
 
-When `mode === "local"` the local server origin is resolved from
+The automatic Playground/default-local path uses the current origin and keeps
+scene persistence in the browser-backed `ProjectStore`. When `mode ===
+"local"` is selected explicitly, the local server origin is resolved from
 `?localBackendUrl=` / `?localServer=` / `REACT_ENGINE_LOCAL_BACKEND_URL`,
 falling back to `${protocol}//${hostname}:3030`. The Node reference server
-that satisfies this contract lives at `web/packages/local-backend/` in this
+that satisfies this contract lives at `client/packages/local-backend/` in this
 repo.
+
+`?backend=remote` remains an explicit opt-in for deployments that provide the
+corresponding services. Remote scene APIs are not part of the current
+Playground deployment.
 
 The active adapter is stashed on `window.__STEM_BACKEND_ADAPTER__` so
 consumers can read it without re-resolving.
 
 ### REST API surface
 
-The 35 domain modules (scenes, assets, behaviors, audio, …) that wrap the
-Go backend's REST endpoints live at `web/packages/network/src/adapters/remote-go/`.
-They're exported under the `@stem/network/api/*` subpath via a tsconfig
-+ vite path alias:
+The API-shaped domain modules (scenes, assets, behaviors, audio, …) live under
+`client/packages/network/src/adapters/remote-go/`. The directory keeps its
+legacy name, but OSS scene load/save/list paths route to `ProjectStore`.
+They're exported under the `@stem/network/api/*` subpath through tsconfig and
+Vite path aliases:
 
 ```typescript
 // Preferred: target the library boundary
@@ -52,26 +60,24 @@ import {getScene} from "@stem/network/api/scene/v2";
 import {getScene} from "@web-shared/api/scene/v2";
 ```
 
-The legacy `@web-shared/api/*` alias is preserved by an explicit
-tsconfig/vite rule that takes precedence over the bare `@web-shared/*`
-mapping, so existing code keeps working without modification while new
-code can target the canonical `@stem/network/api/*` path.
+The legacy `@web-shared/api/*` alias remains for existing imports; new code
+should target the canonical `@stem/network/api/*` path.
 
 A sibling `local-node/` adapter directory exists as a placeholder for the
-Node reference server in `web/packages/local-backend/`. See
-`adapters/local-node/README.md` for the roadmap.
+Node reference server in `client/packages/local-backend/`. See the
+[local-node roadmap](./src/adapters/local-node/README.md).
 
 ## Future direction (not in this PR)
 
 Split today's single REST surface into per-adapter implementations:
 
 ```
-web/packages/network/src/
+client/packages/network/src/
 ├── adapter.ts                     # mode selection (here today)
 ├── api.ts                         # canonical TypeScript interface
 └── adapters/
-    ├── remote-go/                 # default — wraps shared/src/api/*
-    └── local-node/                # talks to web/packages/local-backend/
+    ├── remote-go/                 # current API-shaped compatibility modules
+    └── local-node/                # talks to client/packages/local-backend/
 ```
 
 `adapter.ts` then returns the active adapter object (which exposes the
@@ -85,7 +91,7 @@ selector. You can:
 
 1. Implement an HTTP server that speaks the canonical Go backend's REST
    shape (see `server/` in the parent repo for the contract, or
-   `web/packages/local-backend/` for a minimal Node reference).
+   `client/packages/local-backend/` for a minimal Node reference).
 2. Start your server on a different origin.
 3. Launch the editor with `?backend=local&localBackendUrl=https://your-server`
    to point the entire frontend at it.

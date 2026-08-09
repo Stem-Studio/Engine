@@ -1,18 +1,29 @@
 ---
 title: StemStudio Documentation
 slug: /
-description: Learn how to build 3D games and interactive experiences with StemStudio.
+description: Learn how to build and test local 3D projects in the StemStudio Playground.
 ---
 
 # StemStudio Documentation
 
-StemStudio is a browser-based 3D game editor for building and publishing interactive experiences — no downloads, no installs.
+StemStudio is a browser-based 3D editor and runtime. The current supported
+workflow is the local-first **Playground**: create a project in the browser,
+build a scene, add gameplay, press Play, and save it locally.
+
+> **Current scope:** hosted accounts, cloud projects, public sharing,
+> collaboration, one-click publishing, and remote scene loading are not
+> deployed. Documentation that discusses those integration seams is explicitly
+> marked as future or self-hosted work.
+>
+> Mobile editing is landscape-only. Portrait intentionally asks the creator to
+> rotate the device.
 
 ## Pick Your Path
 
 These docs are layered for two audiences. Each section's README points you to the right entry point for both.
 
-- **No-code / visual editor** — drag assets, attach built-in behaviors, publish. Start with [Quickstart](/quickstart) → [Getting Started](getting-started/README.md).
+- **Visual editor** — add objects, attach built-in behaviors, and test in play
+  mode. Start with [Quickstart](/quickstart) → [Getting Started](getting-started/README.md).
 - **JavaScript developer** — write custom behaviors, lambdas, and call runtime APIs. Start with [Behaviors vs Lambdas](scripting/01-behaviors-vs-lambdas.md) → [Erth Interface](apis/01-erth-interface.md).
 
 ## Quick Links
@@ -27,32 +38,29 @@ These docs are layered for two audiences. Each section's README points you to th
 | Look up all events | [Built-in Events](apis/02-eventbus.md) |
 | Work inside the unified script editor | [Code Editor Workflow](scripting/06-code-editor-workflow.md) |
 | Make objects communicate | [Communication Patterns](scripting/04-communication-patterns.md) |
-| Create or manage projects | [Dashboard and Project Flow](getting-started/04-dashboard-and-projects.md) |
+| Create or manage local projects | [Local Project Flow](getting-started/04-dashboard-and-projects.md) |
 | Look up the full API | [Erth Interface](apis/01-erth-interface.md) |
 | Follow the tutorial | [Getting Started Tutorial](getting-started/getting-started-tutorial.md) |
 | Look up keyboard shortcuts | [Keyboard Shortcuts](editor/05-keyboard-shortcuts.md) |
 | Add an object to my scene | [Left Panel](editor/01-left-panel.md) |
-| Build for mobile | [Mobile Builds](publishing/03-mobile-builds.md) |
 | Enable multiplayer | [Multiplayer Overview](multiplayer/01-multiplayer-overview.md) |
 | Add particle effects | [Particles and VFX](gameplay/03-particles-vfx.md) |
 | Set up physics | [Physics](gameplay/01-physics.md) |
-| Publish to Steam/Discord/CrazyGames | [Platform Integrations](publishing/04-platform-integrations.md) |
 | Look up all primitives | [Primitives Reference](assets/03-primitives-reference.md) |
-| Publish my game | [Publishing Games](publishing/01-publishing-games.md) |
+| Move or self-host a project | [Saving and Sharing](shipping.md) |
 | Configure an object | [Right Panel](editor/02-right-panel.md) |
 | Review art asset guidelines | [Art Specs & Recommendations](assets/10-art-specs.md) |
 | Build an outdoor world | [World Building and Environment](gameplay/07-world-building.md) |
 | Add gameplay logic | [Writing Behaviors](scripting/02-writing-behaviors.md) |
-| Persist player progress / inventory / currency across sessions | [Game Services API](services/README.md) |
-| Implement player-to-player trading | [Inventory, Currency, Trading](services/03-inventory-currency-trading.md) |
-| Add a leaderboard | [Player and Progression](services/02-player-and-progression.md) |
+| Fix a local editor problem | [Troubleshooting](troubleshooting.md) |
 
 ---
 
 ## Documentation Sections
 
 ### [Getting Started](getting-started/README.md)
-Product overview, editor walkthrough, first game tutorial, and project/dashboard basics.
+Playground overview, editor walkthrough, first game tutorial, and local project
+basics.
 
 ### [Editor](editor/README.md)
 Left panel, right panel, toolbar, project settings, and keyboard shortcuts.
@@ -75,8 +83,9 @@ AI copilot, AI NPCs, 3D model generation, and image generation.
 ### [Multiplayer](multiplayer/README.md)
 Multiplayer mental model and writing multiplayer-safe code.
 
-### [Publishing](publishing/README.md)
-Publishing games, publishing assets, mobile builds, and platform integrations.
+### [Saving and Sharing](shipping.md)
+What is saved locally today, how folder projects work, and what is not yet a
+supported export or publishing flow.
 
-### [Game Services API](services/README.md)
-Backend REST + WebSocket APIs for persistent player profiles, progression, inventory, currency, trading, world state, combat, asset delivery, and telemetry. Multi-tenant — works for any StemStudio game.
+### [Troubleshooting](troubleshooting.md)
+Playground storage, WebGPU, save, physics, asset, and AI checks.

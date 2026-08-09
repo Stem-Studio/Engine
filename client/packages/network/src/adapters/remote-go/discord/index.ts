@@ -5,7 +5,6 @@ import {showToast} from "@web-shared/showToast";
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 
-import {IS_OSS} from "../../../buildMode";
 
 // --- Discord User Management ---
 // Discord types
@@ -429,28 +428,8 @@ export const authenticateWithRefreshToken = async (
     }
 };
 
-export const checkKeys = async (sceneID: string): Promise<boolean> => {
-    if (IS_OSS) return false;
-    try {
-        const params = new URLSearchParams({
-            sceneID: sceneID,
-        });
-        const endpoint = backendUrlFromPath("/api/Discord/CheckKeys") || "/api/Discord/CheckKeys";
-        const response = await Ajax.get({url: `${endpoint}?${params}`});
-        if (!response?.data) {
-            throw new Error(`DiscordCheckKeys failed: No response data`);
-        }
-
-        const responseData = response.data as ApiResponse<CheckKeysResponseData>;
-        if (responseData.Code !== 200) {
-            throw new Error(`DiscordCheckKeys failed: ${responseData.Msg}`);
-        }
-
-        return !!responseData.Data.configured;
-    } catch (error) {
-        console.error("Error checking Discord keys:", error);
-        throw error;
-    }
+export const checkKeys = async (_sceneID: string): Promise<boolean> => {
+    return false;
 };
 
 export const saveKeys = async (clientId: string, clientSecret: string, sceneID: string): Promise<void> => {

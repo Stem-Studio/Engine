@@ -5,8 +5,7 @@
  */
 
 
-import * as THREE from "three";
-
+import {Quaternion, Vector3} from "three";
 import BaseControls from "./BaseControls";
 
 const STATE = {
@@ -16,9 +15,9 @@ const STATE = {
     Right: 4,
 };
 
-const UP = new THREE.Vector3(0, 1, 0);
-const FORWARD = new THREE.Vector3(0, 0, -1);
-const RIGHT = new THREE.Vector3(1, 0, 0);
+const UP = new Vector3(0, 1, 0);
+const FORWARD = new Vector3(0, 0, -1);
+const RIGHT = new Vector3(1, 0, 0);
 
 /**
  *
@@ -29,16 +28,15 @@ class FirstPersonControls extends BaseControls {
         super(camera, domElement);
 
         this.height = camera.position.y;
-        camera.lookAt(new THREE.Vector3(0, this.height, 0));
+        camera.lookAt(new Vector3(0, this.height, 0));
 
         this.panSpeed = 0.1;
         this.rotationSpeed = 0.1 * Math.PI / 180;
 
         this.state = null;
 
-        this.up = new THREE.Vector3();
-        this.forward = new THREE.Vector3();
-        this.right = new THREE.Vector3();
+        this.forward = new Vector3();
+        this.right = new Vector3();
 
         this.onKeyDown = this.onKeyDown.bind(this);
         this.onKeyUp = this.onKeyUp.bind(this);
@@ -85,11 +83,11 @@ class FirstPersonControls extends BaseControls {
         }
 
         if (!this.quaternion1) {
-            this.quaternion1 = new THREE.Quaternion();
+            this.quaternion1 = new Quaternion();
         }
 
         if (!this.quaternion2) {
-            this.quaternion2 = new THREE.Quaternion();
+            this.quaternion2 = new Quaternion();
         }
 
         let camera = this.camera;
@@ -106,6 +104,7 @@ class FirstPersonControls extends BaseControls {
         this.forward.applyQuaternion(this.quaternion1).applyQuaternion(this.quaternion2).add(camera.position);
 
         camera.lookAt(this.forward);
+        this.call("update", this);
     }
 
     onPointerlockChange() {
@@ -120,7 +119,7 @@ class FirstPersonControls extends BaseControls {
 
     update() {
         if (!this.state) {
-            return;
+            return false;
         }
 
         let camera = this.camera;
@@ -140,6 +139,8 @@ class FirstPersonControls extends BaseControls {
         } else if (this.state === STATE.Right) {
             camera.position.add(this.right);
         }
+
+        return true;
     }
 
     dispose() {

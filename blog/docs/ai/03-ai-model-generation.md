@@ -1,13 +1,18 @@
 ---
 title: AI 3D Model Generation
 slug: ai-model-generation
-description: Generate 3D models from text prompts or images using Meshy, Tripo, and Erth AI providers, including rigging and animation retargeting.
+description: Generate 3D models in supported modes, including the browser-direct Meshy and Rodin Playground path.
 status: draft
 audience: creators
 prerequisites: [getting-started/02-editor-tour]
 ---
 
 # AI 3D Model Generation
+
+> **Playground scope:** the deployed Playground offers only providers that can
+> run browser-direct. The current allowlist is Meshy and Rodin. Tripo, Erth,
+> server-side rigging, and other proxy-backed flows described below are
+> integration/reference material and are not available in Playground mode.
 
 StemStudio lets you generate 3D models directly in the editor using text descriptions or reference images. Instead of searching asset libraries or learning 3D modeling software, you describe what you want and AI generates a downloadable GLB model.
 
@@ -23,13 +28,15 @@ Use this page when you need to answer questions like:
 
 ## Providers
 
-StemStudio supports three generation providers, each with different strengths:
+The repository contains several provider integrations. Availability depends on
+the running mode:
 
 | Provider | Input Types | Key Strength |
 |----------|------------|--------------|
 | **Meshy** | Text-to-3D | High-quality refinement pipeline with optional rigging |
-| **Tripo** | Text-to-3D, Image-to-3D | Automatic rigging with biped/quadruped detection and animation retargeting |
-| **Erth** | Text-to-3D | Primitive-based composition using basic shapes |
+| **Rodin** | Text-to-3D | Browser-direct Playground generation where provider CORS permits |
+| **Tripo** | Text-to-3D, Image-to-3D | Proxy-backed compatibility path; not available in Playground |
+| **Erth** | Text-to-3D | Remote compatibility path; not available in Playground |
 
 The default provider can be configured at the project level. You can also specify which provider to use per request.
 
@@ -243,7 +250,9 @@ If you are targeting mobile or low-end devices, mention it in the prompt or set 
 
 ## Things To Know
 
-- Model generation requires sign-in and is subject to usage limits.
+- Playground generation requires your own supported provider key. Provider
+  quota, billing, CORS, and content policies apply; no StemStudio sign-in is
+  required.
 - Generation is asynchronous. You can continue working in the editor while a model generates.
 - GLB is the output format for all providers. GLB files include geometry, textures, and (if rigged) skeleton data.
 - Generated models are added to your scene as standard 3D objects with full physics and behavior support.

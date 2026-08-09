@@ -5,15 +5,14 @@
  * @author WestLangley / http://github.com/WestLangley
  */
 
-import * as THREE from "three";
-
+import {Box3, EventDispatcher, Matrix3, Sphere, Spherical, Vector2, Vector3} from "three";
 let EditorControlsImpl = function (object, domElement) {
     domElement = domElement !== undefined ? domElement : document;
 
     // API
 
     this.enabled = true;
-    this.center = new THREE.Vector3();
+    this.center = new Vector3();
     this.panSpeed = 0.002;
     this.zoomSpeed = 0.1;
     this.rotationSpeed = 0.005;
@@ -21,9 +20,9 @@ let EditorControlsImpl = function (object, domElement) {
     // internals
 
     var scope = this;
-    var vector = new THREE.Vector3();
-    var delta = new THREE.Vector3();
-    var box = new THREE.Box3();
+    var vector = new Vector3();
+    var delta = new Vector3();
+    var box = new Box3();
 
     var STATE = {NONE: -1, ROTATE: 0, ZOOM: 1, PAN: 2};
     var state = STATE.NONE;
@@ -31,11 +30,11 @@ let EditorControlsImpl = function (object, domElement) {
     var ctrlDown = false;
 
     var center = this.center;
-    var normalMatrix = new THREE.Matrix3();
-    var pointer = new THREE.Vector2();
-    var pointerOld = new THREE.Vector2();
-    var spherical = new THREE.Spherical();
-    var sphere = new THREE.Sphere();
+    var normalMatrix = new Matrix3();
+    var pointer = new Vector2();
+    var pointerOld = new Vector2();
+    var spherical = new Spherical();
+    var sphere = new Sphere();
 
     // events
 
@@ -249,8 +248,8 @@ let EditorControlsImpl = function (object, domElement) {
 
     // touch
 
-    var touches = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
-    var prevTouches = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    var touches = [new Vector3(), new Vector3(), new Vector3()];
+    var prevTouches = [new Vector3(), new Vector3(), new Vector3()];
 
     var prevDistance = null;
 
@@ -338,7 +337,7 @@ let EditorControlsImpl = function (object, domElement) {
     updateClippingPlanes();
 };
 
-EditorControlsImpl.prototype = Object.create(THREE.EventDispatcher.prototype);
+EditorControlsImpl.prototype = Object.create(EventDispatcher.prototype);
 EditorControlsImpl.prototype.constructor = EditorControlsImpl;
 
 export default EditorControlsImpl;

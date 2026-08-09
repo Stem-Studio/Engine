@@ -34,6 +34,14 @@ StemStudio supports two physics engines that you can choose between per project:
 
 Pick the engine from Project Settings. Most APIs are engine-agnostic, so behaviors written against one engine generally work against the other.
 
+Ammo and Rapier are the complete supported backend list. Older project data
+that names a removed backend falls back to Ammo when loaded.
+
+The shared API does not guarantee bit-for-bit parity. Solver tuning, contact
+ordering, joints, character motion, and vehicle feel can differ, so choose one
+backend early and test important gameplay on that backend throughout
+development.
+
 ![Project Settings panel showing the physics engine dropdown](images/phyiscs%20engine%20type.png)
 
 ## Body Types
@@ -200,6 +208,32 @@ Damping reduces velocity over time, like air resistance.
 | **Angular Damping** | Reduces rotation speed over time (default: 0) |
 
 Higher damping values make objects come to rest faster. This is useful for preventing objects from sliding or spinning indefinitely.
+
+## Continuous Collision Detection (CCD)
+
+Fast dynamic bodies can travel farther than their own size in one fixed step,
+which can make a projectile tunnel through a thin wall. Enable **Continuous
+collision** in the object physics settings for projectiles, bullets, and other
+high-speed dynamic bodies. CCD is implemented by both Ammo and Rapier and is
+forwarded through the worker path.
+
+The creator API exposes the same setting:
+
+```ts
+erth.scene.addObject(projectile, {
+  physics: {
+    enabled: true,
+    bodyType: "dynamic",
+    shape: "sphere",
+    mass: 1,
+    ccd: true,
+  },
+});
+```
+
+CCD has a CPU cost. Keep it off for ordinary crates, scenery, and slow-moving
+objects; prefer it for small bodies whose speed can exceed their diameter per
+frame.
 
 ## Is Trigger (Ghost Mode)
 

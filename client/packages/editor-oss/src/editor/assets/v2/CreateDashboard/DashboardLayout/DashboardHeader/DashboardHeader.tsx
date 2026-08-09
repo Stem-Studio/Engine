@@ -44,14 +44,13 @@ import {
     NavDivider,
 } from "./DashboardHeader.style";
 import {ROUTES} from "@web-shared/routes";
-import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {Avatar} from "../../../Avatar/Avatar";
 import {Tooltip} from "../../../common/Tooltip";
-import {CreditsBar} from "../../../CreditsBar/CreditsBar";
 import logo from "../../../HUD/HUDView/FloatingNav/AppVersion/stem-studio-alpha.png";
 import {PAGES} from "../../constants";
 import {trackNavigationClick} from "@stem/editor-oss/utils/productAnalytics";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 
 const DASHBOARD_FTUE_SEARCH_PARAM = "dashboard-ftue";
 const DASHBOARD_GUIDE_ROUTES = new Set<string>([
@@ -101,9 +100,9 @@ const NAV_ITEMS: NavItem[] = [
     },
 ];
 
-// In OSS, the only meaningful surfaces are Create (home) and My Projects.
+// In the local app, the meaningful surfaces are Create (home) and My Projects.
 // They render with the same text-link styling as Create — no buttons, no
-// chips. Remix / Browse / community feeds depend on the hosted gallery
+// chips. Remix / Browse / community feeds require a remote gallery service
 // and are dropped.
 const OSS_NAV_ITEMS: NavItem[] = [
     {
@@ -232,9 +231,7 @@ export const DashboardHeader = () => {
     }, [location.pathname]);
     const showGuideButton = isAuthorized && DASHBOARD_GUIDE_ROUTES.has(location.pathname);
     const normalizedActivePage = activePage === PAGES.DISCOVER ? PAGES.BROWSE : activePage;
-    // OSS swaps the entire nav out for a 2-entry "Create / My Projects"
-    // set; Remix + Browse + community feeds are hosted-only.
-    const navSource = IS_OSS ? OSS_NAV_ITEMS : NAV_ITEMS;
+    const navSource = OSS_NAV_ITEMS;
     const visibleNavItems = isPhoneHeader
         ? navSource.filter(({label}) => label === PAGES.DASHBOARD || label === PAGES.BROWSE || label === PAGES.PROJECTS)
         : navSource;
@@ -290,60 +287,6 @@ export const DashboardHeader = () => {
 
                 <RightSide>
                     <DesktopRightItems>
-                        {!IS_OSS && <MyProjectsSplit ref={myProjectsSplitRef}>
-                            <MyProjectsSplitInner $active={isProjectsActive || isAvatarsActive}>
-                            <MyProjectsMain
-                                onClick={handleMainSplitClick}
-                                data-testid="nav-my-projects"
-                                aria-label={isAvatarsActive ? t("My Avatars") : t("My Projects")}
-                            >
-                                {isAvatarsActive ? <HiOutlineUserCircle /> : <HiOutlineFolder />}
-                                <span>{isAvatarsActive ? t("My Avatars") : t("My Projects")}</span>
-                            </MyProjectsMain>
-                            {!IS_OSS && (
-                                <MyProjectsChevron
-                                    $open={myProjectsMenuOpen}
-                                    onClick={() => setMyProjectsMenuOpen(prev => !prev)}
-                                    aria-haspopup="menu"
-                                    aria-expanded={myProjectsMenuOpen}
-                                    aria-label={t("Toggle projects/avatars menu")}
-                                    data-testid="nav-my-projects-dropdown"
-                                >
-                                    <HiOutlineChevronDown />
-                                </MyProjectsChevron>
-                            )}
-                            </MyProjectsSplitInner>
-                            {!IS_OSS && myProjectsMenuOpen && (
-                                <MyProjectsMenu role="menu">
-                                    <MyProjectsMenuItem
-                                        role="menuitem"
-                                        $selected={!isAvatarsActive}
-                                        onClick={() => {
-                                            setMyProjectsMenuOpen(false);
-                                            handleMyProjectsClick();
-                                        }}
-                                        data-testid="nav-menu-my-projects"
-                                    >
-                                        <HiOutlineFolder />
-                                        <span>{t("My Projects")}</span>
-                                        <HiOutlineCheck className="check" />
-                                    </MyProjectsMenuItem>
-                                    <MyProjectsMenuItem
-                                        role="menuitem"
-                                        $selected={isAvatarsActive}
-                                        onClick={() => {
-                                            setMyProjectsMenuOpen(false);
-                                            handleMyAvatarsClick();
-                                        }}
-                                        data-testid="nav-menu-my-avatars"
-                                    >
-                                        <HiOutlineUserCircle />
-                                        <span>{t("My Avatars")}</span>
-                                        <HiOutlineCheck className="check" />
-                                    </MyProjectsMenuItem>
-                                </MyProjectsMenu>
-                            )}
-                        </MyProjectsSplit>}
                         {isAuthorized ? (
                             <>
                                 {showGuideButton && (
@@ -361,9 +304,6 @@ export const DashboardHeader = () => {
                                         </IconButton>
                                     </Tooltip>
                                 )}
-                                {/* CreditsBar wraps the BYOK AI-credits balance.
-                                    Not applicable in OSS where keys are user-supplied. */}
-                                {!IS_OSS && <CreditsBar className="header-credits" />}
                                 {canShowAdmin && (
                                     <IconButton
                                         onClick={() => navigate(ROUTES.ADMIN_PANEL)}
@@ -373,21 +313,6 @@ export const DashboardHeader = () => {
                                     >
                                         <HiOutlineCog6Tooth />
                                     </IconButton>
-                                )}
-                                {/* OSS doesn't manage avatars or per-user
-                                    settings; hide the avatar/settings entry. */}
-                                {!IS_OSS && (
-                                    <button
-                                        onClick={() => navigate(ROUTES.SETTINGS)}
-                                        className="reset-css"
-                                        aria-label={t("Settings")}
-                                    >
-                                        <Avatar
-                                            name={dbUser?.username || undefined}
-                                            image={dbUser?.avatar || undefined}
-                                            size={40}
-                                        />
-                                    </button>
                                 )}
                             </>
                         ) : (
@@ -439,39 +364,18 @@ export const DashboardHeader = () => {
                 </MobileDrawerHeader>
                 <MobileDrawerNav aria-label="Menu navigation">
                     <MobileDrawerSection>
-                        <MobileDrawerAction
-                            type="button"
-                            onClick={() => navigateFromDrawer(ROUTES.REMIX, "mobile_menu_remix")}
-                            $active={normalizedActivePage === PAGES.REMIX}
-                            data-testid="mobile-menu-remix"
-                        >
-                            <RemixNavIcon />
-                            <span>{PAGES.REMIX}</span>
-                        </MobileDrawerAction>
-                        <MobileDrawerAction
-                            type="button"
-                            onClick={() => {
-                                handleMyProjectsClick();
-                                setMobileMenuOpen(false);
-                            }}
-                            $active={normalizedActivePage === PAGES.PROJECTS}
-                            data-testid="mobile-menu-my-projects"
-                        >
-                            <HiOutlineFolder />
-                            <span>{t("My Projects")}</span>
-                        </MobileDrawerAction>
-                        <MobileDrawerAction
-                            type="button"
-                            onClick={() => {
-                                handleMyAvatarsClick();
-                                setMobileMenuOpen(false);
-                            }}
-                            $active={normalizedActivePage === PAGES.AVATARS}
-                            data-testid="mobile-menu-my-avatars"
-                        >
-                            <HiOutlineUserCircle />
-                            <span>{t("My Avatars")}</span>
-                        </MobileDrawerAction>
+                        {OSS_NAV_ITEMS.map(({label, displayLabel, route, renderIcon}) => (
+                            <MobileDrawerAction
+                                key={`mobile-${label}-${route}`}
+                                type="button"
+                                onClick={() => navigateFromDrawer(route, `mobile_menu_${label.toLowerCase()}`)}
+                                $active={normalizedActivePage === label}
+                                data-testid={`mobile-menu-${label.toLowerCase()}`}
+                            >
+                                {renderIcon()}
+                                <span>{displayLabel}</span>
+                            </MobileDrawerAction>
+                        ))}
                     </MobileDrawerSection>
                     <MobileDrawerSection>
                         {isAuthorized ? (
@@ -485,9 +389,6 @@ export const DashboardHeader = () => {
                                         <span>{t("Guide")}</span>
                                     </MobileDrawerAction>
                                 )}
-                                <div className="mobile-drawer-credits">
-                                    <CreditsBar />
-                                </div>
                                 {canShowAdmin && (
                                     <MobileDrawerAction
                                         type="button"

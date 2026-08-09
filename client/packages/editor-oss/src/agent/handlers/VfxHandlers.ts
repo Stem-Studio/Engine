@@ -32,6 +32,7 @@ import {setAssetRevision} from "../../asset-management/AssetResolutionContext";
 import {createAsset} from "../../editor/asset-management/hooks/assets";
 import EngineRuntime from "../../EngineRuntime";
 import {DEFAULT_PARTICLE_CONFIG} from "../../services";
+import {findObjectByUuidOrNameDepthFirst} from "../../utils/SceneTraverser";
 import {setVfxId} from "../../vfx/util";
 import {CommandResult} from "../types/ACPTypes";
 
@@ -437,15 +438,7 @@ export class VFXHandlers {
     // Helper methods
 
     private findObject(identifier: string): THREE.Object3D | null {
-        // Try by UUID first
-        let object = this.engine.scene.getObjectByProperty("uuid", identifier);
-
-        // Try by name if UUID search fails
-        if (!object) {
-            object = this.engine.scene.getObjectByName(identifier);
-        }
-
-        return object || null;
+        return findObjectByUuidOrNameDepthFirst(this.engine.scene, identifier);
     }
 
     private findVFXEmitter(identifier: string): ParticleEmitter | null {

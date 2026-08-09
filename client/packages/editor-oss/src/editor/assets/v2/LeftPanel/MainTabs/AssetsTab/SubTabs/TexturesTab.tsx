@@ -1,5 +1,5 @@
 import I18n from "i18next";
-import React, {useEffect, useState} from "react";
+import {useEffect, useState} from "react";
 
 import {EmptyAssetsState} from "./EmptyAssetsState";
 import global from "@stem/editor-oss/global";

@@ -8,19 +8,23 @@ type Props = {
     onChange: (e: ChangeEvent<HTMLInputElement | undefined>) => void;
     style?: CSSProperties;
     disabled?: boolean;
+    ariaLabel?: string;
+    dataTestId?: string;
 };
 
-export const StyledSwitch = ({checked, onChange, style, disabled}: Props) => {
+export const StyledSwitch = ({checked, onChange, style, disabled, ariaLabel, dataTestId}: Props) => {
     return (
         <Switch style={style}
             $disabled={disabled}
             className="SwitchComponent"
+            data-testid={dataTestId}
         >
             <input
                 type="checkbox"
                 checked={StringUtils.parseBoolean(checked?.toString()) ?? false}
                 onChange={onChange}
                 disabled={disabled}
+                aria-label={ariaLabel}
             />
             <Slider className="slider round" />
         </Switch>

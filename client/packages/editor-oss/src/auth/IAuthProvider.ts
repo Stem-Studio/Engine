@@ -29,9 +29,8 @@ export type AuthProviderId = "google.com" | "apple.com" | "facebook.com" | "gith
 
 /**
  * IAuthProvider is the seam between editor UI and any authentication
- * surface. Integrated mode wires a `FirebaseAuthProvider` (talks to
- * Firebase Auth). OSS mode wires a `NullAuthProvider` (returns the
- * dummy local user so AI-server BYOK requests still flow).
+ * surface. This repository wires `NullAuthProvider`, which returns the
+ * dummy local user so AI-server BYOK requests still flow.
  *
  * Editor code reads `getCurrentUser()` and `onAuthStateChanged` for state,
  * and calls the sign-in / account-management methods for flows. Calls

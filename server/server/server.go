@@ -54,10 +54,7 @@ func resolvedAuthMiddleware() AuthMiddlewareFunc {
 //
 // Then, we use `httptreemux` to map route to the handler.
 func Start() {
-	// Honor a runtime port override. In OSS mode `bun run dev:oss` sets
-	// AI_SERVER_PORT=8081 (see .env.oss.example); integrated deployments
-	// continue using the config.toml port unless an explicit override is
-	// supplied. Accept either ":8081" or "8081".
+	// Honor a runtime port override. Accept either ":8081" or "8081".
 	if portOverride := os.Getenv("AI_SERVER_PORT"); portOverride != "" {
 		if portOverride[0] != ':' {
 			portOverride = ":" + portOverride
@@ -81,18 +78,7 @@ func Start() {
 		}
 	}()
 
-	// Initialize LakeFS storage bucket (creates if not exists). OSS mode is a
-	// local AI proxy with no LakeFS/S3 backing store, so it must not attempt
-	// remote storage initialization at startup.
-	if os.Getenv("BUILD_MODE") == "oss" {
-		logger.GetLogger().Info("BUILD_MODE=oss — skipping LakeFS storage bucket initialization")
-	} else {
-		if err := serverContext.EnsureLakeFSBucketExists(); err != nil {
-			logger.GetLogger().Warn("Failed to initialize LakeFS storage bucket - asset operations may fail",
-				zap.Error(err),
-			)
-		}
-	}
+	logger.GetLogger().Info("Open-source server: skipping LakeFS storage bucket initialization")
 
 	// register custom mime-constants
 	if err := mime.AddExtensionType(".css", "text/css"); err != nil {

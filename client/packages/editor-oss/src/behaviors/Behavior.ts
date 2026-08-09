@@ -10,6 +10,22 @@ import type {BehaviorWorkerPool} from "./worker/BehaviorWorkerPool";
 
 export type WorkerRuntime = "play" | "editor";
 export const RAW_BEHAVIOR_SYMBOL = Symbol("rawBehavior");
+export type BehaviorLifecycleHookName =
+    | "init"
+    | "dispose"
+    | "update"
+    | "fixedUpdate"
+    | "onStart"
+    | "onStop"
+    | "onPaused"
+    | "onResumed"
+    | "onReset"
+    | "onEvent"
+    | "onAttributesUpdated"
+    | "onStateUpdated"
+    | "onAttributeChangeRequested"
+    | "onAttributeChanged";
+export const BEHAVIOR_LIFECYCLE_HOOK_QUERY = Symbol.for("stem.editor-oss.behaviorLifecycleHookQuery");
 
 const readonlyValueProxyCache = new WeakMap<object, unknown>();
 
@@ -118,6 +134,7 @@ export interface BehaviorOptions {
     uuid?: string;
     attributes?: Record<string, any>;
     throttleConfig?: BehaviorThrottleConfig;
+    yieldToFrame?: () => Promise<void>;
 }
 
 export type BehaviorConstructor = new (
@@ -153,8 +170,7 @@ export interface Behavior {
 
     /**
      * Called at fixed timestep for physics-dependent logic (similar to Godot's _physics_process).
-     * Runs in FIXED_UPDATE stage when FrameOrchestrator is enabled and "Fixed Rate Behaviors" is on.
-     * The rate is determined by scheduler.fixedTimestepHz from quality settings (e.g., 60Hz on desktop).
+     * In legacy runtime, fixedUpdate-only behaviors run from the normal update pass.
      * Behaviors that need deterministic physics interaction should implement this method.
      * Visual smoothing can be done in update() using interpolationAlpha.
      * @param fixedDeltaTime - Fixed timestep in seconds (e.g., 1/60 = 0.0167s at 60Hz)
@@ -200,6 +216,10 @@ export interface Behavior {
 
     // Find all behaviors of a type in the scene
     findBehaviors(id: string): Behavior[];
+
+    // Yield to the browser during expensive startup work. Mostly used by
+    // generated/imported behaviors that build large visuals in init/onStart.
+    "yield"(): Promise<void>;
 
     // Optional hook: accept/reject incoming attribute change requests. Return false to reject.
     onAttributeChangeRequested?(key: string, newValue: any, oldValue: any, requester: Behavior | null): boolean;
@@ -251,8 +271,10 @@ export interface Behavior {
 
     // Editor specific methods
 
+    [BEHAVIOR_LIFECYCLE_HOOK_QUERY]?(hookName: BehaviorLifecycleHookName): boolean;
+
     // Called when the behavior is added to the editor
-    onEditorAdded?(editor: Editor): void;
+    onEditorAdded?(editor: Editor): void | Promise<void>;
 
     // Called when the behavior is removed from the editor
     // Beware its not called when editor is disposed, like when you switch to game mode
@@ -312,10 +334,25 @@ export class BehaviorBase implements Behavior {
         return this.stem;
     }
     readonly gameObject: GameObject;
-    target: Object3D; // in MP scenarios we may replace the target
+    // Keep the engine-owned target in a private namespace that cannot collide
+    // with authored behavior state. User scripts commonly use `_target` as a
+    // scratch field (for example, a current AI/combat target).
+    private __behaviorTarget: Object3D; // in MP scenarios we may replace the target
+    get target(): Object3D {
+        return this.__behaviorTarget;
+    }
+
+    set target(newTarget: Object3D) {
+        const previousTarget = this.__behaviorTarget;
+        this.__behaviorTarget = newTarget;
+        if (previousTarget !== newTarget) {
+            this.syncTargetIndex(previousTarget);
+        }
+    }
     readonly id: string;
     readonly uuid: string;
     readonly attributes: Record<string, any>;
+    private readonly yieldToFrame?: () => Promise<void>;
     public throttleConfig: BehaviorThrottleConfig = {
         throttlePriority: BehaviorThrottlePriority.MEDIUM,
         enableFrustumCulling: true,
@@ -334,10 +371,11 @@ export class BehaviorBase implements Behavior {
         // so existing callers don't need to migrate in lockstep.
         this.stem = (options as {stem?: StemEngineInterface}).stem ?? options.erth;
         this.gameObject = options.gameObject;
-        this.target = target;
+        this.__behaviorTarget = target;
         this.id = id;
         this.uuid = options.uuid || MathUtils.generateUUID();
         this.attributes = options.attributes || {};
+        this.yieldToFrame = options.yieldToFrame;
         if (options.throttleConfig) {
             this.throttleConfig = {
                 ...this.throttleConfig,
@@ -392,6 +430,11 @@ export class BehaviorBase implements Behavior {
         return (this as any)._behaviorBaseGame ?? (this as any).game;
     }
 
+    private syncTargetIndex(previousTarget?: Object3D): void {
+        const game = this._getGame() as GameManager | undefined;
+        game?.behaviorManager?.syncBehaviorTargetIndex?.(this, previousTarget);
+    }
+
     requestAttributeChange(key: string, value: any, options?: AttributeChangeOptions): Promise<AttributeChangeResult> | AttributeChangeResult {
         return this._getGame().behaviorManager!.requestAttributeChange(this, key, value, null, options);
     }
@@ -404,5 +447,9 @@ export class BehaviorBase implements Behavior {
 
     findBehaviors(id: string): Behavior[] {
         return this._getGame().behaviorManager!.getBehaviorsById(id).map(behavior => createForeignBehaviorView(behavior, this));
+    }
+
+    async yield(): Promise<void> {
+        await this.yieldToFrame?.();
     }
 }

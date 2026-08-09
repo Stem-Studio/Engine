@@ -3,16 +3,16 @@
  * Renders the same UIKit components used at runtime into a small canvas
  * embedded in the editor, providing a live preview of the HUD layout.
  */
-import {Fullscreen, initGlyphNodeMaterials, initNodeMaterials, setDefaultRenderOrder} from "@ni2khanna/uikit";
+import {Fullscreen} from "@ni2khanna/uikit";
 import {forwardHtmlEvents} from "@pmndrs/pointer-events";
 import * as THREE from "three";
 
 
-import {RenderOrder} from "../../../../constants/RenderOrder";
 import {GameDataType} from "@stem/editor-oss/context/HUDGameContext";
 import {HUD_TABS, InGameMenuDataType, StartGameMenuDataType} from "@stem/editor-oss/editor/assets/v2/HUD/HUDEditView/types";
 import {InGameData} from "@stem/editor-oss/editor/assets/v2/HUD/HUDView/types";
 import {HUD_UIKIT_FONT_FAMILIES} from "../fonts";
+import {ensureUIKitRuntimeInitialized} from "../../../uikit/UIKitInitialization";
 import {UIKitGameHUD} from "../screens/UIKitGameHUD";
 import {UIKitInGameMenu} from "../screens/UIKitInGameMenu";
 import {UIKitStartMenu} from "../screens/UIKitStartMenu";
@@ -62,9 +62,7 @@ export class UIKitHUDPreview {
     }
 
     private async init() {
-        await initNodeMaterials();
-        await initGlyphNodeMaterials();
-        setDefaultRenderOrder(RenderOrder.UI);
+        await ensureUIKitRuntimeInitialized();
 
         this.fullscreen = new Fullscreen(this.renderer, {
             flexDirection: "column",

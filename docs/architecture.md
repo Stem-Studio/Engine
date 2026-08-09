@@ -1,8 +1,21 @@
 # Architecture
 
-StemStudio OSS runs entirely on your machine. There is no hosted backend, no account service, no cloud sync. This document explains the three processes that make up a running StemStudio instance and how they communicate.
+StemStudio's supported Playground workflow runs locally in the browser. There
+is no deployed account service, cloud project store, or remote scene loader.
+This document separates that browser-only path from optional development
+sidecars.
 
-## The three processes
+## Runtime shapes
+
+| Shape | Project source | AI path | Multiplayer |
+| --- | --- | --- | --- |
+| Public Playground | IndexedDB (chooser hidden) | Browser-direct BYOK for supported providers | Not hosted |
+| Local full development (`bun run dev`) | IndexedDB or selected local folder | Optional Go proxy | Optional local Colyseus sidecar |
+| Remote/API mode | Scene and asset APIs | Deployment-defined | Deployment-defined |
+
+The remote/API mode is an integration seam, not a deployed product workflow.
+
+## Local full-development processes
 
 ```
 +- BROWSER ----------------------------------------------------------------+
@@ -12,7 +25,7 @@ StemStudio OSS runs entirely on your machine. There is no hosted backend, no acc
 |   AI client       MP client     Persistence:                             |
 |      |                |          IndexedDB  OR                           |
 |      |                |          File System Access                      |
-|   BYOK keystore       |          (chosen at first-time bootstrap modal)  |
+|   BYOK keystore       |          (Playground defaults to IndexedDB)      |
 |   (IndexedDB)         |                                                  |
 +------|----------------|--------------------------------------------------+
        |                |
@@ -45,7 +58,7 @@ StemStudio OSS runs entirely on your machine. There is no hosted backend, no acc
 
 Serves the React + Three.js editor at `http://localhost:5173` in dev and as a static bundle in production builds. All editor UI, scene management, behaviors, lambdas, physics, rendering, and the Monaco script editor live here.
 
-### AI server (Go)
+### AI server (Go, optional)
 
 Runs at `http://localhost:8081`. A small Go binary that:
 
@@ -56,7 +69,7 @@ Runs at `http://localhost:8081`. A small Go binary that:
 
 The AI server holds no state across restarts. Restart it and the editor will re-submit any BYOK keys the user has saved in IndexedDB.
 
-### Multiplayer sidecar (Node + Colyseus)
+### Multiplayer sidecar (Node + Colyseus, optional)
 
 Runs at `ws://localhost:2567`. A Colyseus server with in-memory room state. No database. Two browser tabs on the same machine can join the same room and exchange schema-synced state.
 
@@ -64,26 +77,34 @@ If you don't need multiplayer, this process can be killed without affecting anyt
 
 ## Communication
 
-| From | To | Protocol | Notes |
-|---|---|---|---|
-| Editor | AI server | HTTPS (HTTP in dev) | Bearer-style `X-BYOK-Key` header when no env key is configured |
-| Editor | MP sidecar | WebSocket (Colyseus protocol) | Same protocol as a production deployment |
-| AI server | Anthropic / OpenAI / Meshy / ElevenLabs / AnythingWorld | HTTPS | Direct egress from your machine |
-| Editor | IndexedDB | Browser API | Auto-save and BYOK key storage |
-| Editor | Local folder | File System Access API (Chromium) | Optional, chosen at first-time bootstrap |
+| From      | To                                                      | Protocol                          | Notes                                                          |
+| --------- | ------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------- |
+| Editor    | AI server                                               | HTTPS (HTTP in dev)               | Optional local-development path; Playground AI can be browser-direct |
+| Editor    | MP sidecar                                              | WebSocket (Colyseus protocol)     | Same protocol as a production deployment                       |
+| AI server | Anthropic / OpenAI / Meshy / ElevenLabs / AnythingWorld | HTTPS                             | Direct egress from your machine                                |
+| Editor    | IndexedDB                                               | Browser API                       | Auto-save and BYOK key storage                                 |
+| Editor    | Local folder                                            | File System Access API (Chromium) | Optional in the normal local editor; the public Playground hides the chooser |
 
 ## Persistence model
 
-On first run, the editor asks how you want to store projects:
+The public Playground hides the storage bootstrap and uses IndexedDB by
+default. A normal local editor launch can expose the storage chooser:
 
 1. **IndexedDB** — projects live in the browser's storage. Auto-save, no permissions needed, works in every browser. Limited by browser quota (typically several hundred MB).
-2. **Local folder** (Chromium only) — pick a directory. Projects are saved as `.stemscript` files inside it. Survives browser data clears, git-friendly, no quota.
+2. **Local folder** (Chromium only) — pick a directory. Projects are saved as
+   `.stemscript.json` files with packaged asset data. This survives browser data
+   clears and is suitable for external backups.
 
-Your choice is saved in `localStorage` and can be changed from Settings. Switching modes does not migrate existing projects — export them first.
+The local editor's choice is saved locally. Switching modes does not migrate
+existing projects. There is not yet a complete one-click portable-game export
+for every IndexedDB project, so select folder storage at the start of important
+portable work when that chooser is available.
 
-## AI capability protocol
+Builder Studio surfaces follow the same persistence boundary. Quick Build stamps are ordinary scene objects. BIM Plan stores its source data in `scene.userData.planCad`; generated BIM geometry is runtime-only and rebuilt from that node dictionary on load, undo, and redo. See `docs/quick-build.md` and `docs/plan-cad.md`.
 
-When the editor starts, it queries the AI server:
+## AI capability protocol (optional proxy path)
+
+When the optional proxy-backed path starts, the editor queries the AI server:
 
 ```
 GET /api/AI/Capabilities
@@ -103,7 +124,9 @@ Response:
 }
 ```
 
-The editor uses this to decide which AI features to enable and which to gate behind a "Configure key" CTA. When the user enters a key, the editor sends:
+The proxy-backed path uses this to decide which AI features to enable. This is
+not the Playground copilot path: Playground chat providers use browser-direct
+requests with browser-stored keys.
 
 ```
 POST /api/AI/ConfigureKeys
@@ -117,4 +140,6 @@ The key is held in the AI server's process memory for the current session and pe
 - **No accounts.** No login, no JWT, no Firebase. The machine running StemStudio is the trust boundary.
 - **No telemetry.** Zero outbound calls except those you initiate (AI requests, multiplayer connections, asset loads).
 - **No managed asset CDN.** Asset URLs are configurable via `ASSET_BASE_URL`. The default points at a permissive public mirror.
-- **No project gallery, no discovery.** This is a creator tool; sharing is via exported `.stemscript` files or self-hosted builds.
+- **No project gallery, no discovery.** Current portability is folder-backed
+  `.stemscript.json` project data; a self-hosted static build is the entire
+  application, not a published project.

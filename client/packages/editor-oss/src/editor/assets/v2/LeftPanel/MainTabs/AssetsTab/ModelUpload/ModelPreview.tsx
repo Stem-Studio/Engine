@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { Object3D } from "three";
-
-// Debug: Module load check
-console.log('[ModelPreview.tsx] MODULE LOADED AT', new Date().toISOString());
+import type { Object3D } from "three";
 
 import { DEFAULT_UPLOAD_SETTINGS } from './constants';
 import { useModelWarnings } from './hooks/useModelWarnings';
 import { useRenderPreview } from './hooks/useRenderPreview';
 import { Container, Content, Wrapper, LoadingOverlay, LoadingText } from "./ModelPreview.style";
 import { ModelPreviewFooter } from "./ModelPreviewFooter";
-import { LodLevel, UploadSettings } from './types';
+import { LodLevel } from './types';
+import type { UploadSettings } from './types';
 import { UploadSettingsSection } from './UploadSettingsSection';
 import { cleanupInvalidTextures } from './utils/cleanupInvalidTextures';
 import { getModelPolygonCount } from './utils/getModelPolygonCount';
 import { isModelMixamoCompatible } from './utils/isModelMixamoCompatible';
 import { voxelizeModel } from './utils/voxelizeModel';
-import { ModelFormat } from '@stem/network/api/asset';
+import type { ModelFormat } from '@stem/network/api/asset';
 import { isGaussianSplatObject } from '@stem/editor-oss/model/gaussianSplats';
 import GradientSpinner from '@web-shared/player/component/GradientSpinner';
 import { cloneObject } from "@stem/editor-oss/utils/ObjectUtils";
@@ -52,9 +50,7 @@ export const ModelPreview = ({
 
     // Generate a preview model from the original model
     useEffect(() => {
-        console.log('[ModelPreview] useEffect triggered, model:', model?.name || model?.uuid || 'undefined');
         if (!model) {
-            console.log('[ModelPreview] No model, returning early');
             return;
         }
 
@@ -74,14 +70,11 @@ export const ModelPreview = ({
             }
 
             // Clone the original model
-            console.log('[ModelPreview] Cloning model...');
             const cloned = cloneObject(model);
-            console.log('[ModelPreview] Model cloned, calling cleanupInvalidTextures...');
 
             // Clean up invalid textures (e.g., missing external textures from FBX files)
             // This replaces broken textures with a default placeholder
-            const hadInvalid = await cleanupInvalidTextures(cloned);
-            console.log('[ModelPreview] cleanupInvalidTextures returned:', hadInvalid);
+            await cleanupInvalidTextures(cloned);
 
             if (cancelled) return;
 
@@ -104,7 +97,6 @@ export const ModelPreview = ({
                 }
             } else {
                 setIsVoxelizing(false);
-                console.log('[ModelPreview] Setting previewModel (non-voxelized):', cloned?.name || cloned?.uuid);
                 setPreviewModel(cloned);
                 setPolygonCount(getModelPolygonCount(model));
             }

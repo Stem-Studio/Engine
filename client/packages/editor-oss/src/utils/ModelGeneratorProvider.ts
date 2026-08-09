@@ -7,6 +7,9 @@ import {RodinDirectClient} from "../ai/RodinDirectClient";
 import Ajax from "./Ajax";
 import {backendUrlFromPath} from "./UrlUtils";
 import global from "../global";
+import {GENERATOR_TYPES} from "./modelGeneratorTypes";
+
+export {GENERATOR_TYPES};
 
 enum Topology {
     BIPED = "bip",
@@ -26,13 +29,6 @@ const bipAnimations = [
     "preset:turn",
 ];
 const quadAnimations = ["preset:quad_catrun", "preset:quad_catwalk"];
-
-export enum GENERATOR_TYPES {
-    MESHY = "meshy",
-    TRIPO = "tripo",
-    RODIN = "rodin",
-    ERTH = "erth",
-}
 
 /**
  * Per-provider capability metadata. Drives UI control visibility (auto-rig,

@@ -1,5 +1,6 @@
 import { Object3D, Matrix4, Vector3, Quaternion, Euler } from 'three';
 
+import SceneTraverser from './SceneTraverser';
 import TransformUtils from './TransformUtils';
 
 describe('TransformUtils.setWorldTransform', () => {
@@ -87,13 +88,161 @@ describe('TransformUtils.setWorldTransform', () => {
         expect(decomposedScale.distanceTo(worldScale)).toBeLessThan(1e-15);
     });
 
-    it('should reset matrixWorldNeedsUpdate to false', () => {
+    it('should mark object and descendants dirty for world matrix propagation', () => {
         const object = new Object3D();
-        object.matrixWorldNeedsUpdate = true;
+        const child = new Object3D();
+        const grandChild = new Object3D();
+        object.add(child);
+        child.add(grandChild);
         const matrix = new Matrix4().makeTranslation(0, 0, 1);
 
         TransformUtils.setWorldTransform(object, matrix);
 
-        expect(object.matrixWorldNeedsUpdate).toBe(false);
+        expect(object.matrixWorldNeedsUpdate).toBe(true);
+        expect(child.matrixWorldNeedsUpdate).toBe(true);
+        expect(grandChild.matrixWorldNeedsUpdate).toBe(true);
+    });
+
+    it('updates static descendants during custom scene traversal after a parent world transform changes', () => {
+        const root = new Object3D();
+        const parent = new Object3D();
+        const child = new Object3D();
+
+        child.position.set(1, 0, 0);
+        child.updateMatrix();
+        child.matrixAutoUpdate = false;
+
+        parent.add(child);
+        root.add(parent);
+        root.updateMatrixWorld(true);
+
+        const initialChildWorldPosition = new Vector3().setFromMatrixPosition(child.matrixWorld);
+        expect(initialChildWorldPosition.equals(new Vector3(1, 0, 0))).toBe(true);
+
+        TransformUtils.setWorldTransform(parent, new Matrix4().makeTranslation(5, 0, 0));
+
+        const traverser = new SceneTraverser(root);
+        traverser.update();
+
+        const updatedChildWorldPosition = new Vector3().setFromMatrixPosition(child.matrixWorld);
+        expect(updatedChildWorldPosition.distanceTo(new Vector3(6, 0, 0))).toBeLessThan(1e-15);
+    });
+
+    it('keeps static descendants compatible with direct updateWorldMatrix calls', () => {
+        const root = new Object3D();
+        const parent = new Object3D();
+        const child = new Object3D();
+
+        child.position.set(1, 0, 0);
+        child.updateMatrix();
+        child.matrixAutoUpdate = false;
+
+        parent.add(child);
+        root.add(parent);
+        root.updateMatrixWorld(true);
+
+        TransformUtils.setWorldTransform(parent, new Matrix4().makeTranslation(5, 0, 0));
+        child.updateWorldMatrix(true, false);
+
+        const childWorldPosition = new Vector3().setFromMatrixPosition(child.matrixWorld);
+        expect(childWorldPosition.distanceTo(new Vector3(6, 0, 0))).toBeLessThan(1e-15);
+    });
+});
+
+describe('TransformUtils transform conversion helpers', () => {
+    it('can write world transforms into a reusable target', () => {
+        const object = new Object3D();
+        object.position.set(1, 2, 3);
+        object.rotation.set(0, Math.PI / 4, 0);
+        object.scale.set(2, 3, 4);
+        object.updateMatrixWorld(true);
+        const target = TransformUtils.createTransform(
+            new Vector3(),
+            new Quaternion(),
+            new Vector3(1, 1, 1),
+        );
+
+        const result = TransformUtils.getWorldTransform(object, target);
+
+        expect(result).toBe(target);
+        expect(target.position.distanceTo(new Vector3(1, 2, 3))).toBeLessThan(1e-15);
+        expect(target.quaternion.angleTo(new Quaternion().setFromEuler(object.rotation))).toBeLessThan(1e-15);
+        expect(target.scale.distanceTo(new Vector3(2, 3, 4))).toBeLessThan(1e-15);
+    });
+
+    it('can write delta matrices into a reusable target', () => {
+        const initial = TransformUtils.createTransform(
+            new Vector3(0, 0, 0),
+            new Quaternion(),
+            new Vector3(1, 1, 1),
+        );
+        const current = TransformUtils.createTransform(
+            new Vector3(5, 0, 0),
+            new Quaternion(),
+            new Vector3(1, 1, 1),
+        );
+        const target = new Matrix4();
+
+        const result = TransformUtils.calculateDeltaMatrix(initial, current, target);
+
+        expect(result).toBe(target);
+        expect(new Vector3().setFromMatrixPosition(target).distanceTo(new Vector3(5, 0, 0))).toBeLessThan(1e-15);
+    });
+
+    it('returns independent world-to-local transform data after subsequent conversions', () => {
+        const parent = new Object3D();
+        const child = new Object3D();
+        parent.position.set(5, 0, 0);
+        parent.scale.set(2, 2, 2);
+        parent.add(child);
+        parent.updateMatrixWorld(true);
+
+        const worldTransform = TransformUtils.createTransform(
+            new Vector3(9, 0, 0),
+            new Quaternion(),
+            new Vector3(2, 2, 2),
+        );
+        const localTransform = TransformUtils.worldToLocalTransform(child, worldTransform);
+        const otherLocalTransform = TransformUtils.createTransform(
+            new Vector3(1, 2, 3),
+            new Quaternion().setFromEuler(new Euler(0, Math.PI / 4, 0)),
+            new Vector3(1, 1, 1),
+        );
+
+        TransformUtils.localToWorldTransform(child, otherLocalTransform);
+
+        expect(localTransform.position.distanceTo(new Vector3(2, 0, 0))).toBeLessThan(1e-15);
+        expect(localTransform.quaternion.angleTo(new Quaternion())).toBeLessThan(1e-15);
+        expect(localTransform.scale.distanceTo(new Vector3(1, 1, 1))).toBeLessThan(1e-15);
+    });
+
+    it('returns an independent delta matrix after later delta calculations', () => {
+        const initial = TransformUtils.createTransform(
+            new Vector3(0, 0, 0),
+            new Quaternion(),
+            new Vector3(1, 1, 1),
+        );
+        const current = TransformUtils.createTransform(
+            new Vector3(5, 0, 0),
+            new Quaternion(),
+            new Vector3(1, 1, 1),
+        );
+        const firstDelta = TransformUtils.calculateDeltaMatrix(initial, current);
+
+        TransformUtils.calculateDeltaMatrix(
+            TransformUtils.createTransform(
+                new Vector3(1, 0, 0),
+                new Quaternion(),
+                new Vector3(1, 1, 1),
+            ),
+            TransformUtils.createTransform(
+                new Vector3(1, 3, 0),
+                new Quaternion(),
+                new Vector3(1, 1, 1),
+            ),
+        );
+
+        const firstDeltaPosition = new Vector3().setFromMatrixPosition(firstDelta);
+        expect(firstDeltaPosition.distanceTo(new Vector3(5, 0, 0))).toBeLessThan(1e-15);
     });
 });

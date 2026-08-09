@@ -4,7 +4,7 @@ import {
     getOssAssetRegistry,
     setOssAssetRegistry,
     type OssAssetRegistry,
-} from "@stem/network/api/asset";
+} from "@stem/network/api/asset/registry";
 
 export const OssAssetRegistryContext = React.createContext<OssAssetRegistry | null>(null);
 

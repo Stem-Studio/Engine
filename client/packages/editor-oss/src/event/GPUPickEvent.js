@@ -7,12 +7,21 @@
 import {Line3, Plane, Raycaster, Vector2, Vector3} from "three";
 
 import BaseEvent from "./BaseEvent";
-import {GPUPicker} from "../assets/js/gpupicker/gpupicker";
 import {QualityManager} from "../core/quality/QualityManager";
 import global from "../global";
-import {getPickBlockReason, resolveSelectionTargetFromPickHit} from "./picking/pickTargetUtils";
+import {resolveSelectionTargetFromPickHit} from "./picking/pickTargetUtils";
 import {DetectDevice} from "../utils/DetectDevice";
 import MeshUtils from "../utils/MeshUtils";
+import {getNonSelectableReason} from "../utils/SelectionUtils";
+
+let gpuPickerClassPromise = null;
+
+function loadGPUPickerClass() {
+    if (!gpuPickerClassPromise) {
+        gpuPickerClassPromise = import("../assets/js/gpupicker/gpupicker").then(({GPUPicker}) => GPUPicker);
+    }
+    return gpuPickerClassPromise;
+}
 
 class GPUPickEvent extends BaseEvent {
     constructor() {
@@ -31,8 +40,10 @@ class GPUPickEvent extends BaseEvent {
         this.farPosition = new Vector3();
         this.line = new Line3(this.nearPosition, this.farPosition);
         this.plane = new Plane().setFromNormalAndCoplanarPoint(new Vector3(0, 1, 0), new Vector3());
+        this.intersections = [];
         this.gpuPicker = null;
         this.pickingInProgress = false;
+        this.needsPick = true;
     }
 
     start() {
@@ -40,6 +51,11 @@ class GPUPickEvent extends BaseEvent {
         global.app.on(`afterRender.${this.id}`, this.onAfterRender);
         global.app.on(`resize.${this.id}`, this.onResize);
         global.app.on(`storageChanged.${this.id}`, this.onStorageChanged);
+        global.app.on(`cameraChanged.${this.id}`, this.markPickDirty);
+        global.app.on(`viewChanged.${this.id}`, this.markPickDirty);
+        global.app.on(`objectChanged.${this.id}`, this.markPickDirty);
+        global.app.on(`objectUpdated.${this.id}`, this.markPickDirty);
+        global.app.on(`sceneGraphChanged.${this.id}`, this.markPickDirty);
 
         this.selectMode = global.app.storage.selectMode;
     }
@@ -49,8 +65,14 @@ class GPUPickEvent extends BaseEvent {
         global.app.on(`afterRender.${this.id}`, null);
         global.app.on(`resize.${this.id}`, null);
         global.app.on(`storageChanged.${this.id}`, null);
+        global.app.on(`cameraChanged.${this.id}`, null);
+        global.app.on(`viewChanged.${this.id}`, null);
+        global.app.on(`objectChanged.${this.id}`, null);
+        global.app.on(`objectUpdated.${this.id}`, null);
+        global.app.on(`sceneGraphChanged.${this.id}`, null);
 
         this.selectMode = "whole";
+        this.needsPick = true;
         this.disposePicker();
     }
 
@@ -60,12 +82,16 @@ class GPUPickEvent extends BaseEvent {
         if (event.target !== global.app.editor?.renderer.domElement) {
 
             this.isIn = false;
+            this.needsPick = true;
             global.app.call(`gpuPick`, this, {
                 object: null,
                 point: null,
                 distance: 0,
             });
             return;
+        }
+        if (!this.isIn || event.offsetX !== this.offsetX || event.offsetY !== this.offsetY) {
+            this.needsPick = true;
         }
         this.isIn = true;
         this.offsetX = event.offsetX;
@@ -77,12 +103,16 @@ class GPUPickEvent extends BaseEvent {
         if (!this.isIn || global.app.editor.gpuPickNum === 0 || this.pickingInProgress) {
             return;
         }
+        if (!this.needsPick) {
+            return;
+        }
 
-        let now = new Date().getTime();
+        const now = performance.now();
         if (now - this.oldTime < this.waitTime) {
             return;
         }
         this.oldTime = now;
+        this.needsPick = false;
 
         const {scene, renderer} = global.app.editor;
         const camera =
@@ -97,9 +127,10 @@ class GPUPickEvent extends BaseEvent {
         );
         this.raycaster.setFromCamera(this.mouse, camera);
 
-        this.ensurePicker(renderer, scene, camera);
+        await this.ensurePicker(renderer, scene, camera);
 
-        let intersections = [];
+        const intersections = this.intersections;
+        intersections.length = 0;
         if (this.gpuPicker) {
             const qualityManager = QualityManager.getInstance();
             const pixelRatio =
@@ -115,22 +146,23 @@ class GPUPickEvent extends BaseEvent {
             this.pickingInProgress = true;
             try {
                 const objId = await this.gpuPicker._doPick(this.offsetX * pixelRatio, this.offsetY * pixelRatio, undefined);
-                const pickedObject = objId ? scene.getObjectById(objId) : null;
+                const pickedObject = objId ? global.app.editor.objectById(objId) : null;
                 if (pickedObject) {
-                    intersections = this.raycaster.intersectObject(pickedObject, true);
+                    this.raycaster.intersectObject(pickedObject, true, intersections);
                 }
             } catch {
-                intersections = this.raycaster.intersectObjects(scene.children, true);
+                intersections.length = 0;
+                this.raycaster.intersectObjects(scene.children, true, intersections);
             } finally {
                 this.pickingInProgress = false;
             }
         } else {
-            intersections = this.raycaster.intersectObjects(scene.children, true);
+            this.raycaster.intersectObjects(scene.children, true, intersections);
         }
 
         const hit = intersections.find(intersection => {
             const target = resolveSelectionTargetFromPickHit(intersection?.object);
-            return !getPickBlockReason(target, {app: global.app, editor: global.app.editor});
+            return !getNonSelectableReason(target, global.app);
         }) || null;
 
         let selected = resolveSelectionTargetFromPickHit(hit?.object) || null;
@@ -164,15 +196,22 @@ class GPUPickEvent extends BaseEvent {
         });
     };
 
-    onResize = () => {};
+    markPickDirty = () => {
+        this.needsPick = true;
+    };
+
+    onResize = () => {
+        this.markPickDirty();
+    };
 
     onStorageChanged = (name, value) => {
         if (name === "selectMode") {
             this.selectMode = value;
+            this.markPickDirty();
         }
     };
 
-    ensurePicker(renderer, scene, camera) {
+    async ensurePicker(renderer, scene, camera) {
         if (this.gpuPicker) {
             const needsRecreate =
                 this.gpuPicker.renderer !== renderer || this.gpuPicker.scene !== scene || this.gpuPicker.camera !== camera;
@@ -183,6 +222,7 @@ class GPUPickEvent extends BaseEvent {
         if (!renderer?.isWebGPURenderer) return;
 
         try {
+            const GPUPicker = await loadGPUPickerClass();
             this.gpuPicker = new GPUPicker(renderer, scene, camera, 1);
         } catch {
             this.gpuPicker = null;

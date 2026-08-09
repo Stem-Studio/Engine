@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { MD2Loader as ThreeMD2Loader } from "three/examples/jsm/loaders/MD2Loader.js";
+import { MD2Loader as ThreeMD2Loader } from "three/addons/loaders/MD2Loader.js";
 
 import BaseLoader from "./BaseLoader";
 

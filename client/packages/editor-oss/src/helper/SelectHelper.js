@@ -1,34 +1,17 @@
-import * as THREE from "three";
-
+import {Box3, Color, Light, Sphere, Vector3} from "three";
 import BaseHelper from "./BaseHelper";
 import {isAabbMode} from "./boundingBoxMode";
 import {OrientedBoxHelper} from "./OrientedBoxHelper";
-import {computeOrientedBox} from "./orientedBox";
+import {computeOrientedBox, createOrientedBoxResult} from "./orientedBox";
 import {isInputActive} from "../editor/assets/v2/utils/isInputActive";
 import global from "../global";
+import {traverseObjectDepthFirst} from "../utils/SceneTraverser";
 
-const hasExplicitGaussianSplatSelectionMarker = object => {
-    if (!object) {
-        return false;
-    }
-
-    let found = false;
-    object.traverse(child => {
-        if (found) {
-            return;
-        }
-
-        if (
-            child.userData?.__isGaussianSplat === true ||
-            child.userData?.gaussianSplatFormat ||
-            child.type === "SplatMesh"
-        ) {
-            found = true;
-        }
-    });
-
-    return found;
-};
+const hasOwnExplicitGaussianSplatSelectionMarker = object => (
+    object?.userData?.__isGaussianSplat === true ||
+    object?.userData?.gaussianSplatFormat ||
+    object?.type === "SplatMesh"
+);
 
 /**
  * SelectHelper - Manages object selection and visual indication
@@ -50,6 +33,7 @@ class SelectHelper extends BaseHelper {
         this.animate = false;
         this.hasDisabledCameraCollision = false;
         this.boundMouseDown = this.onMouseDown.bind(this);
+        this.boundMouseUp = this.onMouseUp.bind(this);
         this.boundKeyDown = this.onKeyDown.bind(this);
 
         this.selectionBoxes = [];
@@ -64,19 +48,31 @@ class SelectHelper extends BaseHelper {
 
         this.userSelectionColors = {};
         this.otherUserSelectionBoxes = {};
-        this.selectionColorPalette = COLORS.map(color => new THREE.Color(color));
+        this.selectionColorPalette = COLORS.map(color => new Color(color));
         this.nextColorIndex = 0;
         this.userColorIndexes = {};
         this.freeColorIndexes = Array.from({length: this.selectionColorPalette.length}, (_, i) => i);
 
         this.updateOtherUserSelectionsTimer = null;
+
+        this.multiSelectionBoxScratch = new Box3();
+        this.selectionBoxScratch = new Box3();
+        this.selectionBoxScratch2 = new Box3();
+        this.selectionPointScratch = new Vector3();
+        this.selectionWorldPositionScratch = new Vector3();
+        this.selectionOrientedBoundsScratch = createOrientedBoxResult();
+        this.selectionOrientedBoundsOptions = {
+            shouldAbort: hasOwnExplicitGaussianSplatSelectionMarker,
+        };
+        this.selectionBoundsDirty = true;
+        this.selectionMatrixCache = new Map();
+        this.selectionMatrixSeen = new Set();
     }
 
     start() {
         global.app.on(`objectSelected.${this.id}`, this.onObjectSelected.bind(this));
         global.app.on(`objectArraySelected.${this.id}`, this.onObjectArraySelected.bind(this));
         global.app.on(`objectRemoved.${this.id}`, this.onObjectRemoved.bind(this));
-        global.app.on(`afterRender.${this.id}`, this.onAfterRender.bind(this));
         global.app.on(`storageChanged.${this.id}`, this.onStorageChanged.bind(this));
         global.app.on(`sceneLoaded.${this.id}`, this.onSceneLoaded.bind(this));
         global.app.on(`sceneSaveStart.${this.id}`, this.deleteSelectionBoxes.bind(this));
@@ -97,7 +93,6 @@ class SelectHelper extends BaseHelper {
         global.app.on(`objectSelected.${this.id}`, null);
         global.app.on(`objectArraySelected.${this.id}`, null);
         global.app.on(`objectRemoved.${this.id}`, null);
-        global.app.on(`afterRender.${this.id}`, null);
         global.app.on(`storageChanged.${this.id}`, null);
         global.app.on(`sceneLoaded.${this.id}`, null);
         global.app.on(`sceneSaveStart.${this.id}`, null);
@@ -137,25 +132,18 @@ class SelectHelper extends BaseHelper {
         this.renderer = editor.renderer;
 
         this.controls = this.scene.userData.controls;
+        this.markSelectionBoundsDirty();
         this.updateOtherUserSelections();
     }
 
     onMouseDown(event) {
         if (event.button === 0) {
-            if (this.selectedObjects?.length > 0) {
-                this.updateSelectionBoxes(this.selectedObjects);
-            } else if (this.selectedObject) {
-                this.updateSelectionBoxes(this.selectedObject);
-            }
+            this.refreshSelectedBounds({force: true});
         }
     }
 
     onAnimate() {
-        if (this.selectedObjects?.length > 0) {
-            this.updateSelectionBoxes(this.selectedObjects);
-        } else if (this.selectedObject) {
-            this.updateSelectionBoxes(this.selectedObject);
-        }
+        this.refreshSelectedBounds();
         // Update label size/opacity for all active selection boxes.
         if (this.camera) {
             for (const helper of this.selectionBoxes) {
@@ -167,11 +155,7 @@ class SelectHelper extends BaseHelper {
     }
 
     onMouseUp() {
-        if (this.selectedObjects?.length > 0) {
-            this.updateSelectionBoxes(this.selectedObjects);
-        } else if (this.selectedObject) {
-            this.updateSelectionBoxes(this.selectedObject);
-        }
+        this.refreshSelectedBounds({force: true});
     }
 
     onKeyDown(event) {
@@ -200,20 +184,23 @@ class SelectHelper extends BaseHelper {
 
         if (!validObjects.length) return;
 
-        const combinedBox = new THREE.Box3();
+        const combinedBox = this.multiSelectionBoxScratch.makeEmpty();
 
         validObjects.forEach(obj => {
-            const box = this.getSelectionBox(obj, true) || new THREE.Box3().setFromObject(obj);
+            const box = this.getSelectionBox(obj, true, this.selectionBoxScratch);
+            if (!box) {
+                this.selectionBoxScratch.setFromObject(obj);
+            }
 
-            combinedBox.union(box);
+            combinedBox.union(box || this.selectionBoxScratch);
         });
 
         if (combinedBox.isEmpty()) return;
 
-        const center = new THREE.Vector3();
+        const center = new Vector3();
         combinedBox.getCenter(center);
 
-        const sphere = new THREE.Sphere();
+        const sphere = new Sphere();
         combinedBox.getBoundingSphere(sphere);
 
         let radius = sphere.radius > 0 ? sphere.radius : 1;
@@ -222,7 +209,7 @@ class SelectHelper extends BaseHelper {
         const fov = (camera.fov - fovMargin) * (Math.PI / 180);
         const distance = radius / Math.sin(fov / 2);
 
-        const viewDir = new THREE.Vector3();
+        const viewDir = new Vector3();
         camera.getWorldDirection(viewDir);
         viewDir.normalize();
 
@@ -237,11 +224,13 @@ class SelectHelper extends BaseHelper {
         if (this.app?.disableClickEvents) {
             return;
         }
-        this.unselect();
 
         if (!objects || objects.length === 0) {
+            this.unselect();
             return;
         }
+
+        this.unselect({preserveTransformControls: true});
 
         // Store selected objects array
         this.selectedObjects = objects;
@@ -253,6 +242,8 @@ class SelectHelper extends BaseHelper {
 
         this.createSelectionBox();
         this.updateSelectionBoxes(objects);
+        this.rememberSelectionMatrices(objects);
+        this.selectionBoundsDirty = false;
     }
 
     onObjectChanged(object) {
@@ -261,19 +252,34 @@ class SelectHelper extends BaseHelper {
             return;
         }
 
-        // Check if this object is currently selected (single or multi-selection)
-        const isSelected =
-            this.selectedObject === object || (this.selectedObjects && this.selectedObjects.includes(object));
-
-        if (isSelected) {
-            // For multi-selection, update all selected objects
-            if (this.selectedObjects && this.selectedObjects.length > 1) {
-                this.updateSelectionBoxes(this.selectedObjects);
+        if (this.isSelectionAffectedByObject(object)) {
+            const selectedObjects = this.getSelectedBoundsObjects();
+            if (selectedObjects.length > 1) {
+                this.updateSelectionBoxes(selectedObjects);
+                this.rememberSelectionMatrices(selectedObjects);
             } else {
-                // For single selection, update just this object
-                this.updateSelectionBoxes(object);
+                this.updateSelectionBoxes(selectedObjects[0]);
+                this.rememberSelectionMatrices(selectedObjects);
             }
+            this.selectionBoundsDirty = false;
         }
+    }
+
+    isSelectionAffectedByObject(object) {
+        return this.getSelectedBoundsObjects().some(selected =>
+            this.isSameOrAncestor(selected, object) || this.isSameOrAncestor(object, selected),
+        );
+    }
+
+    isSameOrAncestor(candidate, object) {
+        let current = object;
+        while (current) {
+            if (current === candidate) {
+                return true;
+            }
+            current = current.parent;
+        }
+        return false;
     }
 
     onObjectSelected(object, noFocus = false) {
@@ -281,10 +287,6 @@ class SelectHelper extends BaseHelper {
             return;
         }
         if (!object) {
-            // Emit unoutlined event for previously selected object
-            if (this.selectedObject) {
-                global.app.call("objectUnoutlined", this, this.selectedObject);
-            }
             this.unselect();
             return;
         }
@@ -293,7 +295,7 @@ class SelectHelper extends BaseHelper {
 
         //unselect the currently selected object
         if ((this.selectedObject || this.selectedObjects?.length > 0) && !noFocus) {
-            this.unselect();
+            this.unselect({preserveTransformControls: true});
         }
 
         this.selectedObject = object;
@@ -312,6 +314,8 @@ class SelectHelper extends BaseHelper {
 
         this.createSelectionBox();
         this.updateSelectionBox(object, 0);
+        this.rememberSelectionMatrices([object]);
+        this.selectionBoundsDirty = false;
 
         const currentTime = Date.now();
         const isDoubleClick = currentTime - this.lastClickTime < this.doubleClickThreshold;
@@ -322,7 +326,7 @@ class SelectHelper extends BaseHelper {
         }
 
         if (global.app.editor.isSandbox) {
-            this.selectedObject.traverse(child => {
+            traverseObjectDepthFirst(this.selectedObject, child => {
                 child.userData.tempDisableCameraCollision = true;
             });
         }
@@ -337,7 +341,7 @@ class SelectHelper extends BaseHelper {
 
     onObjectDeselected(object) {
         if (global.app.editor.isSandbox) {
-            object.traverse(child => {
+            traverseObjectDepthFirst(object, child => {
                 delete child.userData.tempDisableCameraCollision;
             });
         }
@@ -346,11 +350,11 @@ class SelectHelper extends BaseHelper {
     updateInsertionPoint(camera) {
         camera.updateMatrixWorld();
 
-        const origin = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-        const direction = new THREE.Vector3().copy(camera.getWorldDirection(new THREE.Vector3()));
+        const origin = new Vector3().setFromMatrixPosition(camera.matrixWorld);
+        const direction = new Vector3().copy(camera.getWorldDirection(new Vector3()));
 
-        const planeNormal = new THREE.Vector3(0, 1, 0);
-        const planePoint = new THREE.Vector3(0, 0, 0);
+        const planeNormal = new Vector3(0, 1, 0);
+        const planePoint = new Vector3(0, 0, 0);
 
         const planeD = -planeNormal.dot(planePoint);
         const denominator = planeNormal.dot(direction);
@@ -385,17 +389,135 @@ class SelectHelper extends BaseHelper {
         }
     }
 
+    refreshSelectedBounds({force = false} = {}) {
+        const objects = this.getSelectedBoundsObjects();
+        if (objects.length === 0) {
+            this.resetSelectionBoundsTracking();
+            return false;
+        }
+
+        const shouldRefresh =
+            force ||
+            this.selectionBoundsDirty ||
+            global.app?.isPlaying ||
+            global.app?.transformControls?.dragging ||
+            this.haveSelectionMatricesChanged(objects);
+
+        if (!shouldRefresh) {
+            return false;
+        }
+
+        this.updateSelectionBoxes(objects.length === 1 ? objects[0] : objects);
+        this.rememberSelectionMatrices(objects);
+        this.selectionBoundsDirty = false;
+        return true;
+    }
+
+    getSelectedBoundsObjects() {
+        if (this.selectedObjects?.length > 0) {
+            return this.selectedObjects.filter(Boolean);
+        }
+        return this.selectedObject ? [this.selectedObject] : [];
+    }
+
+    markSelectionBoundsDirty() {
+        this.selectionBoundsDirty = true;
+    }
+
+    resetSelectionBoundsTracking() {
+        this.selectionBoundsDirty = true;
+        this.selectionMatrixCache.clear();
+        this.selectionMatrixSeen.clear();
+    }
+
+    haveSelectionMatricesChanged(objects) {
+        const seen = this.selectionMatrixSeen;
+        seen.clear();
+        let changed = this.selectionMatrixCache.size !== objects.length;
+
+        for (const object of objects) {
+            if (!object?.uuid) {
+                changed = true;
+                continue;
+            }
+
+            this.updateTrackedWorldMatrix(object);
+            seen.add(object.uuid);
+
+            const cached = this.selectionMatrixCache.get(object.uuid);
+            if (!cached) {
+                changed = true;
+                continue;
+            }
+
+            const elements = object.matrixWorld.elements;
+            for (let i = 0; i < 16; i++) {
+                if (cached[i] !== elements[i]) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        for (const uuid of this.selectionMatrixCache.keys()) {
+            if (!seen.has(uuid)) {
+                changed = true;
+                break;
+            }
+        }
+
+        return changed;
+    }
+
+    rememberSelectionMatrices(objects) {
+        const seen = this.selectionMatrixSeen;
+        seen.clear();
+
+        for (const object of objects) {
+            if (!object?.uuid) {
+                continue;
+            }
+
+            this.updateTrackedWorldMatrix(object);
+            seen.add(object.uuid);
+
+            let cached = this.selectionMatrixCache.get(object.uuid);
+            if (!cached) {
+                cached = new Array(16);
+                this.selectionMatrixCache.set(object.uuid, cached);
+            }
+
+            const elements = object.matrixWorld.elements;
+            for (let i = 0; i < 16; i++) {
+                cached[i] = elements[i];
+            }
+        }
+
+        for (const uuid of Array.from(this.selectionMatrixCache.keys())) {
+            if (!seen.has(uuid)) {
+                this.selectionMatrixCache.delete(uuid);
+            }
+        }
+    }
+
+    updateTrackedWorldMatrix(object) {
+        if (object.matrixAutoUpdate) {
+            object.updateMatrix();
+        }
+        object.updateWorldMatrix(true, false);
+    }
+
     updateMultiSelectionBox(objects) {
         const selectionBox = this.selectionBoxes[0];
         if (!selectionBox) {
             return;
         }
 
-        const combinedBox = new THREE.Box3().makeEmpty();
+        const combinedBox = this.multiSelectionBoxScratch.makeEmpty();
         let hasBounds = false;
 
         objects.forEach(object => {
-            const objectBox = this.getSelectionBox(object, true);
+            const objectBox = this.getSelectionBox(object, true, this.selectionBoxScratch);
             if (!objectBox) {
                 return;
             }
@@ -419,7 +541,7 @@ class SelectHelper extends BaseHelper {
             return;
         }
 
-        const billboardBox = this.getBillboardSelectionBox(object);
+        const billboardBox = this.getBillboardSelectionBox(object, this.selectionBoxScratch);
         if (billboardBox) {
             selectionBox.visible = true;
             selectionBox.setFromWorldBox(billboardBox);
@@ -427,7 +549,7 @@ class SelectHelper extends BaseHelper {
         }
 
         if (isAabbMode()) {
-            const box = this.getSelectionBox(object, false);
+            const box = this.getSelectionBox(object, false, this.selectionBoxScratch);
             if (!box || box.isEmpty()) {
                 selectionBox.visible = false;
                 return;
@@ -449,7 +571,7 @@ class SelectHelper extends BaseHelper {
         this.updateOtherUserSelectionsTimer = setTimeout(() => {
             if (!this.scene) return;
             this.removeOtherUserSelections();
-            this.scene.traverse(obj => {
+            traverseObjectDepthFirst(this.scene, obj => {
                 if (obj.userData && obj.userData.selectedBy && obj.userData.selectedBy !== this.app.userId) {
                     const color = this.getColorForUser(obj.userData.selectedBy);
                     const selectionBox = new OrientedBoxHelper({color, showLabels: false});
@@ -489,35 +611,34 @@ class SelectHelper extends BaseHelper {
         const orbitControls = controls?.current?.controls;
         if (!orbitControls) return;
 
-        const focusPosition = new THREE.Vector3();
-        selectedObject.getWorldPosition(focusPosition);
-
-        const box = this.getSelectionBox(selectedObject, true) || new THREE.Box3().setFromObject(selectedObject);
-        const sphere = new THREE.Sphere();
+        const box = this.getSelectionBox(selectedObject, true, this.selectionBoxScratch) ||
+            this.selectionBoxScratch.setFromObject(selectedObject);
+        const sphere = new Sphere();
         box.getBoundingSphere(sphere);
+        const focusPosition = sphere.center;
         let radius = sphere.radius > 0 ? sphere.radius : 1;
         const fovMargin = 10;
         const fov = (camera.fov - fovMargin) * (Math.PI / 180);
         const distance = radius / Math.sin(fov / 2);
 
-        const viewDir = new THREE.Vector3();
+        const viewDir = new Vector3();
         camera.getWorldDirection(viewDir);
         viewDir.normalize();
 
-        const newCameraPos = new THREE.Vector3().copy(focusPosition).sub(viewDir.multiplyScalar(distance));
+        const newCameraPos = new Vector3().copy(focusPosition).sub(viewDir.multiplyScalar(distance));
 
         camera.position.copy(newCameraPos);
         orbitControls.target.copy(focusPosition);
         orbitControls.update();
     }
 
-    getSelectionBox(object, allowFallback = false) {
-        const billboardBox = this.getBillboardSelectionBox(object);
+    getSelectionBox(object, allowFallback = false, target = new Box3()) {
+        const billboardBox = this.getBillboardSelectionBox(object, target);
         if (billboardBox) {
             return billboardBox;
         }
 
-        const box = this.getObjectWorldSelectionBox(object);
+        const box = this.getObjectWorldSelectionBox(object, target);
         if (box) {
             return box;
         }
@@ -526,21 +647,21 @@ class SelectHelper extends BaseHelper {
             return null;
         }
 
-        return this.createFallbackSelectionBox(object);
+        return this.createFallbackSelectionBox(object, target);
     }
 
-    getObjectWorldSelectionBox(object) {
-        if (hasExplicitGaussianSplatSelectionMarker(object)) {
-            return null;
-        }
-
-        const orientedBounds = computeOrientedBox(object);
+    getObjectWorldSelectionBox(object, target = new Box3()) {
+        const orientedBounds = computeOrientedBox(
+            object,
+            this.selectionOrientedBoundsScratch,
+            this.selectionOrientedBoundsOptions,
+        );
         if (!orientedBounds.hasGeometry || orientedBounds.box.isEmpty()) {
             return null;
         }
 
-        const worldBox = new THREE.Box3().makeEmpty();
-        const point = new THREE.Vector3();
+        const worldBox = target.makeEmpty();
+        const point = this.selectionPointScratch;
         const {min, max} = orientedBounds.box;
 
         for (let i = 0; i < 8; i++) {
@@ -555,7 +676,7 @@ class SelectHelper extends BaseHelper {
         return worldBox.isEmpty() ? null : worldBox;
     }
 
-    getBillboardSelectionBox(object) {
+    getBillboardSelectionBox(object, target = new Box3()) {
         const bounds = object?.userData?.billboardSelectionBounds;
         if (!object?.userData?.isBillboard || !this.hasValidBillboardSelectionBounds(bounds)) {
             return null;
@@ -566,17 +687,17 @@ class SelectHelper extends BaseHelper {
         const halfWidth = bounds.width / 2;
         const halfHeight = bounds.height / 2;
         const halfDepth = Math.max(bounds.depth, 0.001) / 2;
-        const box = new THREE.Box3().makeEmpty();
-        const point = new THREE.Vector3();
+        const box = target.makeEmpty();
+        const point = this.selectionPointScratch;
 
-        [-halfWidth, halfWidth].forEach(x => {
-            [-halfHeight, halfHeight].forEach(y => {
-                [-halfDepth, halfDepth].forEach(z => {
-                    point.set(x, y, z).applyMatrix4(object.matrixWorld);
-                    box.expandByPoint(point);
-                });
-            });
-        });
+        for (let i = 0; i < 8; i++) {
+            point.set(
+                i & 1 ? halfWidth : -halfWidth,
+                i & 2 ? halfHeight : -halfHeight,
+                i & 4 ? halfDepth : -halfDepth,
+            ).applyMatrix4(object.matrixWorld);
+            box.expandByPoint(point);
+        }
 
         return box;
     }
@@ -587,28 +708,48 @@ class SelectHelper extends BaseHelper {
         );
     }
 
-    createFallbackSelectionBox(object) {
-        const worldPos = new THREE.Vector3();
+    createFallbackSelectionBox(object, target = new Box3()) {
+        const worldPos = this.selectionWorldPositionScratch;
         object.getWorldPosition(worldPos);
         const halfSize = 0.5;
-        return new THREE.Box3(worldPos.clone().subScalar(halfSize), worldPos.clone().addScalar(halfSize));
+        target.min.copy(worldPos).subScalar(halfSize);
+        target.max.copy(worldPos).addScalar(halfSize);
+        return target;
     }
 
     onObjectRemoved(object) {
         if (object?.uuid === this.selectedObject?.uuid) {
             this.unselect();
+            return;
+        }
+
+        if (this.selectedObjects?.some(selected => selected?.uuid === object?.uuid)) {
+            global.app.call("objectUnoutlined", this, object);
+            this.selectedObjects = this.selectedObjects.filter(selected => selected?.uuid !== object?.uuid);
+
+            if (this.selectedObjects.length === 0) {
+                this.unselect();
+                return;
+            }
+
+            this.updateSelectionBoxes(this.selectedObjects);
+            this.rememberSelectionMatrices(this.selectedObjects);
+            this.selectionBoundsDirty = false;
         }
     }
 
-    unselect() {
-        global.app.transformControls?.detach();
+    unselect({preserveTransformControls = false} = {}) {
+        if (!preserveTransformControls) {
+            global.app.transformControls?.detach();
+        }
+        this.resetSelectionBoundsTracking();
         this.cancelSelectionAnimation();
 
         if (global.app.editor.outlinePass) {
             global.app.editor.outlinePass.selectedObjects = [];
         }
 
-        if (global.app.transformControls) {
+        if (global.app.transformControls && !preserveTransformControls) {
             global.app.transformControls.visible = false;
         }
 
@@ -630,32 +771,42 @@ class SelectHelper extends BaseHelper {
         this.deleteSelectionBoxes();
     }
 
-    onAfterRender() {}
-
     hideNonSelectedObjects(obj, selected, root) {
-        if (obj === selected) {
-            let current = obj.parent;
+        const revealSelectedPath = () => {
+            let current = selected?.parent;
             while (current && current !== root) {
-                let index = this.hideObjects.indexOf(current);
-                this.hideObjects.splice(index, 1);
-                current.visible = current.userData.oldVisible;
-                delete current.userData.oldVisible;
+                const index = this.hideObjects.indexOf(current);
+                if (index !== -1) {
+                    this.hideObjects.splice(index, 1);
+                }
+                if (Object.prototype.hasOwnProperty.call(current.userData, "oldVisible")) {
+                    current.visible = current.userData.oldVisible;
+                    delete current.userData.oldVisible;
+                }
                 current = current.parent;
             }
-            return;
-        }
+        };
 
-        if (obj !== root) {
-            obj.userData.oldVisible = obj.visible;
-            obj.visible = false;
-            this.hideObjects.push(obj);
-        }
+        const stack = [obj];
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current || current instanceof Light) continue;
 
-        for (let child of obj.children) {
-            if (child instanceof THREE.Light) {
+            if (current === selected) {
+                revealSelectedPath();
                 continue;
             }
-            this.hideNonSelectedObjects(child, selected, root);
+
+            if (current !== root) {
+                current.userData.oldVisible = current.visible;
+                current.visible = false;
+                this.hideObjects.push(current);
+            }
+
+            for (let i = current.children.length - 1; i >= 0; i--) {
+                const child = current.children[i];
+                if (child) stack.push(child);
+            }
         }
     }
 
@@ -680,10 +831,13 @@ class SelectHelper extends BaseHelper {
     onBoundingBoxModeChanged() {
         if (this.selectedObject) {
             this.updateSelectionBoxes(this.selectedObject);
+            this.rememberSelectionMatrices([this.selectedObject]);
         }
         if (Array.isArray(this.selectedObjects)) {
             this.updateSelectionBoxes(this.selectedObjects);
+            this.rememberSelectionMatrices(this.selectedObjects);
         }
+        this.selectionBoundsDirty = false;
         this.updateOtherUserSelections();
     }
 
@@ -714,26 +868,24 @@ class SelectHelper extends BaseHelper {
     }
 
     applyObbToHelper(object, helper, allowFallback = false) {
-        const billboardBox = this.getBillboardSelectionBox(object);
+        const billboardBox = this.getBillboardSelectionBox(object, this.selectionBoxScratch2);
         if (billboardBox) {
             helper.setFromWorldBox(billboardBox);
             return true;
         }
 
-        if (hasExplicitGaussianSplatSelectionMarker(object)) {
-            if (!allowFallback) return false;
-
-            helper.setFromWorldBox(this.createFallbackSelectionBox(object));
-            return true;
-        }
-
-        if (helper.setFromObject(object)) {
+        const orientedBounds = computeOrientedBox(
+            object,
+            this.selectionOrientedBoundsScratch,
+            this.selectionOrientedBoundsOptions,
+        );
+        if (helper.setFromOrientedBox(orientedBounds)) {
             return true;
         }
 
         if (!allowFallback) return false;
 
-        helper.setFromWorldBox(this.createFallbackSelectionBox(object));
+        helper.setFromWorldBox(this.createFallbackSelectionBox(object, this.selectionBoxScratch2));
         return true;
     }
 
@@ -747,6 +899,7 @@ class SelectHelper extends BaseHelper {
             });
             this.selectionBoxes = [];
         }
+        this.resetSelectionBoundsTracking();
     }
 
     getColorForUser(userToken) {

@@ -1,4 +1,5 @@
 import {Link} from "react-router-dom";
+import {PLAYGROUND_ROUTE} from "../content/links";
 
 import {COC_URL, CONTRIBUTING_URL, GITHUB_URL, ISSUES_URL, LICENSE_URL, SECURITY_URL} from "../content/links";
 
@@ -20,7 +21,7 @@ export function Footer() {
                     <div>
                         <h4>Product</h4>
                         <ul>
-                            <li><Link to="/playground">Playground</Link></li>
+                            <li><Link to={PLAYGROUND_ROUTE}>Playground</Link></li>
                             <li><Link to="/docs">Docs</Link></li>
                             <li><Link to="/docs/exporting-a-game">Export a game</Link></li>
                         </ul>

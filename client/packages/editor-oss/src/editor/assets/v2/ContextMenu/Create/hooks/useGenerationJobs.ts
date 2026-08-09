@@ -9,8 +9,6 @@ import {addIndicator, removeIndicator} from "../../../../../../controls/AiWorldC
 import {refreshEditorAssets} from "../../../../../../editor/asset-management/hooks/assets";
 import global from "@stem/editor-oss/global";
 import {showToast} from "@stem/editor-oss/showToast";
-import {getAIBackend} from "@stem/editor-oss/ai";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 
 type JobStatusDTO = {
     jobId: string;
@@ -111,18 +109,7 @@ export const useGenerationJobs = (sceneId: string | undefined) => {
         };
 
         const fetchJobs = async (): Promise<JobStatusDTO[] | null> => {
-            if (IS_OSS) return [];
-            try {
-                const res = await getAIBackend().request<JobStatusDTO[]>(
-                    `/api/AI/ObjectGeneration/Jobs?sceneId=${encodeURIComponent(sceneId)}`,
-                    {method: "GET"},
-                );
-                if (!active || !res.ok || !res.data) return null;
-                return Array.isArray(res.data) ? res.data : [];
-            } catch (error) {
-                console.error("Error polling generation jobs:", error);
-                return null;
-            }
+            return [];
         };
 
         const pollJobs = async () => {

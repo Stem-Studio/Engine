@@ -8,7 +8,8 @@ export type {
     StoredAsset,
 } from "./types";
 export {IndexedDBProjectStore} from "./IndexedDBProjectStore";
-export {FileSystemProjectStore, isFileSystemAccessSupported} from "./FileSystemProjectStore";
+export {FileSystemProjectStore} from "./FileSystemProjectStore";
+export {isFileSystemAccessSupported} from "./fileSystemAccess";
 export {RemoteProjectStore} from "./RemoteProjectStore";
 export type {
     RemoteProjectStoreDeps,
@@ -19,10 +20,10 @@ export type {
 export {
     getProjectStore,
     setProjectStore,
-    getOSSPersistenceMode,
     setOSSPersistenceMode,
 } from "./projectStoreFactory";
-export type {OSSPersistenceMode} from "./projectStoreFactory";
+export {getOSSPersistenceMode} from "./mode";
+export type {OSSPersistenceMode} from "./mode";
 export {
     rehydrateProjectStore,
     ensureProjectStoreRehydrated,

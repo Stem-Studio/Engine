@@ -1,16 +1,17 @@
 import I18n from "i18next";
 import { AnimationClip, BufferAttribute, Group, Mesh, Object3D, Scene } from 'three';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
-import * as WebGLTextureUtils from "three/examples/jsm/utils/WebGLTextureUtils.js";
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 
 import { showToast } from '../showToast';
 import { ModelUtils, optimizeGlbFile } from '../utils/ModelUtils';
 import { cloneObject } from '../utils/ObjectUtils';
+import {traverseObjectDepthFirst} from "../utils/SceneTraverser";
 
 const applyTextureFixes = (model: Object3D) => {
   let foundInvalidTexture = false;
 
-  model.traverse((child) => {
+  traverseObjectDepthFirst(model, child => {
       const isMesh = child instanceof Mesh && child.isMesh;
       if (!isMesh) {
           return;
@@ -153,7 +154,7 @@ export const convertToGlb = async (
     const exportScene = createExportScene(modelClone);
 
     // Log pre-export texture state for debugging
-    exportScene.traverse((child: Object3D) => {
+    traverseObjectDepthFirst(exportScene, (child: Object3D) => {
         if (!(child instanceof Mesh)) return;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         for (const mat of materials) {

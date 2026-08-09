@@ -11,7 +11,6 @@ import EventList from "./EventList";
 import FilterEvent from "./FilterEvent";
 import GPUPickEvent from "./GPUPickEvent";
 import ObjectEvent from "./ObjectEvent";
-import PhysicsEvent from "./PhysicsEvent";
 import PickEvent from "./PickEvent";
 import RaycastEvent from "./RaycastEvent";
 import RenderEvent from "./RenderEvent";
@@ -25,7 +24,7 @@ class EventDispatcher extends BaseEvent {
     constructor() {
         super();
         this.dispatch = dispatch.apply(dispatch, EventList);
-        this.addDomEventListener();
+        this.domEventListeners = [];
 
         this.events = [
 
@@ -34,21 +33,18 @@ class EventDispatcher extends BaseEvent {
             new FilterEvent(),
             new ViewEvent(),
             new GPUPickEvent(),
-            // new WebSocketEvent(),
             new ScriptChangedEvent(),
-            //new AutoSaveEvent(),
 
             new TransformControlsEvent(),
             new ObjectEvent(),
             new RaycastEvent(),
             new PickEvent(),
-
-            new PhysicsEvent(),
         ];
     }
 
     
     start() {
+        this.addDomEventListener();
         this.events.forEach(n => {
             n.start();
         });
@@ -59,6 +55,7 @@ class EventDispatcher extends BaseEvent {
         this.events.forEach(n => {
             n.stop();
         });
+        this.removeDomEventListeners();
     }
 
     reset() {
@@ -84,52 +81,71 @@ class EventDispatcher extends BaseEvent {
 
 
     addDomEventListener() {
+        if (this.domEventListeners.length > 0) {
+            return;
+        }
+
         const container = global.app.container;
-        container.addEventListener("click", event => {
+        this.addTrackedDomEventListener(container, "click", event => {
             this.dispatch.call("click", this, event);
         });
-        container.addEventListener("dblclick", event => {
+        this.addTrackedDomEventListener(container, "dblclick", event => {
             this.dispatch.call("dblclick", this, event);
         });
-        document.addEventListener("keydown", event => {
+        this.addTrackedDomEventListener(document, "keydown", event => {
             this.dispatch.call("keydown", this, event);
         });
-        document.addEventListener("keyup", event => {
+        this.addTrackedDomEventListener(document, "keyup", event => {
             this.dispatch.call("keyup", this, event);
         });
-        container.addEventListener("mousedown", event => {
+        this.addTrackedDomEventListener(container, "mousedown", event => {
             this.dispatch.call("mousedown", this, event);
         });
-        container.addEventListener("mousemove", event => {
+        this.addTrackedDomEventListener(container, "mousemove", event => {
             this.dispatch.call("mousemove", this, event);
         });
-        container.addEventListener("mouseup", event => {
+        this.addTrackedDomEventListener(container, "mouseup", event => {
             this.dispatch.call("mouseup", this, event);
         });
-        container.addEventListener("mousewheel", event => {
+        this.addTrackedDomEventListener(container, "mousewheel", event => {
             this.dispatch.call("mousewheel", this, event);
         });
-        window.addEventListener(
+        this.addTrackedDomEventListener(
+            window,
             "resize",
             event => {
                 this.dispatch.call("resize", this, event);
             },
             false,
         );
-        document.addEventListener(
+        this.addTrackedDomEventListener(
+            document,
             "dragover",
             event => {
                 this.dispatch.call("dragover", this, event);
             },
             false,
         );
-        document.addEventListener(
+        this.addTrackedDomEventListener(
+            document,
             "drop",
             event => {
                 this.dispatch.call("drop", this, event);
             },
             false,
         );
+    }
+
+    addTrackedDomEventListener(target, type, listener, options) {
+        target.addEventListener(type, listener, options);
+        this.domEventListeners.push({target, type, listener, options});
+    }
+
+    removeDomEventListeners() {
+        this.domEventListeners.forEach(({target, type, listener, options}) => {
+            target.removeEventListener(type, listener, options);
+        });
+        this.domEventListeners = [];
     }
 }
 

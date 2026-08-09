@@ -1,4 +1,4 @@
-import { PCDLoader as ThreePCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
+import { PCDLoader as ThreePCDLoader } from "three/addons/loaders/PCDLoader.js";
 
 import BaseLoader from "./BaseLoader";
 

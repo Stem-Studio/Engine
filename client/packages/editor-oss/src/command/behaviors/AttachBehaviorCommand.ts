@@ -59,6 +59,18 @@ class AttachBehaviorCommand extends Command {
                 };
             }
 
+            // Play/Stop can invalidate a command that was already queued by
+            // scene import. The editor-side behavior data is still valid, but
+            // there is no live runtime manager to initialize against until the
+            // next Play session. Treat that transition as an informational
+            // no-op instead of surfacing a spurious runtime exception.
+            if (!this.game?.behaviorManager) {
+                return {
+                    message: `AttachBehaviorCommand: Behavior attached; runtime initialization deferred (${this.behaviorId})`,
+                    status: "info",
+                };
+            }
+
             
             const runtimeOptions: CreateBehaviorOptions = {
                 uuid: this.behaviorData.uuid,

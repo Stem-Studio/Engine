@@ -4,8 +4,8 @@ import styled from "styled-components";
 
 import {MoreGamesGrid, MoreGamesSection, MoreGamesTitle} from "./GameOverview.style";
 import {getRemixes} from "@stem/network/api/getGames";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import gamePlaceholder from "../../icons/stem-studio-project-placeholder.png";
 import {FileData} from "../../types/file";
 import {GameCardContainer, CardTitleRow, CardTitle, CardThumbnail} from "../common/GameCard.style";

@@ -6,10 +6,21 @@
 
 
 import PackageList from "./PackageList";
-import CssLoader from "../utils/CssLoader";
-import JsLoader from "../utils/JsLoader";
 
 const loaded = new Map();
+const emptyPackageLoad = Promise.resolve([]);
+let loaderModulesPromise = null;
+
+function getLoaderModules() {
+    if (loaderModulesPromise === null) {
+        loaderModulesPromise = Promise.all([
+            import("../utils/CssLoader"),
+            import("../utils/JsLoader"),
+        ]);
+    }
+
+    return loaderModulesPromise;
+}
 
 class PackageManager {
     /**
@@ -20,6 +31,10 @@ class PackageManager {
      */
     require(names) {
         names = Array.isArray(names) ? names : [names];
+
+        if (PackageList.length === 0 || names.length === 0) {
+            return emptyPackageLoad;
+        }
 
         const promises = [];
 
@@ -47,9 +62,6 @@ class PackageManager {
                             loaded: true,
                             promise: null,
                         });
-                        return new Promise(resolve => {
-                            resolve();
-                        });
                     });
                 });
                 loaded.set(n, {
@@ -64,7 +76,12 @@ class PackageManager {
         return Promise.all(promises);
     }
 
-    _load(assets = []) {
+    async _load(assets = []) {
+        if (assets.length === 0) {
+            return;
+        }
+
+        const [{default: CssLoader}, {default: JsLoader}] = await getLoaderModules();
         var cssLoader = new CssLoader();
         var jsLoader = new JsLoader();
 
@@ -75,18 +92,12 @@ class PackageManager {
                 return jsLoader.load(n);
             } else {
                 console.warn(`PackageManager: unknown assets ${n}.`);
-                return new Promise(resolve => {
-                    resolve();
-                });
+                return Promise.resolve();
             }
         });
 
-        return Promise.all(promises).then(() => {
-            jsLoader.eval();
-            return new Promise(resolve => {
-                resolve();
-            });
-        });
+        await Promise.all(promises);
+        jsLoader.eval();
     }
 }
 

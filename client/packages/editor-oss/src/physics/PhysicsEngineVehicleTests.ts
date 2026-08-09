@@ -1,11 +1,9 @@
 import { VehicleData, VehicleOptions } from './common/types';
-import { PhysicsEngine, VehiclePhysics, supportsVehicles } from './PhysicsEngine';
+import { PhysicsEngine } from './PhysicsEngine';
 
 /**
- * Shared harness for the engine-facing vehicle API (`VehiclePhysics`).
- * Runs against any `PhysicsEngine` implementation; engines that do
- * not implement `VehiclePhysics` (as detected by the
- * `supportsVehicles` type guard) skip every test body.
+ * Shared harness for the mandatory engine-facing vehicle API.
+ * Both supported backends must implement this contract.
  *
  * @example
  * describe('MyPhysicsImplementation', () => {
@@ -64,11 +62,7 @@ export const makeVehicleTests = (
             steerDeadzone: 0.05,
         };
 
-        // Returns the narrowed engine if it supports vehicles, or null
-        // otherwise. Engines without VehiclePhysics (e.g. PhysX)
-        // simply skip the test body.
-        const vehiclePhysicsOrSkip = (): (PhysicsEngine & VehiclePhysics) | null =>
-            supportsVehicles(physics) ? physics : null;
+        const vehiclePhysicsOrSkip = (): PhysicsEngine => physics;
 
         it('should add and remove a vehicle', () => {
             const vp = vehiclePhysicsOrSkip();

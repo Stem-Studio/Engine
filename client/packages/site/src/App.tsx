@@ -22,6 +22,7 @@ export function App() {
                 <Routes>
                     <Route path="/" element={<Landing />} />
                     <Route path="/playground" element={<Playground />} />
+                    <Route path="/playground/index.html" element={<Playground />} />
                     <Route path="/docs" element={<Docs />} />
                     <Route path="/docs/:slug" element={<Docs />} />
                     <Route path="*" element={<NotFound />} />

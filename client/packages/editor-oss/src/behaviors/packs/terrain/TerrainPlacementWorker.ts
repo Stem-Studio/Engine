@@ -3,7 +3,7 @@
 
 import { expose, transfer } from "comlink";
 import { Noise } from "noisejs";
-import seedrandom from "seedrandom";
+import seedrandom from "seedrandom/seedrandom.js";
 import { MathUtils, Matrix4, Quaternion, Vector3 } from "three";
 
 import { EndlessTerrainGridHeight } from "./EndlessTerrainGridHeight";
@@ -95,7 +95,7 @@ function chooseModelForZone(
     rand: number,
 ): number {
     let totalWeight = 0;
-    const compatible: Array<{ index: number; weight: number }> = [];
+    let lastCompatibleIndex = -1;
 
     for (let i = 0; i < terrainModels.length; i++) {
         const model = terrainModels[i];
@@ -111,24 +111,37 @@ function chooseModelForZone(
             continue;
         }
 
-        compatible.push({ index: i, weight: model.probability });
+        lastCompatibleIndex = i;
         totalWeight += model.probability;
     }
 
-    if (compatible.length === 0 || totalWeight === 0) {
+    if (lastCompatibleIndex === -1 || totalWeight === 0) {
         return -1;
     }
 
     let accumulated = 0;
     const target = rand * totalWeight;
-    for (const entry of compatible) {
-        accumulated += entry.weight;
+    for (let i = 0; i < terrainModels.length; i++) {
+        const model = terrainModels[i];
+        if (!model) {
+            continue;
+        }
+
+        if (model.type === "plant" && !isGrass) continue;
+        if (model.type === "tree" && (isDitch || isSnow)) continue;
+        if (model.type === "rock" && !isRock && !isSnow) continue;
+
+        if (model.probability <= 0) {
+            continue;
+        }
+
+        accumulated += model.probability;
         if (target <= accumulated) {
-            return entry.index;
+            return i;
         }
     }
 
-    return compatible[compatible.length - 1]?.index ?? -1;
+    return lastCompatibleIndex;
 }
 
 /**
@@ -150,9 +163,10 @@ export function processPlacementTask(task: TerrainPlacementTaskMessage): Terrain
     const heightFn = createGridHeightSampler(options);
     const forestNoise = new Noise(options.seed + 12345);
 
-    const modelIndices: number[] = [];
-    const matrices: number[] = [];
+    const modelIndices = new Int32Array(count);
+    const matrices = new Float32Array(count * 16);
     const objectIds: string[] = [];
+    let placedCount = 0;
 
     for (let i = 0; i < count; i++) {
         const objectIndex = start + i;
@@ -217,9 +231,10 @@ export function processPlacementTask(task: TerrainPlacementTaskMessage): Terrain
         tmpQuaternion.setFromAxisAngle(yAxis, rRot * Math.PI * 2);
         tmpMatrix.compose(tmpPosition, tmpQuaternion, tmpScale);
 
-        modelIndices.push(modelIndex);
-        matrices.push(...tmpMatrix.elements);
+        modelIndices[placedCount] = modelIndex;
+        matrices.set(tmpMatrix.elements, placedCount * 16);
         objectIds.push(`${chunkX}:${chunkZ}:${modelIndex}:${objectIndex}`);
+        placedCount++;
     }
 
     return {
@@ -227,8 +242,8 @@ export function processPlacementTask(task: TerrainPlacementTaskMessage): Terrain
         chunkX,
         chunkZ,
         generation,
-        modelIndices: Int32Array.from(modelIndices),
-        matrices: Float32Array.from(matrices),
+        modelIndices: modelIndices.slice(0, placedCount),
+        matrices: matrices.slice(0, placedCount * 16),
         objectIds,
     };
 }

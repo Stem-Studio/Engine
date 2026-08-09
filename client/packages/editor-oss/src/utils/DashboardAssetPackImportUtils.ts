@@ -1,4 +1,4 @@
-import {WebGPURenderer} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 
 import Converter from "./Converter";
 import {deduplicateModelFiles} from "./modelFileDeduplication";
@@ -252,6 +252,7 @@ const processAssetPackImport = async (
     onSelectTextures?: () => Promise<File[] | null>,
 ) => {
     let headlessRenderer: WebGPURenderer | null = null;
+    const previousApp = global.app;
     try {
         onProgress?.({
             currentStep: "Preparing assets...",
@@ -264,6 +265,7 @@ const processAssetPackImport = async (
         // KTX2Loader.detectSupport(). Follows the same pattern as
         // ModelUtils.createThumbnailFromModel().
         if (!global.app?.renderer) {
+            const {WebGPURenderer} = await import("three/webgpu");
             headlessRenderer = new WebGPURenderer({antialias: false, alpha: true});
             await headlessRenderer.init();
             global.app = {renderer: headlessRenderer} as any;
@@ -377,7 +379,7 @@ const processAssetPackImport = async (
     } finally {
         if (headlessRenderer) {
             headlessRenderer.dispose();
-            global.app = null;
+            global.app = previousApp;
         }
     }
 };

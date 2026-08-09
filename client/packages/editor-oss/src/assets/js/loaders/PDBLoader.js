@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { PDBLoader as ThreePDBLoader } from "three/examples/jsm/loaders/PDBLoader.js";
+import { PDBLoader as ThreePDBLoader } from "three/addons/loaders/PDBLoader.js";
 
 import BaseLoader from "./BaseLoader";
 
@@ -15,21 +15,23 @@ class PDBLoader extends BaseLoader {
     load(url) {
 
         return new Promise(resolve => {
-            var loader = new ThreePDBLoader();
+            const loader = new ThreePDBLoader();
 
-            var offset = new THREE.Vector3();
+            const offset = new THREE.Vector3();
 
             loader.load(
                 url,
                 pdb => {
-                    var geometryAtoms = pdb.geometryAtoms;
-                    var geometryBonds = pdb.geometryBonds;
+                    const geometryAtoms = pdb.geometryAtoms;
+                    const geometryBonds = pdb.geometryBonds;
                     // var json = pdb.json;
 
-                    var root = new THREE.Group();
+                    const root = new THREE.Group();
 
-                    var boxGeometry = new THREE.BoxGeometry(1, 1, 1);
-                    var sphereGeometry = new THREE.IcosahedronGeometry(1, 2);
+                    const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+                    const sphereGeometry = new THREE.IcosahedronGeometry(1, 2);
+                    const atomMaterials = new Map();
+                    const bondMaterial = new THREE.MeshPhongMaterial({color: 0xffffff});
 
                     geometryAtoms.computeBoundingBox();
                     geometryAtoms.boundingBox.getCenter(offset).negate();
@@ -37,13 +39,14 @@ class PDBLoader extends BaseLoader {
                     geometryAtoms.translate(offset.x, offset.y, offset.z);
                     geometryBonds.translate(offset.x, offset.y, offset.z);
 
-                    var positions = geometryAtoms.getAttribute("position");
-                    var colors = geometryAtoms.getAttribute("color");
+                    let positions = geometryAtoms.getAttribute("position");
+                    const colors = geometryAtoms.getAttribute("color");
 
-                    var position = new THREE.Vector3();
-                    var color = new THREE.Color();
+                    const position = new THREE.Vector3();
+                    const color = new THREE.Color();
 
-                    var i, object;
+                    let i;
+                    let object;
 
                     for (i = 0; i < positions.count; i++) {
                         position.x = positions.getX(i);
@@ -54,7 +57,12 @@ class PDBLoader extends BaseLoader {
                         color.g = colors.getY(i);
                         color.b = colors.getZ(i);
 
-                        var material = new THREE.MeshPhongMaterial({color: color});
+                        const colorKey = `${color.r},${color.g},${color.b}`;
+                        let material = atomMaterials.get(colorKey);
+                        if (!material) {
+                            material = new THREE.MeshPhongMaterial({color: color.clone()});
+                            atomMaterials.set(colorKey, material);
+                        }
 
                         object = new THREE.Mesh(sphereGeometry, material);
                         object.position.copy(position);
@@ -65,8 +73,8 @@ class PDBLoader extends BaseLoader {
 
                     positions = geometryBonds.getAttribute("position");
 
-                    var start = new THREE.Vector3();
-                    var end = new THREE.Vector3();
+                    const start = new THREE.Vector3();
+                    const end = new THREE.Vector3();
 
                     for (i = 0; i < positions.count; i += 2) {
                         start.x = positions.getX(i);
@@ -80,7 +88,7 @@ class PDBLoader extends BaseLoader {
                         start.multiplyScalar(75);
                         end.multiplyScalar(75);
 
-                        object = new THREE.Mesh(boxGeometry, new THREE.MeshPhongMaterial(0xffffff));
+                        object = new THREE.Mesh(boxGeometry, bondMaterial);
                         object.position.copy(start);
                         object.position.lerp(end, 0.5);
                         object.scale.set(5, 5, start.distanceTo(end));

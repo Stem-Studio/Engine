@@ -26,7 +26,6 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
-	github.com/stripe/stripe-go/v81 v81.4.0
 	github.com/swaggo/swag v1.16.6
 	github.com/urfave/negroni v1.0.0
 	go.mongodb.org/mongo-driver v1.17.9
@@ -208,4 +207,3 @@ require (
 )
 
 replace github.com/dotErth/ai-3d-sandbox/stemstudio => ./server
-

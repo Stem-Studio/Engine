@@ -12,9 +12,9 @@ import "./css/Editor.css";
 import I18n from "i18next";
 import * as THREE from "three";
 import {Mesh, Object3D, OrthographicCamera, PerspectiveCamera, Scene} from "three";
-import {TransformControls} from "three/examples/jsm/controls/TransformControls.js";
-import {CSS3DRenderer} from "three/examples/jsm/renderers/CSS3DRenderer.js";
-import {WebGPURenderer} from "three/webgpu";
+import type {TransformControls} from "three/addons/controls/TransformControls.js";
+import type {CSS3DRenderer} from "three/addons/renderers/CSS3DRenderer.js";
+import type {WebGPURenderer} from "three/webgpu";
 import {ParticleEmitter, ParticleSystem, QuarksLoader, QuarksUtil, type VFXBatchSettings} from "three.quarks";
 
 import {AssetType, getSceneAssets} from "@stem/network/api/asset";
@@ -26,11 +26,11 @@ import {
 } from "@stem/network/api/behavior";
 import {getLambdaRevisionData} from "@stem/network/api/lambda";
 import {saveScene} from "@stem/network/api/scene";
+import {discardOssSave} from "../persistence/ossSceneSave";
 import {getScriptRevisionData} from "@stem/network/api/script";
 import {emptyAssetResolutionContext, getAssetResolutionContext, resolveAssetRevisionId} from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import {remapBehaviorAttributeUuids} from "@stem/editor-oss/asset-management/dependencies";
 import EngineRuntime, {
-    ApplicationMode,
     CASCADED_SHADOWS_MAP_BEHAVIOR_ID,
     GLOBAL_BEHAVIOR_HOST,
     MOBILE_TOUCH_CONTROLS_BEHAVIOR_ID,
@@ -38,7 +38,7 @@ import EngineRuntime, {
 import global from "@stem/editor-oss/global";
 import {isGaussianSplatObject} from "@stem/editor-oss/model/gaussianSplats";
 import {isModelAssetInstance} from "@stem/editor-oss/model/util";
-import {getPrefabId, isPrefab} from "@stem/editor-oss/prefab/util";
+import {getPrefabId} from "@stem/editor-oss/prefab/util";
 import {createFreshParticleConfig, isVFXAutoStartEnabled, isVFXParent} from "@stem/editor-oss/services";
 import {showToast} from "@stem/editor-oss/showToast";
 import {SceneAssetSource, type AssetSource} from "./asset-management/AssetSource";
@@ -48,7 +48,7 @@ import {
     getScriptImportDependencyMap,
     loadScriptImportRevisionMap,
     type ScriptImportRevisionMap,
-} from "../script-runtime/scriptImports";
+} from "../script-runtime/scriptImportCore";
 import {isScriptsEnabled} from "@stem/editor-oss/utils/featureFlags";
 import {DEFAULT_SNAPPING_SETTINGS} from "./assets/v2/RightPanel/panels/ProjectSettings/constants";
 import {getPhysics} from "./assets/v2/utils/getPhysics";
@@ -64,17 +64,31 @@ import {CAMERA_EFFECTS, CAMERA_OBJECT_INTERACTION, CAMERA_TYPES_NEW} from "@stem
 import {DetectDevice} from "@stem/editor-oss/utils/DetectDevice";
 import MeshUtils from "@stem/editor-oss/utils/MeshUtils";
 import {cloneObject, processChildData} from "@stem/editor-oss/utils/ObjectUtils";
+import {
+    findObjectDepthFirst,
+    traverseObjectDepthFirst,
+    traverseObjectReversePostOrder,
+    updateObjectMatrixWorldDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
+import SceneObjectLookup from "@stem/editor-oss/utils/SceneObjectLookup";
 import ShadowUtils from "@stem/editor-oss/utils/ShadowUtils";
 import {checkAndNotifyLargeTextures, logLargeTexturesReport} from "@stem/editor-oss/utils/TextureCheckerUtils";
 import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
+import {prepareRuntimeSceneReveal, type RuntimeSceneRevealController} from "@stem/editor-oss/utils/runtimeSceneReveal";
+import {
+    applyEditorPreviewInstancingBudget,
+    restoreEditorPreviewInstancingBudget,
+} from "@stem/editor-oss/utils/editorPreviewInstancingBudget";
+import {applyEditorPreviewGeometryBudget, restoreEditorPreviewGeometryBudget} from "@stem/editor-oss/utils/editorPreviewGeometryBudget";
 import {isDefaultSceneObject} from "@stem/editor-oss/agent/script-tool/defaultSceneObjects";
 import ChildrenAttributeConverter from "./behaviors/converters/ChildrenAttributeConverter";
 import EnumAttributeConverter from "./behaviors/converters/EnumConverter";
-import ModelLoader from "../assets/js/loaders/ModelLoader";
-import BehaviorData from "../behaviors/BehaviorData";
+import BehaviorData, {BEHAVIOR_DATA_SCHEMA_VERSION} from "../behaviors/BehaviorData";
 import {CreateBehaviorOptions} from "../behaviors/BehaviorManager";
 import BehaviorScriptInjector from "../behaviors/BehaviorScriptInjector";
 import BehaviorTypeRegistry from "../behaviors/BehaviorTypeRegistry";
+import {ensureUIKitRuntimeInitialized} from "../behaviors/uikit/UIKitInitialization";
 import {createGameObject} from "../behaviors/stem/core/createGameObject";
 import {isInputActive} from "./assets/v2/utils/isInputActive";
 import BehaviorAttributeType from "./behaviors/BehaviorAttributeType";
@@ -97,6 +111,12 @@ import {LambdaFileLoader} from "../lambdas";
 import {PhysicsUtil} from "../physics/PhysicsUtil";
 import {queryClient} from "@web-shared/queryClient";
 import {editorHasUnsavedChanges} from "@stem/editor-oss/utils/editorUnsavedChanges";
+import {DebouncedSaveCoordinator} from "@stem/editor-oss/persistence/DebouncedSaveCoordinator";
+import {
+    LocalAutosaveDirtyWatchdog,
+    prepareLocalAutosaveForStop,
+} from "@stem/editor-oss/persistence/LocalAutosaveLifecycle";
+import {getProjectStore} from "@stem/editor-oss/persistence/projectStoreFactory";
 import {UPLOAD_FILE_TYPE} from "./assets/v2/AssetsLibrary/UploadView/UploadView";
 import BehaviorUIManager from "./behaviors/BehaviorUIManager";
 import LambdaConfigRegistry from "../lambdas/LambdaConfigRegistry";
@@ -118,9 +138,8 @@ import StringAttributeConverter from "./behaviors/converters/StringAttributeConv
 import Vector2AttributeConverter from "./behaviors/converters/Vector2AttributeConverter";
 import Vector3AttributeConverter from "./behaviors/converters/Vector3AttributeConverter";
 import VideoAttributeConverter from "./behaviors/converters/VideoAttributeConverter";
-import {isSceneBehaviorsMigrated, migrateLegacyBehaviors} from "./behaviors/LegacyBehaviorMigration";
+import {isSceneBehaviorsMigrated} from "./behaviors/LegacyBehaviorMigration";
 import {isLegacyBehaviorId} from "../behaviors/util";
-import {IS_OSS} from "../mode/buildMode";
 import AssetAttributeConverter from "./behaviors/converters/AssetAttributeConverter";
 import BooleanWidget from "./behaviors/widgets/BooleanWidget";
 import ButtonWidget from "./behaviors/widgets/ButtonWidget";
@@ -141,7 +160,9 @@ import Vector3Widget from "./behaviors/widgets/Vector3Widget";
 import VideoWidget from "./behaviors/widgets/VideoWidget";
 import {CADController} from "./cad/CADController";
 import {ensureObjectMeshData} from "./cad/meshDataUtils";
+import {removedObjectContainsCADEditedObject, resetCADModeState, restoreCADTransformControls} from "./cad/removeGuards";
 import {isCADToolsEnabled} from "./cad/settings";
+import {getQuickBuildMetadata, repairQuickBuildRenderableState} from "./assets/v2/QuickBuild/quickBuildObjects";
 import {CADAxisConstraint, CADSelectionMode, CADSelectionShape, CADTool} from "./cad/types";
 import {CurveEditorControls} from "./controls/CurveEditorControls";
 import LambdaTypeRegistry from "../lambdas/LambdaTypeRegistry";
@@ -160,16 +181,41 @@ import {isStemEditor} from "./stem-editor/isStemEditor";
 import type {StemEditorMetadata} from "./stem-editor/saveStemEditor";
 import {ParticleSystemPreviewObject} from "../object/particle/ParticleSystemPreviewObject";
 import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
+import {
+    getPreferredDrillDownChild,
+    getPreferredDrillDownPathTarget,
+    isSceneHierarchyNode,
+} from "./selectionHierarchy";
+import {containsPlanCadSelectionMetadata, resolvePlanCadSelectionTarget} from "../utils/PlanCadSelectionMetadata";
 
 export {defaultRendering};
 
 export const DEFAULT_VFX_NAME = "New VFX Effect";
+// Progressive import previews are useful for modest scenes, but revealing
+// hundreds of custom-material objects one frame at a time can keep compiling
+// shaders long after the import promise has resolved and make the Play action
+// unresponsive. Large scenes should settle into their authored editor state.
+const MAX_SCRIPT_IMPORT_PREVIEW_OBJECTS = 128;
 
 const {t} = i18n;
+
+const BEHAVIOR_PLUGIN_ACTIVATION_FRAME_BUDGET_MS = 8;
+const BEHAVIOR_PLUGIN_ACTIVATION_BATCH_SIZE = 2;
+const BEHAVIOR_PLUGIN_ACTIVATION_OBJECT_BATCH_SIZE = 250;
+
+type BehaviorPluginActivationBudget = {
+    sliceStart: number;
+    plugins: number;
+    objects: number;
+};
+
+export type EditorStopSavePolicy = "flush" | "discard";
 
 class Editor {
     // TODO: move this to a config/theme file
     private isStarted: boolean = false;
+    private deferredBehaviorActivationPending = false;
+    private deferredBehaviorActivationScene: THREE.Scene | null = null;
     static DEFAULT_BACKGROUND_COLOR: number = 0x27272a;
     type: string = "scene";
     view: string = "perspective";
@@ -497,10 +543,13 @@ class Editor {
     behaviorAttributeConverter: BehaviorAttributeConverter;
     behaviorScriptRegistry: BehaviorScriptRegistry;
     behaviorPluginManager: BehaviorPluginManager;
-    // this should be never reset, because if default behavior configs are loaded once, they are always available
-    // when app stop is called we can clear only script behaviors from behaviorRegistry
+    // This flag means the lightweight config registry is ready. Built-in class
+    // constructors may continue loading in the background so Playground can
+    // paint and accept scene edits without waiting on every dynamic module.
     behaviorConfigsLoaded: boolean = false;
     behaviorConfigsLoading: boolean = false;
+    behaviorTypesLoading: boolean = false;
+    behaviorTypesLoaded: boolean = false;
     behaviorTypeRegistry: BehaviorTypeRegistry;
     behaviorScriptInjector: BehaviorScriptInjector;
     usedBehaviorIds: Map<string, number> = new Map(); // used to track behavior IDs with reference counts
@@ -514,12 +563,16 @@ class Editor {
     component: EditorComponent | null = null;
     engine: EngineRuntime | null = null;
     private editorErth: StemEngineInterface | null = null;
+    private pendingBehaviorTypeParses: Map<string, Promise<void>> = new Map();
+    private deferredDefaultBehaviorConfigs: Map<string, {id: string; main: string; isScript: boolean}> = new Map();
+    private deferredDefaultBehaviorTypeLoads: Map<string, Promise<void>> = new Map();
     /**
      * Counter so callers can nest `runInScriptImportContext` (for example a
      * future composite import that calls into another). Greater than zero
      * means `addObject` should mark new objects with `userData.isImported`.
      */
     private _scriptImportDepth: number = 0;
+    private scriptImportPreviewRevealController: RuntimeSceneRevealController | null = null;
     pendingBehaviorsToAdd: Map<string, string[]> = new Map(); // used to queue behaviors to add to game when in sandbox mode
     cadMode = false;
     cadTool: CADTool = "select";
@@ -535,6 +588,18 @@ class Editor {
     private inactivityTimeout: any = null;
 
     private boundFirstInteractionHandler: () => void = this.onFirstInteraction.bind(this);
+    private behaviorPluginUpdateLoopActive = false;
+    private sceneBehaviorPluginsReady = false;
+    private behaviorPluginActivationToken = 0;
+    private editorPreviewInstancingBudgetTimer: ReturnType<typeof setTimeout> | null = null;
+    private lastEditorPreviewInstancingBudgetSignature: string | null = null;
+    private sceneObjectLookup?: SceneObjectLookup;
+    private uikitRuntimeInitialization: Promise<void> | null = null;
+    private isUIKitRuntimeInitialized = false;
+    private readonly localAutoSave: DebouncedSaveCoordinator;
+    private readonly localAutoSaveWatchdog: LocalAutosaveDirtyWatchdog;
+    private isStopping = false;
+    private localAutoSaveSuspensionDepth = 0;
 
     constructor(engine: EngineRuntime) {
         this.engine = engine;
@@ -559,7 +624,7 @@ class Editor {
         );
         this.behaviorTypeRegistry = new BehaviorTypeRegistry();
         this.behaviorScriptInjector = new BehaviorScriptInjector();
-        this.behaviorPluginManager = new BehaviorPluginManager(this);
+        this.behaviorPluginManager = new BehaviorPluginManager(this, this.setBehaviorPluginUpdateLoopActive);
         this.behaviorContextProvider = new BehaviorContextProvider();
         // Note: BehaviorContextProvider now uses async API queries, no init() needed
         this.behaviorUIManager = new BehaviorUIManager(this.behaviorAttributeConverter, this.behaviorPluginManager);
@@ -574,16 +639,33 @@ class Editor {
         this.loadEagerLambdaConfigs();
         this.cadController = new CADController(this);
 
-        engine.on(`animate.editor`, this.update.bind(this));
-        engine.on(`objectChanged.editor`, this.onObjectChanged.bind(this));
+        this.localAutoSave = new DebouncedSaveCoordinator({
+            debounceMs: 1_500,
+            retryMs: 5_000,
+            isDirty: () => this.isLocalAutoSaveEligible() && editorHasUnsavedChanges(this.scene?.userData),
+            save: () => saveScene(false, false),
+            onDiscard: discardOssSave,
+        });
+        this.localAutoSaveWatchdog = new LocalAutosaveDirtyWatchdog(
+            () => this.isLocalAutoSaveEligible() && editorHasUnsavedChanges(this.scene?.userData),
+            () => {
+                this.engine?.call("editorDirtyStateChanged", this, {dirty: true});
+                this.localAutoSave.markDirty();
+            },
+        );
     }
 
     // this will overwrite existing default behavior configs
-    async loadDefaultBehaviorConfigsAndTypes() {
+    async loadDefaultBehaviorConfigsAndTypes(options: {deferTypes?: boolean} = {}) {
+        const deferTypes = options.deferTypes === true;
         if (this.behaviorConfigsLoading || this.behaviorConfigsLoaded) {
             return;
         }
         this.behaviorConfigsLoading = true;
+
+        if (!deferTypes && !this.isUIKitRuntimeInitialized) {
+            await this.initializeUIKitBehaviorRuntime();
+        }
 
         const service = this.engine?.behaviorLoadingService;
         if (!service) {
@@ -594,7 +676,7 @@ class Editor {
 
         const defaultConfigs = await service.loadDefaultConfigs();
 
-        console.log(`[Editor] Loading ${defaultConfigs.length} default behavior configs and types...`);
+        console.log(`[Editor] Loading ${defaultConfigs.length} default behavior configs...`);
 
         // Register configs and collect those that need class loading
         const configsToLoad: Array<{id: string; main: string; isScript: boolean}> = [];
@@ -609,21 +691,104 @@ class Editor {
                 configsToLoad.push({id: config.id, main: config.main, isScript: false});
             }
         }
-
-        // Batch load behavior classes via shared service
-        const loaded = await service.loadClasses(configsToLoad as any, {});
-
-        let successCount = 0;
-        for (const [id, behaviorType] of loaded) {
-            this.behaviorTypeRegistry.registerType(id, behaviorType);
-            successCount++;
+        this.deferredDefaultBehaviorConfigs.clear();
+        for (const config of configsToLoad) {
+            this.deferredDefaultBehaviorConfigs.set(config.id, config);
         }
 
+        // Release scene setup as soon as configs are available. Class
+        // constructors are an independent, heavier step and can be deferred
+        // by the Playground startup path without changing the eager API.
         this.behaviorConfigsLoaded = true;
         this.behaviorConfigsLoading = false;
-        console.info(
-            `[Editor] Loaded ${successCount} behavior types (${configsToLoad.length - successCount} failures)`,
-        );
+
+        const loadTypes = async (): Promise<void> => {
+            this.behaviorTypesLoading = true;
+            try {
+                // Give the first scene/layout paint a chance before importing
+                // all built-in behavior modules. This is especially important
+                // for large local Playground fixtures on mobile-sized viewports.
+                if (deferTypes) {
+                    await this.yieldToBrowserFrame();
+                }
+
+                const loaded = await service.loadClasses(configsToLoad as any, {}, undefined, deferTypes
+                    ? {
+                          progress: {
+                              // Keep the editor responsive while the built-in
+                              // pack graph is evaluated. Eager callers retain
+                              // the shared loader's higher-throughput default.
+                              batchSize: 1,
+                              frameBudgetMs: 4,
+                              yieldToFrame: () => this.yieldToBrowserFrame(),
+                          },
+                      }
+                    : undefined);
+                let successCount = 0;
+                for (const [id, behaviorType] of loaded) {
+                    this.behaviorTypeRegistry.registerType(id, behaviorType);
+                    successCount++;
+                }
+                console.info(
+                    `[Editor] Loaded ${successCount} behavior types (${configsToLoad.length - successCount} failures)`,
+                );
+                this.behaviorTypesLoaded = true;
+                if (
+                    this.sceneBehaviorPluginsReady &&
+                    this.isStarted &&
+                    !this.engine?.isPlaying &&
+                    !this.engine?.options.isPlayModeOnly
+                ) {
+                    // Types may finish after the scene's first progressive
+                    // activation pass. Re-run that pass so built-in editor
+                    // plugins become available without blocking first paint.
+                    void this.clearAndAddObjectsBehaviorPlugins();
+                }
+            } catch (error) {
+                console.error("[Editor] Failed to load default behavior types", error);
+            } finally {
+                this.behaviorTypesLoading = false;
+            }
+        };
+
+        if (deferTypes) {
+            // Playground keeps constructor evaluation demand-driven. Configs
+            // are enough for the library/inspector to paint; a specific class
+            // is loaded when a scene plugin or an explicit behavior add needs
+            // it. This prevents a cold editor from importing the entire pack
+            // graph immediately after first paint.
+        } else {
+            await loadTypes();
+        }
+    }
+
+    private ensureDefaultBehaviorTypeLoaded(behaviorId: string): Promise<void> {
+        if (this.behaviorTypeRegistry.getType(behaviorId)) {
+            return Promise.resolve();
+        }
+        const pending = this.deferredDefaultBehaviorTypeLoads.get(behaviorId);
+        if (pending) return pending;
+
+        const config = this.deferredDefaultBehaviorConfigs.get(behaviorId);
+        const service = this.engine?.behaviorLoadingService;
+        if (!config || !service) return Promise.resolve();
+
+        const load = service
+            .loadClasses([config] as any, {})
+            .then(loaded => {
+                const behaviorType = loaded.get(behaviorId);
+                if (behaviorType) {
+                    this.behaviorTypeRegistry.registerType(behaviorId, behaviorType);
+                }
+            })
+            .catch(error => {
+                console.error(`[Editor] Failed to load default behavior type "${behaviorId}"`, error);
+            })
+            .finally(() => {
+                this.deferredDefaultBehaviorTypeLoads.delete(behaviorId);
+            });
+        this.deferredDefaultBehaviorTypeLoads.set(behaviorId, load);
+        return load;
     }
 
     /** Synchronously registers all built-in lambda configs (eagerly loaded JSON) */
@@ -818,7 +983,7 @@ class Editor {
         return !!(gameSettings?.isGame ?? gameSettings?.enabled);
     };
 
-    start() {
+    async start(options?: {deferBehaviorActivation?: boolean}): Promise<void> {
         if (this.isStarted) {
             console.warn("[Editor] Editor is already started.");
             return;
@@ -830,9 +995,13 @@ class Editor {
 
         // Set isStarted immediately to prevent concurrent initialization
         this.isStarted = true;
+        this.isStopping = false;
 
-        void this.loadDefaultBehaviorConfigsAndTypes();
-        void this.loadDefaultLambdaConfigsAndTypes();
+        void this.loadDefaultBehaviorConfigsAndTypes({deferTypes: true});
+        // Lambda configs are registered synchronously in the constructor.
+        // Constructor modules are loaded on demand by runtime/editor callers;
+        // evaluating every built-in lambda here monopolizes the first
+        // Playground interaction window.
 
         this.scene.name = "Default Scene";
         this.scene.background = new THREE.Color(Editor.DEFAULT_BACKGROUND_COLOR);
@@ -840,9 +1009,12 @@ class Editor {
         this.engine.on("sceneSaveStart.Editor", () => {
             this.removePreviewBoxes();
         });
+        this.engine.on("objectChanged.editor", this.onObjectChanged);
+        this.engine.on("objectAdded.EditorAutoSave", this.markLocalSceneDirty);
 
         this.engine.on("objectRemoved.Editor", (object: any) => {
             this.removeOjbectPreviewBox(object);
+            this.markLocalSceneDirty();
         });
 
         this.engine.on("sceneClosed.Editor", () => {
@@ -857,37 +1029,90 @@ class Editor {
             }
         });
 
-        //TODO: MISHA - review the auto-save policy
-        this.engine.storage.autoSave = false;
+        // Local projects are persisted after a short quiet period. The
+        // coordinator serializes writes and retries without clearing dirty
+        // state when browser or folder storage fails.
+        this.engine.storage.autoSave = true;
         this.engine.call("storageChanged", this, "autoSave", true);
         this.engine.call("editorStarted", this);
 
         this.select(null);
         this.addEventsListeners();
+        this.startLocalAutoSaveDirtyWatchdog();
         this.startInactivityWatcher();
-        this.clearAndAddObjectsBehaviorPlugins();
+        const releaseAutoSave = this.suspendLocalAutoSave();
+        if (options?.deferBehaviorActivation) {
+            // Local Playground Play → Edit must be interactive immediately.
+            // Editor-only behavior previews are rebuilt cooperatively only
+            // after an explicit editor interaction. This avoids spending the
+            // first idle window on authored hooks that can monopolize the
+            // browser while the user is trying to press Play again.
+            releaseAutoSave({schedule: false});
+            this.deferredBehaviorActivationPending = true;
+            this.deferredBehaviorActivationScene = this.scene;
+            return;
+        }
+
+        try {
+            await this.clearAndAddObjectsBehaviorPlugins();
+        } finally {
+            releaseAutoSave({schedule: false});
+        }
     }
 
-    stop() {
+    async stop(options?: {
+        preserveBehaviorPreviewRoots?: boolean;
+        savePolicy?: EditorStopSavePolicy;
+    }): Promise<void> {
         if (!this.isStarted) {
             console.warn("[Editor] Editor is not started or already stopped.");
             return;
         }
+
+        this.deferredBehaviorActivationPending = false;
+        this.deferredBehaviorActivationScene = null;
 
         if (!this.engine) {
             console.error("[Editor] EngineRuntime is not initialized. Cannot stop editor.");
             return;
         }
 
+        await prepareLocalAutosaveForStop({
+            policy: options?.savePolicy ?? "flush",
+            coordinator: this.localAutoSave,
+            watchdog: this.localAutoSaveWatchdog,
+            hasDirtyChanges: () =>
+                this.isLocalAutoSaveEligible() && editorHasUnsavedChanges(this.scene?.userData),
+            setStopping: stopping => {
+                this.isStopping = stopping;
+            },
+        });
         this.isStarted = false;
+        this.localAutoSave.cancelPending();
+        if (this.editorPreviewInstancingBudgetTimer !== null) {
+            clearTimeout(this.editorPreviewInstancingBudgetTimer);
+            this.editorPreviewInstancingBudgetTimer = null;
+        }
+        // Preview counts are temporary editor state. Restore them before the
+        // play-mode handoff so runtime budgeting and authored behavior see the
+        // original instance ranges.
+        restoreEditorPreviewInstancingBudget(this.scene);
+        restoreEditorPreviewGeometryBudget(this.scene);
+        this.lastEditorPreviewInstancingBudgetSignature = null;
+        this.behaviorPluginActivationToken++;
         this.syncSceneBehaviorConfigs();
-        this.behaviorPluginManager.clear();
+        this.behaviorPluginManager.clear({
+            preserveEditorPreviewRoots: options?.preserveBehaviorPreviewRoots === true,
+        });
+        this.setBehaviorPluginUpdateLoopActive(false);
 
         this.engine.call("editorStopped", this);
         this.engine.on("sceneSaveStart.Editor", null);
         this.engine.on("sceneClosed.Editor", null);
         this.engine.on("updateSelection.Editor", null);
         this.engine.on("objectChanged.editor", null);
+        this.engine.on("objectAdded.EditorAutoSave", null);
+        this.engine.on("objectRemoved.Editor", null);
 
         if (this.transformControls) {
             let controlHelper = this.transformControls.getHelper();
@@ -901,22 +1126,47 @@ class Editor {
         this.stopInactivityWatcher();
     }
 
+    /** Pause local persistence while a destructive/branching confirmation is open. */
+    suspendLocalAutoSave(): (options?: {schedule?: boolean}) => void {
+        this.localAutoSaveSuspensionDepth += 1;
+        if (this.localAutoSaveSuspensionDepth === 1) {
+            this.localAutoSave.cancelPending();
+            this.localAutoSaveWatchdog.stop();
+        }
+
+        let released = false;
+        return (options = {}) => {
+            if (released) return;
+            released = true;
+            this.localAutoSaveSuspensionDepth = Math.max(0, this.localAutoSaveSuspensionDepth - 1);
+            if (this.localAutoSaveSuspensionDepth !== 0 || !this.isStarted || this.isStopping) return;
+
+            this.localAutoSaveWatchdog.start();
+            if (options.schedule !== false && this.isLocalAutoSaveEligible() && editorHasUnsavedChanges(this.scene?.userData)) {
+                this.localAutoSave.markDirty();
+            }
+        };
+    }
+
     /**
      * Clean up behavior plugins for an object and all its children
      * This method follows SRP by keeping editor-specific plugin management in the Editor
      * @param object
      */
     cleanupBehaviorPluginsForObjectAndChildren(object: THREE.Object3D): void {
-        // Clean up behavior plugins for this object
-        const behaviors = object.userData?.behaviors;
-        if (behaviors && Array.isArray(behaviors)) {
+        traverseObjectDepthFirst(object, target => {
+            const behaviors = target.userData?.behaviors;
+            if (!behaviors || !Array.isArray(behaviors)) {
+                return;
+            }
+
             behaviors.forEach(behaviorData => {
                 try {
                     const behaviorPlugin = this.behaviorPluginManager.getPlugin(behaviorData.uuid);
                     if (behaviorPlugin) {
                         this.behaviorPluginManager.removePlugin(behaviorPlugin);
                         console.log(
-                            `[Editor] Cleaned up behavior plugin "${behaviorData.id}" (${behaviorData.uuid}) from deleted object "${object.name}"`,
+                            `[Editor] Cleaned up behavior plugin "${behaviorData.id}" (${behaviorData.uuid}) from deleted object "${target.name}"`,
                         );
                     }
                 } catch (error) {
@@ -926,11 +1176,6 @@ class Editor {
                     );
                 }
             });
-        }
-
-        // Recursively clean up behavior plugins for all children
-        object.children.forEach(child => {
-            this.cleanupBehaviorPluginsForObjectAndChildren(child);
         });
     }
 
@@ -947,31 +1192,51 @@ class Editor {
 
                 // TODO: refactor
                 this.engine.scene = scene;
+                // A loaded local project is already persisted even when an
+                // older bundle only carried `lastEditTime`. Treat that
+                // historical timestamp as the load watermark; otherwise the
+                // autosave watchdog immediately rewrites a freshly opened
+                // scene while the user is entering Play.
+                if (
+                    scene.userData?.lastEditTime !== undefined &&
+                    scene.userData.lastSaveTime === undefined
+                ) {
+                    scene.userData.lastSaveTime = scene.userData.lastEditTime;
+                }
                 this.objectsNames = new Set<string>();
 
-                let globalHost = scene.getObjectByName(GLOBAL_BEHAVIOR_HOST);
+                const sceneObjects: THREE.Object3D[] = [];
+                let globalHost: THREE.Object3D | null = null;
+                traverseObjectDepthFirst(scene, object => {
+                    sceneObjects.push(object);
+                    if (!globalHost && object.name === GLOBAL_BEHAVIOR_HOST) {
+                        globalHost = object;
+                    }
+                });
+
                 if (!globalHost) {
                     globalHost = new THREE.Object3D();
                     globalHost.name = GLOBAL_BEHAVIOR_HOST;
                     scene.add(globalHost);
+                    sceneObjects.push(globalHost);
                 }
+                const behaviorHost = globalHost;
 
                 let firstDirLight: THREE.Object3D | null = null;
 
-                this.scene.traverse((child: any) => {
-                    if (child.isDirectionalLight && !firstDirLight) {
+                for (const child of sceneObjects) {
+                    const childAny = child as any;
+                    if (childAny.isDirectionalLight && !firstDirLight) {
                         firstDirLight = child;
                     }
-                    if (child.isHemisphereLight && isNewScene) {
-                        (child as Object3D).position.set(1e9, 1e9, 1e9);
+                    if (childAny.isHemisphereLight && isNewScene) {
+                        child.position.set(1e9, 1e9, 1e9);
                     }
-                });
 
-                this.scene.traverse((child: any) => {
                     this.objectsNames.add(child.name);
-                    if (child === globalHost) return;
+                    if (child === behaviorHost) continue;
 
-                    const isDirLight = child.isDirectionalLight;
+                    const isDirLight = childAny.isDirectionalLight;
                     if (isDirLight && child.userData.physics) {
                         delete child.userData.physics;
                     }
@@ -982,7 +1247,7 @@ class Editor {
                     }
                     const behaviors: any[] = child.userData?.behaviors || [];
                     behaviors.forEach(b => {
-                        const hostBehaviors: any[] = globalHost.userData.behaviors || [];
+                        const hostBehaviors: any[] = behaviorHost.userData.behaviors || [];
 
                         if (b.id === MOBILE_TOUCH_CONTROLS_BEHAVIOR_ID || b.id === CASCADED_SHADOWS_MAP_BEHAVIOR_ID) {
                             if (!hostBehaviors.some(hb => hb.id === b.id)) {
@@ -990,7 +1255,7 @@ class Editor {
 
                                 this.execute(new DetachBehaviorCommand(child, "", b.id));
 
-                                new AttachBehaviorCommand(globalHost, b.id, {
+                                new AttachBehaviorCommand(behaviorHost, b.id, {
                                     attributesData: attrs,
                                     uuid: b.uuid,
                                     enabled: b.enabled,
@@ -1000,10 +1265,10 @@ class Editor {
                             }
                         }
                     });
-                });
+                }
 
                 this.scene.add(this.engine.batchedRenderer);
-                this.processParticleSystems(this.scene);
+                await this.processParticleSystems(this.scene);
                 if (skipOtherActions) {
                     return;
                 }
@@ -1026,12 +1291,12 @@ class Editor {
                     });
                 }
 
-                this.scene.traverse(child => {
-                    if (child === globalHost) return;
+                traverseObjectDepthFirst(this.scene, child => {
+                    if (child === behaviorHost) return;
 
                     const behaviors: any[] = child.userData?.behaviors || [];
                     behaviors.forEach(b => {
-                        const hostBehaviors: any[] = globalHost.userData.behaviors || [];
+                        const hostBehaviors: any[] = behaviorHost.userData.behaviors || [];
 
                         if (b.id === MOBILE_TOUCH_CONTROLS_BEHAVIOR_ID) {
                             if (!hostBehaviors.some(hb => hb.id === b.id)) {
@@ -1048,7 +1313,7 @@ class Editor {
                                 console.log(`Moved behavior '${b.id}' from ${child.name} to ${GLOBAL_BEHAVIOR_HOST}`);
                             }
                         } else if (b.id === CASCADED_SHADOWS_MAP_BEHAVIOR_ID) {
-                            const target = firstDirLight || globalHost;
+                            const target = firstDirLight || behaviorHost;
                             const targetBehaviors: any[] = target.userData.behaviors || [];
 
                             if (!targetBehaviors.some(hb => hb.id === b.id) && child !== target) {
@@ -1074,7 +1339,7 @@ class Editor {
                     const hasCSM = targetBehaviors.some((b: any) => b.id === CASCADED_SHADOWS_MAP_BEHAVIOR_ID);
 
                     // Also check global host just in case it ended up there
-                    const globalHostBehaviors: any[] = globalHost.userData.behaviors || [];
+                    const globalHostBehaviors: any[] = behaviorHost.userData.behaviors || [];
                     const hasCSMGlobal = globalHostBehaviors.some((b: any) => b.id === CASCADED_SHADOWS_MAP_BEHAVIOR_ID);
 
                     if (!hasCSM && !hasCSMGlobal) {
@@ -1097,8 +1362,8 @@ class Editor {
             }
         }
 
-        this.scene.traverse(object => {
-            object.updateMatrixWorld();
+        updateObjectMatrixWorldDepthFirst(this.scene, true);
+        traverseObjectDepthFirst(this.scene, object => {
             (object as any).target?.updateMatrixWorld();
         });
     }
@@ -1106,24 +1371,22 @@ class Editor {
     private async onSceneLoaded() {
         // await this.cleanupSceneUserData(); // temporary fix for old script behaviors
 
+        // Do not start UIKit's large module graph for every scene. Script
+        // behavior parsing owns guarded initialization when its source
+        // actually references UIKit.
         this.loadSceneBehaviors();
+
+        // Quick Build material repair is a scene hydration invariant, not an
+        // editor-preview feature. Play-only routes intentionally skip the
+        // editor behavior/plugin pipeline, so doing this below the early
+        // return leaves legacy metadata-only/null material slots un-repaired
+        // in the runtime and makes saved stamps appear empty or white.
+        this.repairQuickBuildSceneMaterials();
 
         // In play-mode-only (publish links), skip editor-specific behavior processing.
         // GameManager will handle all behavior loading via the behavior bundle.
         if (this.engine?.options.isPlayModeOnly) {
             return;
-        }
-
-        // Migrate legacy behaviors to Assets API.
-        // OSS has no legacy cloud/Mongo behavior backend — and OSS asset IDs
-        // ("oss-asset-<ts>-<rand>") are not 24-char Mongo ObjectIDs, so
-        // `isLegacyBehaviorId` would wrongly flag every OSS behavior as legacy
-        // and mint a fresh duplicate asset on every load. Skip migration in OSS.
-        if (!IS_OSS && this.engine?.mode === ApplicationMode.EDIT && this.sceneID) {
-            await migrateLegacyBehaviors({
-                scene: this.scene,
-                sceneId: this.sceneID,
-            });
         }
 
         this.cleanupScriptsAndConfigs(); // temporary fix for lost scripts
@@ -1134,8 +1397,109 @@ class Editor {
         await this.loadBackendLambdaConfigs();
         await this.loadBackendImportSources();
         this.notifyObjectsAddedToScene();
-        this.clearAndAddObjectsBehaviorPlugins();
-        this.syncSceneBehaviorConfigs();
+        // Author/editor hooks can construct thousands of procedural meshes.
+        // Do not make sceneLoaded wait for those visuals: let the viewport paint
+        // first, then activate the scene plugins in a yielding background pass.
+        // Keep the scene identity so a fast scene swap cannot apply stale hooks
+        // to the newly loaded scene.
+        const loadedScene = this.scene;
+        void this.activateSceneBehaviorPluginsAfterFirstPaint(loadedScene);
+    }
+
+    /**
+     * Older Quick Build saves can contain a mesh material slot with no
+     * deserialized material object, or only serializer metadata that restores
+     * as the default white material. Repair those slots as the scene enters
+     * the editor so reloads remain visibly authored instead of showing empty
+     * tiles.
+     */
+    private repairQuickBuildSceneMaterials(): void {
+        // Scene activation can be exercised before a scene object is attached
+        // (for example during the editor bootstrap). Keep this repair pass
+        // best-effort so it cannot prevent the playground from mounting.
+        if (!this.scene) return;
+        this.scene.traverse(object => {
+            if (!getQuickBuildMetadata(object)) return;
+            repairQuickBuildRenderableState(object);
+        });
+        // The repair only restores runtime render state; do not emit a scene
+        // mutation event here or a load could become a new autosave.
+    }
+
+    private requestDeferredBehaviorActivation(): void {
+        if (
+            !this.deferredBehaviorActivationPending ||
+            !this.deferredBehaviorActivationScene ||
+            !this.isStarted ||
+            this.engine?.isPlaying
+        ) {
+            return;
+        }
+
+        const loadedScene = this.deferredBehaviorActivationScene;
+        this.deferredBehaviorActivationPending = false;
+        this.deferredBehaviorActivationScene = null;
+        void this.activateSceneBehaviorPluginsAfterFirstPaint(loadedScene);
+    }
+
+    private async activateSceneBehaviorPluginsAfterFirstPaint(loadedScene: THREE.Scene): Promise<void> {
+        await this.yieldToBrowserFrame();
+        if (
+            this.scene !== loadedScene ||
+            !this.isStarted ||
+            this.engine?.isPlaying ||
+            this.engine?.options.isPlayModeOnly
+        ) {
+            return;
+        }
+
+        // Behavior hooks can emit objectChanged/objectAdded while reconstructing
+        // editor-only previews. Those are scene setup signals, not author edits;
+        // keep autosave suspended for this background activation pass so a user
+        // can immediately choose Don't Save without an internal preview write
+        // racing the mode transition.
+        const releaseAutoSave = this.suspendLocalAutoSave();
+
+        const engine = this.engine;
+        // Procedural editor hooks can add thousands of meshes. The activation
+        // is already behind an explicit editor interaction; keep the preview
+        // build isolated from the mode transition so runtime/play rendering is
+        // unaffected.
+        const canPauseEditorRender =
+            typeof engine?.stopScheduledAnimationLoop === "function" &&
+            typeof engine?.startScheduledAnimationLoop === "function";
+        if (canPauseEditorRender) {
+            engine.stopScheduledAnimationLoop();
+        }
+        try {
+            // This pass is intentionally best-effort. Async editor preview
+            // hooks (model/material preparation, thumbnails, etc.) must not
+            // hold the mode transition open; Play can invalidate the token
+            // while those hooks continue to settle in the background.
+            await this.clearAndAddObjectsBehaviorPlugins({waitForPendingAdditions: false});
+            if (this.scene !== loadedScene || !this.isStarted || this.engine?.isPlaying) {
+                return;
+            }
+
+            this.syncSceneBehaviorConfigs();
+            this.sceneBehaviorPluginsReady = true;
+            if (this.behaviorTypesLoaded && this.isStarted && !this.engine?.isPlaying) {
+                // The deferred built-in type load may have completed before the
+                // first scene pass; make sure those plugins are activated too.
+                await this.clearAndAddObjectsBehaviorPlugins({waitForPendingAdditions: false});
+            }
+            console.debug("[Editor] Deferred scene behavior activation completed");
+        } finally {
+            releaseAutoSave({schedule: false});
+            // The deferred editor pass can finish after a route-driven Play
+            // transition has already started. Reattach the renderer callback
+            // in that case too: Play owns the same scheduled callback, and
+            // leaving it detached produces a live app with a frozen/default
+            // camera after refresh.
+            if (canPauseEditorRender && this.scene === loadedScene) {
+                engine.startScheduledAnimationLoop();
+            }
+        }
     }
 
     private notifyObjectsAddedToScene() {
@@ -1144,60 +1508,182 @@ class Editor {
         });
     }
 
-    private clearAndAddObjectsBehaviorPlugins() {
+    private async clearAndAddObjectsBehaviorPlugins(
+        options: {waitForPendingAdditions?: boolean} = {},
+    ): Promise<void> {
+        const activationToken = ++this.behaviorPluginActivationToken;
         this.behaviorPluginManager.clear();
         this.usedBehaviorIds.clear();
         if (this.isSandbox) {
             // In sandbox mode, we don't add behavior plugins
             return;
         }
-        const processObject = (object: THREE.Object3D) => {
-            const objectBehaviorsData = object.userData.behaviors as BehaviorData[] | undefined;
-            if (!objectBehaviorsData || objectBehaviorsData.length === 0) {
+
+        const budget = this.createBehaviorPluginActivationBudget();
+
+        // Process scene-level behaviors first. Children are queued only after an
+        // object's hooks run so legacy onEditorAdded() hooks that add child
+        // objects still participate in traversal.
+        if (!await this.addBehaviorPluginsForObjectProgressively(this.scene, activationToken, budget)) {
+            return;
+        }
+
+        const stack: THREE.Object3D[] = [];
+        for (let i = this.scene.children.length - 1; i >= 0; i--) {
+            const child = this.scene.children[i];
+            if (child) stack.push(child);
+        }
+
+        while (stack.length > 0) {
+            if (activationToken !== this.behaviorPluginActivationToken) {
                 return;
             }
-            objectBehaviorsData.forEach(behaviorData => {
-                this.addBehaviorPlugin(object, behaviorData);
-                this.addBehaviorIdReference(behaviorData.id);
-            });
-        };
 
-        // Process the scene root itself (scene-level behaviors)
-        processObject(this.scene);
+            const object = stack.pop();
+            if (!object) continue;
 
-        // Process all child objects
-        this.traverseSceneObjects(processObject);
+            if (!await this.addBehaviorPluginsForObjectProgressively(object, activationToken, budget)) {
+                return;
+            }
+
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                const child = object.children[i];
+                if (child) stack.push(child);
+            }
+        }
+
+        if (activationToken !== this.behaviorPluginActivationToken) {
+            return;
+        }
+        if (this.pendingBehaviorTypeParses.size > 0) {
+            await Promise.allSettled(Array.from(this.pendingBehaviorTypeParses.values()));
+        }
+        if (activationToken !== this.behaviorPluginActivationToken) {
+            return;
+        }
+        if (options.waitForPendingAdditions !== false) {
+            await this.behaviorPluginManager.waitForPendingAdditions();
+        }
+        this.refreshEditorPreviewInstancingBudget();
     }
 
-    // optimized(not) recursive function to traverse the scene
-    traverseSceneObjects(callback: (object: THREE.Object3D) => void) {
-        const isStemObject = (/*object: THREE.Object3D*/) => {
-            // return object.userData && object.userData.isStemObject;
-            return true; // For now, we consider all objects as stem objects because not all objects have isStemObject flag for now
-        };
+    /** Apply the editor-only procedural preview cap after behavior visuals settle. */
+    refreshEditorPreviewInstancingBudget(): void {
+        if (
+            !this.scene ||
+            !this.isStarted ||
+            this.engine?.isPlaying ||
+            this.engine?.options.isPlayModeOnly
+        ) {
+            return;
+        }
 
-        const traverse = (object: THREE.Object3D) => {
-            if (!(isStemObject(/*object*/))) {
+        const stats = applyEditorPreviewInstancingBudget(this.scene);
+        const geometryStats = applyEditorPreviewGeometryBudget(this.scene);
+        const signature = `${stats.originalSubmittedTriangles}:${stats.cappedSubmittedTriangles}:${stats.meshesCapped}`;
+        const geometrySignature = `${geometryStats.originalTriangles}:${geometryStats.previewTriangles}:${geometryStats.meshesSimplified}`;
+        if (
+            (stats.meshesCapped > 0 || geometryStats.meshesSimplified > 0) &&
+            `${signature}|${geometrySignature}` !== this.lastEditorPreviewInstancingBudgetSignature
+        ) {
+            console.debug("[EditorPreviewBudget] Applied", {instancing: stats, geometry: geometryStats});
+        }
+        this.lastEditorPreviewInstancingBudgetSignature =
+            stats.meshesCapped > 0 || geometryStats.meshesSimplified > 0
+                ? `${signature}|${geometrySignature}`
+                : null;
+    }
+
+    /** Coalesce attribute/async preview updates into one post-mutation pass. */
+    scheduleEditorPreviewInstancingBudget(): void {
+        if (this.editorPreviewInstancingBudgetTimer !== null) return;
+        this.editorPreviewInstancingBudgetTimer = setTimeout(() => {
+            this.editorPreviewInstancingBudgetTimer = null;
+            this.refreshEditorPreviewInstancingBudget();
+        }, 16);
+    }
+
+    private createBehaviorPluginActivationBudget(): BehaviorPluginActivationBudget {
+        return {
+            sliceStart: this.nowForBehaviorPluginActivation(),
+            plugins: 0,
+            objects: 0,
+        };
+    }
+
+    private nowForBehaviorPluginActivation(): number {
+        return typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+    }
+
+    private shouldYieldBehaviorPluginActivation(budget: BehaviorPluginActivationBudget): boolean {
+        return (
+            budget.plugins >= BEHAVIOR_PLUGIN_ACTIVATION_BATCH_SIZE ||
+            budget.objects >= BEHAVIOR_PLUGIN_ACTIVATION_OBJECT_BATCH_SIZE ||
+            this.nowForBehaviorPluginActivation() - budget.sliceStart >= BEHAVIOR_PLUGIN_ACTIVATION_FRAME_BUDGET_MS
+        );
+    }
+
+    private async maybeYieldBehaviorPluginActivation(
+        budget: BehaviorPluginActivationBudget,
+        activationToken: number,
+    ): Promise<boolean> {
+        if (!this.shouldYieldBehaviorPluginActivation(budget)) {
+            return activationToken === this.behaviorPluginActivationToken;
+        }
+
+        await this.yieldToBrowserFrame();
+        budget.sliceStart = this.nowForBehaviorPluginActivation();
+        budget.plugins = 0;
+        budget.objects = 0;
+        return activationToken === this.behaviorPluginActivationToken;
+    }
+
+    private async yieldToBrowserFrame(): Promise<void> {
+        await new Promise<void>(resolve => {
+            const finish = () => setTimeout(resolve, 0);
+            if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() => finish());
                 return;
             }
-            callback(object);
-            object.children.forEach(child => {
-                traverse(child);
-            });
-        };
-
-        this.scene.children.forEach(child => {
-            traverse(child);
+            finish();
         });
+    }
+
+    private async addBehaviorPluginsForObjectProgressively(
+        object: THREE.Object3D,
+        activationToken: number,
+        budget: BehaviorPluginActivationBudget,
+    ): Promise<boolean> {
+        budget.objects += 1;
+
+        const objectBehaviorsData = object.userData.behaviors as BehaviorData[] | undefined;
+        if (objectBehaviorsData && objectBehaviorsData.length > 0) {
+            for (const behaviorData of objectBehaviorsData) {
+                if (activationToken !== this.behaviorPluginActivationToken) {
+                    return false;
+                }
+
+                this.addBehaviorPlugin(object, behaviorData);
+                this.addBehaviorIdReference(behaviorData.id);
+                budget.plugins += 1;
+
+                if (!await this.maybeYieldBehaviorPluginActivation(budget, activationToken)) {
+                    return false;
+                }
+            }
+        }
+
+        return this.maybeYieldBehaviorPluginActivation(budget, activationToken);
+    }
+
+    traverseSceneObjects(callback: (object: THREE.Object3D) => void) {
+        traverseObjectDepthFirst(this.scene, callback, {includeRoot: false});
     }
 
     reverseTraverseSceneObjects(callback: (object: THREE.Object3D) => void) {
-        const objectsArr: THREE.Object3D[] = [];
-        this.traverseSceneObjects(object => {
-            objectsArr.push(object);
-        });
-
-        objectsArr.reverse().forEach(callback);
+        traverseObjectReversePostOrder(this.scene, callback, {includeRoot: false});
     }
 
     handleEditorVisibilityChange(uuid: string, visible: boolean) {
@@ -1214,10 +1700,26 @@ class Editor {
         code: string,
         context = getAssetResolutionContext(this.scene) || undefined,
         importRevisionMap?: ScriptImportRevisionMap,
+        options?: {contextIsNameAware?: boolean},
     ): Promise<void> {
         try {
-            const importContext = await buildNameAwareScriptImportContext(this.sceneID, context);
-            const resolvedImportRevisionMap = importRevisionMap || await loadScriptImportRevisionMap(code, importContext);
+            // Only scripts that reference UIKit need the expensive shared UI
+            // material bootstrap. Ordinary Three.js behavior scripts can parse
+            // and activate without importing the full UIKit graph.
+            const usesUIKit = /\bUIKit\b|UIKitPointerEvents|@ni2khanna\/uikit/.test(code);
+            if (usesUIKit && !this.isUIKitRuntimeInitialized) {
+                await this.initializeUIKitBehaviorRuntime();
+            }
+            const importContext = options?.contextIsNameAware
+                ? context
+                : await buildNameAwareScriptImportContext(this.sceneID, context);
+            const resolvedImportRevisionMap = this.engine?.behaviorLoadingService
+                ? await this.engine.behaviorLoadingService.resolveScriptImportRevisionMap(
+                    code,
+                    importContext,
+                    importRevisionMap,
+                )
+                : importRevisionMap || await loadScriptImportRevisionMap(code, importContext);
             const behaviorClass = this.behaviorScriptInjector.parse(id, code, undefined, {
                 context: importContext,
                 importRevisionMap: resolvedImportRevisionMap,
@@ -1280,7 +1782,9 @@ class Editor {
             }
 
             if (behaviorConfigData.Code) {
-                await this.parseAndRegisterScriptBehavior(behaviorConfigData.ID, behaviorConfigData.Code);
+                await this.parseAndRegisterScriptBehavior(behaviorConfigData.ID, behaviorConfigData.Code, importContext, undefined, {
+                    contextIsNameAware: true,
+                });
             }
         }
     }
@@ -1495,9 +1999,6 @@ class Editor {
 
         this.scene.userData = {
             game,
-            scheduler: {
-                enabled: false,
-            },
             snapping: {...DEFAULT_SNAPPING_SETTINGS},
             compartmentsEnabled: true,
         };
@@ -1513,8 +2014,10 @@ class Editor {
     }
 
     reset() {
-        this.stop();
-        this.start();
+        void (async () => {
+            await this.stop();
+            await this.start();
+        })();
     }
 
     // probably its for avoiding browser to block audio playback until user interacts with the page
@@ -1559,7 +2062,15 @@ class Editor {
     }
 
     objectByUuid(uuid: string): THREE.Object3D | null {
-        return this.scene.getObjectByProperty("uuid", uuid) || null;
+        return this.getSceneObjectLookup().getByUuid(uuid);
+    }
+
+    objectById(id: number): THREE.Object3D | null {
+        return this.getSceneObjectLookup().getById(id);
+    }
+
+    private getSceneObjectLookup(): SceneObjectLookup {
+        return this.sceneObjectLookup ??= new SceneObjectLookup(() => this.scene);
     }
 
     get cadEditedObject(): THREE.Mesh | null {
@@ -1687,18 +2198,14 @@ class Editor {
         return true;
     }
 
-    exitCADMode() {
+    exitCADMode(options: {notifySelection?: boolean} = {}) {
         if (!this.cadMode && !this.cadEditedObjectUuid) {
             return;
         }
 
-        this.cadMode = false;
-        this.cadSelectionMode = "object";
-        this.cadSelectionShape = "box";
-        this.cadAxisConstraint = ["x", "y", "z"];
-        this.cadTool = "select";
-        this.cadEditedObjectUuid = null;
+        resetCADModeState(this);
         this.cadController.deactivate();
+        restoreCADTransformControls(this.engine);
         // Leaving CAD mode cancels any in-progress annotation pick session
         // so the tool's event listeners don't outlive the mode.
         this._annotationTool?.cancel();
@@ -1713,7 +2220,7 @@ class Editor {
         this.engine?.call("cadAxisConstraintChanged", this, this.cadAxisConstraint);
         this.engine?.call("cadToolChanged", this, this.cadTool);
 
-        if (this.selected && !Array.isArray(this.selected)) {
+        if (options.notifySelection !== false && this.selected && !Array.isArray(this.selected)) {
             this.engine?.call("objectSelected", this, this.selected);
         }
     }
@@ -2054,18 +2561,19 @@ class Editor {
         }
 
         if (Array.isArray(this.selected) || !this.selected || this.selected.uuid !== editedObject.uuid) {
-            this.exitCADMode();
+            const selectedPlanCadTransformObject = Array.isArray(this.selected)
+                ? this.selected.some(obj => this.isPlanCadTransformSelectionTarget(obj))
+                : this.isPlanCadTransformSelectionTarget(this.selected);
+            if (selectedPlanCadTransformObject) {
+                this.exitCADMode({notifySelection: false});
+                return;
+            }
+            this.selected = editedObject;
         }
     }
 
     modelByID(id: string): Object3D | null {
-        this.scene.traverse(object => {
-            if (object.userData && object.userData.ID === id) {
-                return object;
-            }
-        });
-
-        return null;
+        return findObjectDepthFirst(this.scene, object => object.userData?.ID === id);
     }
 
     addSelectionHelper(object: THREE.Object3D) {
@@ -2134,13 +2642,56 @@ class Editor {
         }
     }
 
+    restoreScriptImportPreviewReveal(): void {
+        this.scriptImportPreviewRevealController?.restore();
+        this.scriptImportPreviewRevealController = null;
+    }
+
+    prepareScriptImportPreviewReveal(options?: {batchSize?: number; batchWeightBudget?: number}): RuntimeSceneRevealController | null {
+        this.restoreScriptImportPreviewReveal();
+        const controller = prepareRuntimeSceneReveal(this.scene, {
+            enabled: true,
+            batchSize: options?.batchSize,
+            batchWeightBudget: options?.batchWeightBudget,
+        });
+        if (controller.stats.hiddenObjects > MAX_SCRIPT_IMPORT_PREVIEW_OBJECTS) {
+            // Keep the expensive generated/runtime preview set parked while
+            // the editor is idle. Large scenes can contain millions of
+            // submitted instance triangles; compiling and drawing all of them
+            // in the editor starves pointer input. Play mode restores this
+            // controller before it builds its own runtime reveal schedule.
+            this.scriptImportPreviewRevealController = controller;
+            console.debug("[ScriptImportPreviewReveal] Deferred large scene", controller.stats);
+            return null;
+        }
+        this.scriptImportPreviewRevealController = controller;
+
+        if (controller.stats.hiddenObjects > 0) {
+            console.debug("[ScriptImportPreviewReveal] Prepared", controller.stats);
+        }
+
+        return controller.stats.hiddenObjects > 0 ? controller : null;
+    }
+
+    startScriptImportPreviewReveal(): void {
+        const controller = this.scriptImportPreviewRevealController;
+        if (!controller || controller.stats.hiddenObjects > MAX_SCRIPT_IMPORT_PREVIEW_OBJECTS) {
+            return;
+        }
+
+        controller.start();
+        if (controller.stats.hiddenObjects > 0) {
+            console.debug("[ScriptImportPreviewReveal] Started", controller.stats);
+        }
+    }
+
     // TODO: wwe need to prevent adding objects directly to the scene without this method
     // to be sure that all objects have default user data, this will also help us optimize traversing objects in the scene
     async addObject(object: THREE.Object3D, parent?: THREE.Object3D, customName?: string) {
         object.name = customName || generateUniqueNameWithCounter(object.name, this.scene, this.getExistingNames());
         this.objectsNames.add(object.name);
 
-        this.processParticleSystems(object);
+        await this.processParticleSystems(object);
         this.setObjectDefaultUserData(object);
         this.setObjectDefaultShadowSettings(object);
 
@@ -2195,6 +2746,7 @@ class Editor {
             PhysicsUtil.updateShapeOffsetAndScale(object);
         }
 
+        await this.engine?.ensureObjectRenderingSupport(object);
         await this.engine?.game?.initializeObject(object);
 
         this.engine?.call("objectAdded", this, object);
@@ -2224,12 +2776,14 @@ class Editor {
             }
         }
 
-        if (
-            this.cadEditedObjectUuid &&
-            (object.uuid === this.cadEditedObjectUuid || object.getObjectByProperty("uuid", this.cadEditedObjectUuid))
-        ) {
-            this.exitCADMode();
+        const removedCadEditedObject = removedObjectContainsCADEditedObject(object, this.cadEditedObjectUuid);
+        if (removedCadEditedObject) {
+            this.exitCADMode({notifySelection: false});
         }
+        const selectedObject = this.selected instanceof THREE.Object3D ? this.selected : null;
+        const removedSelectedObject =
+            !!selectedObject &&
+            !!findObjectDepthFirst(object, child => child === selectedObject || child.uuid === selectedObject.uuid);
 
         // Clean up behavior plugins first (Editor responsibility)
         this.cleanupBehaviorPluginsForObjectAndChildren(object);
@@ -2241,6 +2795,9 @@ class Editor {
         }
 
         object.parent.remove(object);
+        if (removedSelectedObject) {
+            this.deselect();
+        }
 
         this.engine?.game?.disposeObject(object);
 
@@ -2275,7 +2832,7 @@ class Editor {
         };
 
         const importedObjects: THREE.Object3D[] = [];
-        this.scene.traverse(obj => {
+        traverseObjectDepthFirst(this.scene, obj => {
             if (obj === this.scene) return;
             if (obj.userData?.isImported === true) {
                 importedObjects.push(obj);
@@ -2361,21 +2918,26 @@ class Editor {
             emitter.userData.physics.enabled = false;
         }
 
-        if (this.engine?.batchedRenderer) {
-            QuarksUtil.addToBatchRenderer(emitter, this.engine.batchedRenderer);
-            if (isVFXAutoStartEnabled(particleParent)) {
-                QuarksUtil.restart(emitter);
-            } else {
-                QuarksUtil.stop(emitter);
-            }
-        }
+        void this.engine?.ensureBatchedRenderer()
+            .then(batchedRenderer => {
+                QuarksUtil.addToBatchRenderer(emitter, batchedRenderer);
+                if (isVFXAutoStartEnabled(particleParent)) {
+                    QuarksUtil.restart(emitter);
+                } else {
+                    QuarksUtil.stop(emitter);
+                }
+            })
+            .catch(error => {
+                console.warn("[Editor] Failed to initialize VFX renderer:", error);
+            });
 
         callback?.(particleSystem);
     };
 
-    processParticleSystems = (object3d: Object3D) => {
-        object3d.traverse(obj => {
-            if (obj instanceof ParticleEmitter || obj.getObjectByProperty("type", "ParticleEmitter")) {
+    processParticleSystems = async (object3d: Object3D) => {
+        const emitters: ParticleEmitter[] = [];
+        traverseObjectDepthFirst(object3d, obj => {
+            if (obj.type === "ParticleEmitter") {
                 this.setObjectDefaultUserData(obj);
             }
             if (obj instanceof ParticleEmitter) {
@@ -2384,15 +2946,7 @@ class Editor {
                     obj.userData.physics.enabled = false;
                 }
                 const particleSystem = obj.system;
-                if (this.engine?.batchedRenderer) {
-                    QuarksUtil.addToBatchRenderer(obj, this.engine.batchedRenderer);
-                    const autoStart = isVFXAutoStartEnabled(obj);
-                    if (autoStart) {
-                        QuarksUtil.restart(obj);
-                    } else {
-                        QuarksUtil.stop(obj);
-                    }
-                }
+                emitters.push(obj);
                 const mesh = new ParticleSystemPreviewObject(particleSystem as ParticleSystem);
 
                 object3d.castShadow = false;
@@ -2404,6 +2958,25 @@ class Editor {
                 obj.add(mesh);
             }
         });
+
+        if (emitters.length === 0) {
+            return;
+        }
+
+        const batchedRenderer = await this.engine?.ensureBatchedRenderer();
+        if (!batchedRenderer) {
+            return;
+        }
+
+        for (const emitter of emitters) {
+            QuarksUtil.addToBatchRenderer(emitter, batchedRenderer);
+            const autoStart = isVFXAutoStartEnabled(emitter);
+            if (autoStart) {
+                QuarksUtil.restart(emitter);
+            } else {
+                QuarksUtil.stop(emitter);
+            }
+        }
     };
 
     moveObjectToPoint(object: THREE.Object3D, point: THREE.Vector3Like) {
@@ -2598,20 +3171,14 @@ class Editor {
         let shouldSkip = false;
         if (config.isSingleton) {
             // check if there is already a behavior of this type in the scene
-            this.scene.traverse((child: THREE.Object3D) => {
-                const behaviors: BehaviorData[] = child.userData.behaviors;
-                if (!behaviors) {
-                    return;
-                }
-
-                for (const behavior of behaviors) {
-                    if (behavior.id === behaviorId) {
-                        console.warn(`[Editor] Behavior "${behaviorId}" is already added to the scene, skipping...`);
-                        shouldSkip = true;
-                        return;
-                    }
-                }
+            const existingBehaviorObject = findObjectDepthFirst(this.scene, (child: THREE.Object3D) => {
+                const behaviors = child.userData.behaviors as BehaviorData[] | undefined;
+                return !!behaviors?.some(behavior => behavior.id === behaviorId);
             });
+            if (existingBehaviorObject) {
+                console.warn(`[Editor] Behavior "${behaviorId}" is already added to the scene, skipping...`);
+                shouldSkip = true;
+            }
         }
 
         if (shouldSkip) {
@@ -2657,6 +3224,22 @@ class Editor {
         return behaviorData;
     }
 
+    private ensureBehaviorTypeParsed(behaviorId: string, script: string): Promise<void> {
+        const pending = this.pendingBehaviorTypeParses.get(behaviorId);
+        if (pending) {
+            return pending;
+        }
+
+        const parsePromise = this.parseAndRegisterScriptBehavior(behaviorId, script)
+            .finally(() => {
+                if (this.pendingBehaviorTypeParses.get(behaviorId) === parsePromise) {
+                    this.pendingBehaviorTypeParses.delete(behaviorId);
+                }
+            });
+        this.pendingBehaviorTypeParses.set(behaviorId, parsePromise);
+        return parsePromise;
+    }
+
     addBehaviorPlugin(object: THREE.Object3D, behaviorData: BehaviorData): void {
         if (!behaviorData.enabled) {
             return;
@@ -2669,30 +3252,46 @@ class Editor {
 
         let behaviorType = this.behaviorTypeRegistry.getType(behaviorData.id);
 
+        // Playground default configs are registered before their constructor
+        // modules. Load only the type requested by this scene/plugin, then
+        // retry activation against the same object and behavior UUID.
+        if (!behaviorType && this.deferredDefaultBehaviorConfigs?.has(behaviorData.id)) {
+            const activationToken = this.behaviorPluginActivationToken;
+            void this.ensureDefaultBehaviorTypeLoaded(behaviorData.id).then(() => {
+                if (
+                    activationToken === this.behaviorPluginActivationToken &&
+                    this.isStarted &&
+                    this.behaviorTypeRegistry.getType(behaviorData.id) &&
+                    !this.behaviorPluginManager.getPlugin(behaviorData.uuid)
+                ) {
+                    this.addBehaviorPlugin(object, behaviorData);
+                }
+            });
+            return;
+        }
+
         // Fallback: if type not in registry, try parsing the script on-the-fly
         if (!behaviorType) {
             const script = this.behaviorScriptRegistry.getScript(behaviorData.id);
 
             if (script) {
-                if (script.includes("@import")) {
-                    void this.parseAndRegisterScriptBehavior(behaviorData.id, script);
-                } else {
-                    try {
-                        const parsed = this.behaviorScriptInjector.parse(behaviorData.id, script);
-                        if (this.behaviorTypeRegistry.getType(behaviorData.id)) {
-                            this.behaviorTypeRegistry.unregisterType(behaviorData.id);
-                        }
-                        this.behaviorTypeRegistry.registerType(behaviorData.id, parsed);
-                    } catch (error) {
-                        console.error(`[Editor] Failed to parse script behavior "${behaviorData.id}":`, error);
+                // Missing types always use the deduplicated asynchronous parse
+                // boundary. That boundary owns UIKit initialization and then
+                // retries this exact plugin once the class is registered.
+                const activationToken = this.behaviorPluginActivationToken;
+                void this.ensureBehaviorTypeParsed(behaviorData.id, script).then(() => {
+                    if (
+                        activationToken === this.behaviorPluginActivationToken &&
+                        this.isStarted &&
+                        this.behaviorTypeRegistry.getType(behaviorData.id) &&
+                        !this.behaviorPluginManager.getPlugin(behaviorData.uuid)
+                    ) {
+                        this.addBehaviorPlugin(object, behaviorData);
                     }
-                }
-                behaviorType = this.behaviorTypeRegistry.getType(behaviorData.id);
+                });
             }
 
-            if (!behaviorType) {
-                return;
-            }
+            return;
         }
 
         if (!this.editorErth) {
@@ -2864,7 +3463,7 @@ class Editor {
         }
 
         const behaviors: BehaviorData[] = [];
-        this.scene.traverse(object => {
+        traverseObjectDepthFirst(this.scene, object => {
             const objectBehaviors = object.userData.behaviors;
             if (!objectBehaviors) {
                 return;
@@ -2906,7 +3505,7 @@ class Editor {
         return null;
     }
 
-    getCameraLookAtPoint = (maxDistance?: number, isGroundPoint?: boolean) => {
+    getCameraLookAtPoint(maxDistance?: number, isGroundPoint?: boolean) {
         const raycaster = new THREE.Raycaster();
         const direction = new THREE.Vector3();
         this.camera.getWorldDirection(direction);
@@ -2915,16 +3514,17 @@ class Editor {
 
         raycaster.set(this.camera.position, direction);
 
-        let playerChildren: THREE.Object3D[] = [];
-        this.engine?.game?.player?.traverse((child: THREE.Object3D) => {
-            playerChildren.push(child);
-        });
+        const playerSubtree = new Set<THREE.Object3D>();
+        if (player) {
+            traverseObjectDepthFirst(player, (child: THREE.Object3D) => {
+                playerSubtree.add(child);
+            });
+        }
 
-        let objectsToCheck: THREE.Object3D[] = [];
-        this.scene.traverse((child: THREE.Object3D) => {
+        const objectsToCheck: THREE.Object3D[] = [];
+        traverseObjectDepthFirst(this.scene, (child: THREE.Object3D) => {
             if (
-                !playerChildren.includes(child) &&
-                child !== player &&
+                !playerSubtree.has(child) &&
                 child !== this.scene &&
                 child.type !== "LineSegments"
             ) {
@@ -2956,7 +3556,7 @@ class Editor {
 
         // If no collision, return a far point in the direction the camera is looking
         return point;
-    };
+    }
 
     computeIntersectPoint = (position: {x: number; y: number}, sceneHelpers?: THREE.Object3D): THREE.Vector3 => {
         const raycaster = new THREE.Raycaster();
@@ -3006,7 +3606,7 @@ class Editor {
     private convertToNewBehaviors() {
         this.scriptIdCounter = 0;
         // convert old behavior format to new format
-        this.scene.traverse(object => {
+        traverseObjectDepthFirst(this.scene, object => {
             this.convertObjectBehaviorToNewFormat(object);
         });
         // remove old scripts
@@ -3101,6 +3701,7 @@ class Editor {
         if (behavior.name) {
             console.log(`[Editor] Converting behavior v2 "${behavior.name}" to new format, `);
             return {
+                schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
                 id: behavior.name,
                 uuid: behavior.id,
                 enabled: behavior.enabled,
@@ -3142,6 +3743,7 @@ class Editor {
         const id = behavior.type.toLowerCase().trim();
 
         const newBehavior = {
+            schemaVersion: BEHAVIOR_DATA_SCHEMA_VERSION,
             id: id,
             uuid: behavior.uuid,
             enabled: behavior.enabled,
@@ -3221,6 +3823,7 @@ class Editor {
             this.convertConfigToNewFormat(config),
         );
         const scripts: Record<string, string> = this.scene.userData.scripts || {};
+        const scriptsToParse: Array<[string, string]> = [];
 
         // Skip loading script-based behaviors if scene has been migrated. But
         // continue to load file-based configs.
@@ -3244,9 +3847,30 @@ class Editor {
 
                 const scriptConfig = this.behaviorConfigRegistry.getConfig(id);
                 if (scriptConfig?.isScript) {
-                    void this.parseAndRegisterScriptBehavior(id, script);
+                    scriptsToParse.push([id, script]);
                 }
             }
+        }
+
+        // Script parsing can import large user modules and synchronously compile
+        // sizeable behavior bodies. Serialize it behind the first render and
+        // yield between entries so a large scene cannot monopolize the editor's
+        // main thread during the scene-loading handoff.
+        if (scriptsToParse.length > 0) {
+            void this.parseSceneScriptsWithYield(scriptsToParse);
+        }
+    }
+
+    private async parseSceneScriptsWithYield(scripts: Array<[string, string]>): Promise<void> {
+        for (const [id, script] of scripts) {
+            await new Promise<void>(resolve => {
+                if (typeof requestIdleCallback === "function") {
+                    requestIdleCallback(() => resolve(), {timeout: 100});
+                } else {
+                    setTimeout(resolve, 0);
+                }
+            });
+            await this.parseAndRegisterScriptBehavior(id, script);
         }
     }
 
@@ -3414,10 +4038,39 @@ class Editor {
     }
 
     select(object: THREE.Object3D | THREE.Object3D[] | null, noFocus?: boolean) {
+        const cadEditedObject = this.cadEditedObject;
+        if (this.cadMode && cadEditedObject) {
+            if (!object) {
+                return;
+            }
+
+            const requestedObjects = Array.isArray(object) ? object : [object];
+            const requestedBoundaries = requestedObjects
+                .filter((candidate): candidate is THREE.Object3D => !!candidate)
+                .map(candidate => this.getSelectionBoundaryObject(candidate));
+            const targetsPlanCadTransformObject = requestedBoundaries.some(candidate =>
+                this.isPlanCadTransformSelectionTarget(candidate),
+            );
+
+            if (targetsPlanCadTransformObject) {
+                this.exitCADMode({notifySelection: false});
+            } else {
+                const targetsEditedObject = requestedBoundaries.some(candidate => candidate.uuid === cadEditedObject.uuid);
+
+                if (!targetsEditedObject) {
+                    return;
+                }
+
+                object = cadEditedObject;
+            }
+        }
+
         if (!object) {
             this.clearSelection();
             return;
         }
+
+        this.requestDeferredBehaviorActivation();
 
         const isCollaborativeEditing = this.isCollaborative || (this.isSandbox && this.isMultiplayer);
 
@@ -3429,6 +4082,11 @@ class Editor {
                         .map(obj => this.getSelectionBoundaryObject(obj)),
                 ),
             );
+
+            if (filtered.length === 1) {
+                this.select(filtered[0]!, noFocus);
+                return;
+            }
 
             if (filtered.some(obj => obj?.userData?.selectedBy && obj?.userData?.selectedBy !== this.engine?.userId)) {
                 return;
@@ -3452,6 +4110,17 @@ class Editor {
         const clickedObject = this.getSelectionBoundaryObject(object);
 
         if (clickedObject?.userData?.selectedBy && clickedObject.userData.selectedBy !== this.engine?.userId) {
+            return;
+        }
+
+        if (this.isPlanCadTransformSelectionTarget(clickedObject)) {
+            this.selected = clickedObject;
+            if (isCollaborativeEditing && !Array.isArray(this.selected)) {
+                this.selected.userData.selectedBy = this.engine?.userId;
+            }
+            this.component?.setState({showRightPanel: true});
+            this.engine?.call("objectSelected", this, this.selected, noFocus);
+            this.syncCADStateWithSelection();
             return;
         }
 
@@ -3495,6 +4164,11 @@ class Editor {
     // ---------------------- SELECT HELPERS ----------------------
 
     getSelectionBoundaryObject(obj: THREE.Object3D): THREE.Object3D {
+        const planCadRoot = resolvePlanCadSelectionTarget(obj, this.scene);
+        if (planCadRoot) {
+            return planCadRoot;
+        }
+
         const billboardRoot = this.getBillboardSelectionRoot(obj);
         if (billboardRoot) {
             return billboardRoot;
@@ -3502,6 +4176,14 @@ class Editor {
 
         const skinnedMeshRoot = this.getSkinnedMeshSelectionRoot(obj);
         return skinnedMeshRoot || obj;
+    }
+
+    isPlanCadTransformSelectionTarget(obj: THREE.Object3D | null | undefined): obj is THREE.Object3D {
+        if (!obj || obj.type === "Scene") {
+            return false;
+        }
+
+        return resolvePlanCadSelectionTarget(obj, this.scene) === obj || containsPlanCadSelectionMetadata(obj);
     }
 
     getBillboardSelectionRoot(obj: THREE.Object3D): THREE.Object3D | null {
@@ -3568,25 +4250,15 @@ class Editor {
     }
 
     isSceneHierarchyNode(obj: THREE.Object3D): boolean {
-        if (obj.type === "Scene" || (obj as any).isCamera) {
-            return true;
-        }
-
-        if (obj.name === "[Dynamic]" || obj.userData?.isRuntimeOnly) {
-            return false;
-        }
-
-        return Boolean(obj.userData?.isStemObject) || isPrefab(obj);
+        return isSceneHierarchyNode(obj);
     }
 
     getPreferredDrillDownChild(currentSelection: THREE.Object3D): THREE.Object3D {
-        const nextChild = currentSelection.children.find(child => this.isSceneHierarchyNode(child));
-        return nextChild || currentSelection;
+        return getPreferredDrillDownChild(currentSelection);
     }
 
     getPreferredDrillDownPathTarget(path: THREE.Object3D[], currentSelection: THREE.Object3D): THREE.Object3D {
-        const nextNode = path.slice(1).find(node => this.isSceneHierarchyNode(node));
-        return nextNode || currentSelection;
+        return getPreferredDrillDownPathTarget(path, currentSelection);
     }
 
     isInsidePrefab(prefab: THREE.Object3D, target: THREE.Object3D): boolean {
@@ -3677,7 +4349,7 @@ class Editor {
             return;
         }
 
-        this.select(this.scene.getObjectById(id) || null);
+        this.select(this.objectById(id));
     }
 
     selectByUuid(uuid: string | string[]) {
@@ -3686,7 +4358,7 @@ class Editor {
                 this.select(this.camera);
                 return;
             }
-            const child = this.scene.getObjectByProperty("uuid", uuid);
+            const child = this.objectByUuid(uuid);
             if (child) {
                 this.select(child);
             }
@@ -3699,11 +4371,10 @@ class Editor {
                     return;
                 }
 
-                this.scene.traverse(child => {
-                    if (child.uuid === id) {
-                        selectedObjects.push(child);
-                    }
-                });
+                const child = this.objectByUuid(id);
+                if (child) {
+                    selectedObjects.push(child);
+                }
             });
 
             if (selectedObjects.length > 0) {
@@ -3753,7 +4424,7 @@ class Editor {
     }
 
     focusById(id: number) {
-        let obj = this.scene.getObjectById(id);
+        const obj = this.objectById(id);
         if (obj) {
             this.focus(obj);
         }
@@ -3765,19 +4436,18 @@ class Editor {
             return;
         }
 
-        this.scene.traverse(child => {
-            if (child.uuid === uuid) {
-                this.focus(child);
-            }
-        });
+        const child = this.objectByUuid(uuid);
+        if (child) {
+            this.focus(child);
+        }
     }
 
     async execute(cmd: any, optionalName: string = "") {
         return await this.history.execute(cmd, optionalName);
     }
 
-    undo() {
-        this.history.undo();
+    async undo() {
+        await this.history.undo();
         this.engine?.call(`undo`, this, this);
     }
 
@@ -3868,7 +4538,7 @@ class Editor {
 
                     if (omitCharacter) {
                         const detachPromises: Promise<unknown>[] = [];
-                        clonedFromSerialized.traverse(child => {
+                        traverseObjectDepthFirst(clonedFromSerialized, child => {
                             detachPromises.push(this.execute(new DetachBehaviorCommand(child, "", "character")));
                         });
 
@@ -3894,7 +4564,7 @@ class Editor {
 
         if (omitCharacter) {
             const detachPromises: Promise<unknown>[] = [];
-            cloned.traverse(child => {
+            traverseObjectDepthFirst(cloned, child => {
                 detachPromises.push(this.execute(new DetachBehaviorCommand(child, "", "character")));
             });
 
@@ -3928,9 +4598,9 @@ class Editor {
             newPS.material = newMaterial;
         }
 
-        newPS.rendererSettings = structuredClone
+        newPS.rendererSettings = typeof structuredClone === "function"
             ? structuredClone(ps.rendererSettings)
-            : JSON.parse(JSON.stringify(ps.rendererSettings));
+            : cloneJsonCompatible(ps.rendererSettings);
 
         newPS.rendererSettings.material = newPS.material;
 
@@ -3977,35 +4647,44 @@ class Editor {
         // VFX INIT AFTER SCENE ATTACH
         if (isVFX) {
             requestAnimationFrame(() => {
-                clone.traverse((child: any) => {
-                    let ps: ParticleSystem | undefined;
-
-                    if (child.particleSystem) ps = child.particleSystem;
-                    else if (child.type === "ParticleEmitter") ps = child.system;
-
-                    if (!ps) return;
-
-                    const newPS = this.cloneParticleSystem(ps);
-
-                    // bind system AFTER scene attach
-                    if (child instanceof ParticleEmitter) {
-                        child.system = newPS;
-                    } else if (child.particleSystem) {
-                        child.particleSystem = newPS;
-                        child.userData.system = newPS;
+                void (async () => {
+                    const batchedRenderer = await this.engine?.ensureBatchedRenderer();
+                    if (!batchedRenderer) {
+                        return;
                     }
 
-                    const emitter = child;
-                    QuarksUtil.addToBatchRenderer(emitter, this.engine!.batchedRenderer);
-                    if (isVFXAutoStartEnabled(emitter)) {
-                        QuarksUtil.restart(emitter);
-                    } else {
-                        QuarksUtil.stop(emitter);
-                    }
+                    traverseObjectDepthFirst(clone, (child: any) => {
+                        let ps: ParticleSystem | undefined;
+
+                        if (child.particleSystem) ps = child.particleSystem;
+                        else if (child.type === "ParticleEmitter") ps = child.system;
+
+                        if (!ps) return;
+
+                        const newPS = this.cloneParticleSystem(ps);
+
+                        // bind system AFTER scene attach
+                        if (child instanceof ParticleEmitter) {
+                            child.system = newPS;
+                        } else if (child.particleSystem) {
+                            child.particleSystem = newPS;
+                            child.userData.system = newPS;
+                        }
+
+                        const emitter = child;
+                        QuarksUtil.addToBatchRenderer(emitter, batchedRenderer);
+                        if (isVFXAutoStartEnabled(emitter)) {
+                            QuarksUtil.restart(emitter);
+                        } else {
+                            QuarksUtil.stop(emitter);
+                        }
+                    });
+
+                    // FORCE FIRST FRAME UPDATE
+                    batchedRenderer.update?.(0);
+                })().catch(error => {
+                    console.warn("[Editor] Failed to initialize cloned VFX renderer:", error);
                 });
-
-                // FORCE FIRST FRAME UPDATE
-                this.engine?.batchedRenderer?.update?.(0);
             });
         }
 
@@ -4032,6 +4711,7 @@ class Editor {
         Type: string;
     }): Promise<THREE.Object3D | null> => {
         try {
+            const {default: ModelLoader} = await import("../assets/js/loaders/ModelLoader");
             let loader = new (ModelLoader as any)();
             const url = backendUrlFromPath(objectUserData.Url);
             const obj = await loader.load(url, objectUserData, {
@@ -4214,7 +4894,7 @@ class Editor {
     getTextureCurrentSrcByUUID(object: THREE.Object3D, textureUUID: string) {
         let foundTexture: any = null;
 
-        object.traverse(child => {
+        traverseObjectDepthFirst(object, child => {
             if (child instanceof THREE.Mesh && child.material) {
                 const materials = Array.isArray(child.material) ? child.material : [child.material];
                 materials.forEach(material => {
@@ -4388,7 +5068,7 @@ class Editor {
                     } else {
                         parent =
                             typeof (clonedObject as any).parentUuid === "string"
-                                ? this.scene.getObjectByProperty("uuid", (clonedObject as any).parentUuid)!
+                                ? this.objectByUuid((clonedObject as any).parentUuid)!
                                 : clonedObject.parent;
                     }
 
@@ -4397,7 +5077,7 @@ class Editor {
                     );
 
                     clonedObject.updateMatrixWorld();
-                    clonedObject.traverse(child => {
+                    traverseObjectDepthFirst(clonedObject, child => {
                         const childMesh = child as Mesh;
                         if (childMesh.isMesh && childMesh.geometry) {
                             childMesh.geometry.computeBoundingBox();
@@ -4515,25 +5195,33 @@ class Editor {
     }
 
     removePreviewBoxes() {
-        this.sceneHelpers.traverse((object: any) => {
+        const boxesToRemove: THREE.Object3D[] = [];
+        traverseObjectDepthFirst(this.sceneHelpers, (object: any) => {
             if (object.userData && object.userData.previewBoxId) {
-                const obj = this.scene.getObjectByProperty("uuid", object.userData.previewBoxId);
+                const obj = this.objectByUuid(object.userData.previewBoxId);
                 if (obj?.userData.physics?.enable_preview) {
                     obj.userData.physics.enable_preview = false;
                 }
 
-                this.sceneHelpers.remove(object);
+                boxesToRemove.push(object);
             }
         });
+        for (const object of boxesToRemove) {
+            this.sceneHelpers.remove(object);
+        }
         this.engine?.call("objectChanged", this, this);
     }
 
     removeOjbectPreviewBox(parent: THREE.Object3D) {
-        this.sceneHelpers.traverse((object: any) => {
+        const boxesToRemove: THREE.Object3D[] = [];
+        traverseObjectDepthFirst(this.sceneHelpers, (object: any) => {
             if (object.userData && object.userData.previewBoxId === parent.uuid) {
-                this.sceneHelpers.remove(object);
+                boxesToRemove.push(object);
             }
         });
+        for (const object of boxesToRemove) {
+            this.sceneHelpers.remove(object);
+        }
     }
 
     updateObjectPhysics = (object: THREE.Object3D) => {
@@ -4549,11 +5237,66 @@ class Editor {
                 }
             });
         }
+
+        // Preview-helper cleanup emits objectChanged(this, this) during save;
+        // it is not project data and must not make the just-saved scene dirty.
+        if (editor === this && object === (this as unknown as THREE.Object3D)) return;
+        // Scene hydration (including Quick Build repair and behavior migration)
+        // emits normal objectChanged events. Those are not user edits and must
+        // not schedule an autosave while the loaded snapshot is still being
+        // assembled.
+        if (this.isApplyingSceneSnapshot) return;
+        this.markLocalSceneDirty();
+    };
+
+    private markLocalSceneDirty = (): void => {
+        if (this.isApplyingSceneSnapshot) return;
+        if (!this.isLocalAutoSaveEligible()) return;
+        this.scene.userData.lastEditTime = Date.now();
+        this.engine?.call("editorDirtyStateChanged", this, {dirty: true});
+        this.localAutoSave.markDirty();
+    };
+
+    private isLocalAutoSaveEligible = (): boolean => {
+        if (
+            !this.isStarted ||
+            this.isStopping ||
+            this.localAutoSaveSuspensionDepth > 0 ||
+            this.isReadOnly ||
+            this.isCollaborative
+        )
+            return false;
+        return getProjectStore().kind !== "remote";
+    };
+
+    private startLocalAutoSaveDirtyWatchdog = (): void => {
+        this.localAutoSaveWatchdog.start();
+    };
+
+    private handleAutoSaveVisibilityChange = () => {
+        if (document.visibilityState !== "hidden" || !this.isLocalAutoSaveEligible()) return;
+        void this.localAutoSave.flushFully().catch(() => {
+            // Browsers may suspend a hidden tab mid-write. Dirty state is
+            // deliberately retained so the retry/leave guard remains active.
+        });
     };
 
     update = (_clock: unknown, deltaTime?: number) => {
         this.behaviorPluginManager.update(deltaTime ?? 0);
     };
+
+    private setBehaviorPluginUpdateLoopActive = (active: boolean) => {
+        if (this.behaviorPluginUpdateLoopActive === active) return;
+        this.behaviorPluginUpdateLoopActive = active;
+        this.engine?.on("animate.editor", active ? this.update : null);
+    };
+
+    private async initializeUIKitBehaviorRuntime(): Promise<void> {
+        if (this.isUIKitRuntimeInitialized) return;
+        this.uikitRuntimeInitialization ??= ensureUIKitRuntimeInitialized();
+        await this.uikitRuntimeInitialization;
+        this.isUIKitRuntimeInitialized = true;
+    }
 
     /**
      * Lazily create (and cache) a UI camera for UIKit rendering inside the editor.
@@ -4581,14 +5324,25 @@ class Editor {
         this._uiCameraInitPromise = (async () => {
             // Lazy-load UIKit to avoid pulling its bundle into editor startup
             // when no UIKit-rendering behavior is active.
-            const {initNodeMaterials, initGlyphNodeMaterials} = await import("@ni2khanna/uikit");
-            await initNodeMaterials();
-            await initGlyphNodeMaterials();
+            await ensureUIKitRuntimeInitialized();
 
             const uiCamera = this.camera.clone();
             uiCamera.name = "EditorUICamera";
 
             let hasWarnedInvalidUICameraState = false;
+            let projectionInitialized = false;
+            let sourceUserData = this.camera.userData;
+            let sourceAnimations = this.camera.animations;
+            const sourceProjectionMatrix = this.camera.projectionMatrix.clone();
+            let sourceFov = this.camera.fov;
+            let sourceZoom = this.camera.zoom;
+            let sourceFocus = this.camera.focus;
+            let sourceAspect = this.camera.aspect;
+            let sourceFilmGauge = this.camera.filmGauge;
+            let sourceFilmOffset = this.camera.filmOffset;
+            let sourceNear = this.camera.near;
+            let sourceFar = this.camera.far;
+            let sourceView = this.camera.view;
             const isFiniteNumber = (value: unknown): value is number =>
                 typeof value === "number" && Number.isFinite(value);
             const hasFiniteTransform = (object: THREE.Object3D): boolean => {
@@ -4606,7 +5360,8 @@ class Editor {
             };
 
             const syncUICamera = () => {
-                if (!hasFiniteTransform(this.camera)) {
+                const sourceCamera = this.camera;
+                if (!hasFiniteTransform(sourceCamera)) {
                     if (!hasWarnedInvalidUICameraState) {
                         hasWarnedInvalidUICameraState = true;
                         console.warn(
@@ -4615,21 +5370,108 @@ class Editor {
                     }
                     return;
                 }
-                uiCamera.copy(this.camera, false);
-                const baseNear = isFiniteNumber(this.camera.near) ? this.camera.near : 0.1;
-                const baseFar = isFiniteNumber(this.camera.far)
-                    ? this.camera.far
-                    : Math.max(baseNear + 1, 2000);
-                const nextNear = Math.max(0.001, baseNear + 0.1);
-                const nextFar = Math.max(nextNear + 0.001, baseFar);
-                uiCamera.near = Math.min(nextNear, nextFar - 0.001);
-                uiCamera.far = nextFar;
-                uiCamera.updateProjectionMatrix();
+
+                uiCamera.rotation.order = sourceCamera.rotation.order;
+                if (!uiCamera.position.equals(sourceCamera.position)) {
+                    uiCamera.position.copy(sourceCamera.position);
+                }
+                if (!uiCamera.quaternion.equals(sourceCamera.quaternion)) {
+                    uiCamera.quaternion.copy(sourceCamera.quaternion);
+                }
+                if (!uiCamera.scale.equals(sourceCamera.scale)) {
+                    uiCamera.scale.copy(sourceCamera.scale);
+                }
+                if (!uiCamera.up.equals(sourceCamera.up)) {
+                    uiCamera.up.copy(sourceCamera.up);
+                }
+
+                if (sourceCamera.pivot) {
+                    if (uiCamera.pivot) {
+                        uiCamera.pivot.copy(sourceCamera.pivot);
+                    } else {
+                        uiCamera.pivot = sourceCamera.pivot.clone();
+                    }
+                } else {
+                    uiCamera.pivot = null;
+                }
+
+                uiCamera.matrixAutoUpdate = sourceCamera.matrixAutoUpdate;
+                uiCamera.matrixWorldAutoUpdate = sourceCamera.matrixWorldAutoUpdate;
+                if (!sourceCamera.matrixAutoUpdate && !uiCamera.matrix.equals(sourceCamera.matrix)) {
+                    uiCamera.matrix.copy(sourceCamera.matrix);
+                    uiCamera.matrixWorldNeedsUpdate = true;
+                }
+                if (!sourceCamera.matrixWorldAutoUpdate && !uiCamera.matrixWorld.equals(sourceCamera.matrixWorld)) {
+                    uiCamera.matrixWorld.copy(sourceCamera.matrixWorld);
+                    uiCamera.matrixWorldNeedsUpdate = true;
+                }
+                uiCamera.layers.mask = sourceCamera.layers.mask;
+                uiCamera.visible = sourceCamera.visible;
+                uiCamera.frustumCulled = sourceCamera.frustumCulled;
+                uiCamera.renderOrder = sourceCamera.renderOrder;
+                uiCamera.coordinateSystem = sourceCamera.coordinateSystem;
+
+                if (sourceCamera.userData !== sourceUserData) {
+                    sourceUserData = sourceCamera.userData;
+                    uiCamera.userData = JSON.parse(JSON.stringify(sourceUserData));
+                }
+                if (sourceCamera.animations !== sourceAnimations) {
+                    sourceAnimations = sourceCamera.animations;
+                    uiCamera.animations.length = sourceAnimations.length;
+                    for (let i = 0; i < sourceAnimations.length; i++) {
+                        uiCamera.animations[i] = sourceAnimations[i]!;
+                    }
+                }
+
+                const projectionChanged =
+                    !projectionInitialized ||
+                    !sourceProjectionMatrix.equals(sourceCamera.projectionMatrix) ||
+                    sourceFov !== sourceCamera.fov ||
+                    sourceZoom !== sourceCamera.zoom ||
+                    sourceFocus !== sourceCamera.focus ||
+                    sourceAspect !== sourceCamera.aspect ||
+                    sourceFilmGauge !== sourceCamera.filmGauge ||
+                    sourceFilmOffset !== sourceCamera.filmOffset ||
+                    sourceNear !== sourceCamera.near ||
+                    sourceFar !== sourceCamera.far ||
+                    sourceView !== sourceCamera.view;
+                if (projectionChanged) {
+                    projectionInitialized = true;
+                    sourceProjectionMatrix.copy(sourceCamera.projectionMatrix);
+                    sourceFov = sourceCamera.fov;
+                    sourceZoom = sourceCamera.zoom;
+                    sourceFocus = sourceCamera.focus;
+                    sourceAspect = sourceCamera.aspect;
+                    sourceFilmGauge = sourceCamera.filmGauge;
+                    sourceFilmOffset = sourceCamera.filmOffset;
+                    sourceNear = sourceCamera.near;
+                    sourceFar = sourceCamera.far;
+                    sourceView = sourceCamera.view;
+
+                    uiCamera.fov = sourceCamera.fov;
+                    uiCamera.zoom = sourceCamera.zoom;
+                    uiCamera.focus = sourceCamera.focus;
+                    uiCamera.aspect = sourceCamera.aspect;
+                    uiCamera.filmGauge = sourceCamera.filmGauge;
+                    uiCamera.filmOffset = sourceCamera.filmOffset;
+                    if (sourceCamera.view) {
+                        uiCamera.view ??= {...sourceCamera.view};
+                        Object.assign(uiCamera.view, sourceCamera.view);
+                    } else {
+                        uiCamera.view = null;
+                    }
+
+                    const baseNear = isFiniteNumber(sourceCamera.near) ? sourceCamera.near : 0.1;
+                    const baseFar = isFiniteNumber(sourceCamera.far)
+                        ? sourceCamera.far
+                        : Math.max(baseNear + 1, 2000);
+                    const nextNear = Math.max(0.001, baseNear + 0.1);
+                    const nextFar = Math.max(nextNear + 0.001, baseFar);
+                    uiCamera.near = Math.min(nextNear, nextFar - 0.001);
+                    uiCamera.far = nextFar;
+                    uiCamera.updateProjectionMatrix();
+                }
                 uiCamera.name = "EditorUICamera";
-                // `Object3D.copy()` overwrites `userData` (deep-clones from
-                // source), so the outliner-hide flag must be re-applied here
-                // every frame, not only at construction. Without this, the
-                // camera surfaces in the outliner after the first render.
                 uiCamera.userData.isRuntimeOnly = true;
                 if (hasWarnedInvalidUICameraState) hasWarnedInvalidUICameraState = false;
             };
@@ -4713,6 +5555,7 @@ class Editor {
         window.addEventListener("auxclick", this.onAuxClick);
         window.addEventListener("click", this.onMouseClick);
         document.addEventListener("click", this.boundFirstInteractionHandler);
+        document.addEventListener("visibilitychange", this.handleAutoSaveVisibilityChange);
     }
     removeEventsListeners() {
         // Remove all event listeners to prevent memory leaks
@@ -4730,6 +5573,7 @@ class Editor {
         window.removeEventListener("auxclick", this.onAuxClick);
         window.removeEventListener("click", this.onMouseClick);
         document.removeEventListener("click", this.boundFirstInteractionHandler);
+        document.removeEventListener("visibilitychange", this.handleAutoSaveVisibilityChange);
     }
 
     private handleDeleteEvent = (e: any) => {
@@ -4827,7 +5671,6 @@ class Editor {
     private handleSaveEvent = (e: KeyboardEvent) => {
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
             e.preventDefault();
-            this.onSaveScene();
             saveScene(true).catch(console.error);
         }
     };

@@ -1,9 +1,10 @@
-import { Clock, Object3D , AnimationClip } from 'three';
+import {AnimationClip, Object3D, Timer, type Clock} from "three";
 
 import { AnimationGraph } from '@stem/editor-oss/animation/AnimationGraph';
 import { AnimationState } from '@stem/editor-oss/animation/AnimationState';
 import { BlendTreeState } from '@stem/editor-oss/animation/BlendTreeState';
 import GameManager from '@stem/editor-oss/behaviors/game/GameManager';
+import {setRuntimeUserDataValue} from "@stem/editor-oss/utils/userDataRuntime";
 
 declare global {
     interface Window {
@@ -25,13 +26,13 @@ export type AnimationGraphData = {
 export class AnimationGraphController {
     game?: GameManager | null;
     graphs: AnimationGraphData[];
-    clock?: Clock;
+    clock?: Pick<Clock, "getDelta">;
     gameStarted: boolean = false;
     private frameCount = 0;
+    private readonly fallbackTimer = new Timer();
 
     constructor() {
         this.graphs = [];
-        this.clock = new Clock();
     }
 
     start = (gameManager: GameManager) => {
@@ -98,8 +99,8 @@ export class AnimationGraphController {
         }
     };
 
-    update = (clock: Clock, delta?: number) => {
-        const dt = delta ?? clock?.getDelta() ?? 0;
+    update = (clock?: Pick<Clock, "getDelta">, delta?: number) => {
+        const dt = this.getFrameDelta(clock, delta);
         this.frameCount++;
         const camera = this.game?.camera;
 
@@ -110,11 +111,7 @@ export class AnimationGraphController {
             if (camera && obj.matrixWorld) {
                 const skip = this.getSkipFrames(obj, camera);
                 if (skip > 0) {
-                    let hash = obj.userData._animHash as number | undefined;
-                    if (hash === undefined) {
-                        hash = this.stableHash(obj.uuid);
-                        obj.userData._animHash = hash;
-                    }
+                    const hash = this.getObjectAnimationHash(obj);
                     if ((this.frameCount + hash) % (skip + 1) !== 0) continue;
                 }
             }
@@ -140,9 +137,43 @@ export class AnimationGraphController {
         return Math.abs(h);
     }
 
+    private getObjectAnimationHash(object: Object3D): number {
+        let hash = object.userData._animHash;
+        if (typeof hash !== "number" || !Number.isFinite(hash)) {
+            hash = this.stableHash(object.uuid);
+            this.cacheObjectAnimationHash(object, hash);
+            return hash;
+        }
+
+        if (Object.prototype.propertyIsEnumerable.call(object.userData, "_animHash")) {
+            this.cacheObjectAnimationHash(object, hash);
+        }
+        return hash;
+    }
+
+    private cacheObjectAnimationHash(object: Object3D, hash: number): void {
+        setRuntimeUserDataValue(object, "_animHash", hash);
+    }
+
+    private getFrameDelta(clock?: Pick<Clock, "getDelta">, delta?: number): number {
+        if (delta !== undefined) {
+            return delta;
+        }
+        if (clock) {
+            return clock.getDelta();
+        }
+        if (this.clock) {
+            return this.clock.getDelta();
+        }
+
+        this.fallbackTimer.update();
+        return this.fallbackTimer.getDelta();
+    }
+
     dispose = () => {
         this.graphs = [];
+        this.fallbackTimer.dispose();
     };
 }
 
-export default AnimationGraphController; 
+export default AnimationGraphController;

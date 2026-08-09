@@ -18,17 +18,15 @@ class JsLoader {
             script: null,
         };
         this.assets.push(data);
-        return new Promise(resolve => {
-            Ajax.get({url, needAuthorization: false})
-                .then(response => {
-                    data.script = response.data;
-                    resolve(data);
-                })
-                .catch(() => {
-                    console.warn(`JsLoader: ${url} loaded failed.`);
-                    resolve(null);
-                });
-        });
+        return Ajax.get({url, needAuthorization: false})
+            .then(response => {
+                data.script = response.data;
+                return data;
+            })
+            .catch(() => {
+                console.warn(`JsLoader: ${url} loaded failed.`);
+                return null;
+            });
     }
 
     eval() {

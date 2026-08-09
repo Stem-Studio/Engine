@@ -15,7 +15,7 @@ import {
 } from "./SharePopup.style";
 import {GetSceneResponse} from "@stem/network/api/scene/v2";
 import {useAuthorizationContext} from "../../../../context";
-import {getThumbnail} from "../../../../services";
+import {getThumbnail} from "../../../../utils/thumbnailUrl";
 import {getGameUrl} from "../../services";
 import gamePlaceholder from "../icons/stem-studio-project-placeholder.png";
 

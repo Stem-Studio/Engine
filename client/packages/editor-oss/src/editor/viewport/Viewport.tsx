@@ -75,7 +75,7 @@ class Viewport extends Component<ViewportProps, ViewportState> {
             const viewport = this.editorRef.current as HTMLElement;
             void app.start(viewport);
 
-            app.on("appStarted", this.handleAppStarted);
+            app.on("appStarted.Viewport", this.handleAppStarted);
             app.on("enableVR.Viewport", this.handleEnableVR);
             app.on("playerStarted.Viewport", this.handlePlayerStarted);
             app.on("playerStopped.Viewport", this.handlePlayerStopped);
@@ -84,8 +84,10 @@ class Viewport extends Component<ViewportProps, ViewportState> {
 
     componentWillUnmount() {
         const app = global.app as EngineRuntime;
-        app.stop();
-        app.on("appStarted", null);
+        void app.stop().catch(error => {
+            console.error("[Viewport] Could not stop editor after local save drain failed", error);
+        });
+        app.on("appStarted.Viewport", null);
         app.on("optionChange.Viewport", null);
         app.on("enableVR.Viewport", null);
         app.on("playerStarted.Viewport", null);

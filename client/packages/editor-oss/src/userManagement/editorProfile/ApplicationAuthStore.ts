@@ -1,9 +1,6 @@
-import moment from "moment";
-
 import * as discordApi from "@stem/network/api/discord";
-import {checkPlayerExists, playerIsAnonymous} from "../playerProfile/game-service-controllers/GuestController";
+import {getAuthProvider} from "../../auth";
 import {IUser} from "../types";
-import {IS_OSS} from "../../mode/buildMode";
 
 export type User = IUser;
 export type {IUser};
@@ -69,7 +66,7 @@ class ApplicationAuthStore {
             this.tokenExpirationTime = null;
             return;
         }
-        const expirationTime = moment().add(expiresIn, "seconds").toDate();
+        const expirationTime = new Date(Date.now() + expiresIn * 1000);
         this.tokenExpirationTime = expirationTime;
     }
 
@@ -139,26 +136,8 @@ class ApplicationAuthStore {
     };
 
     // Steam integration methods
-    steamCheckKeys = async (sceneID: string): Promise<boolean> => {
-        if (IS_OSS) return false;
-        try {
-            const response = await fetch(`/api/Steam/CheckKeys?sceneID=${sceneID}`, {
-                method: "GET",
-                headers: {
-                    Authorization: `Bearer ${this.authToken}`,
-                    "Content-Type": "application/json",
-                },
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                return result.data?.configured || false;
-            }
-            return false;
-        } catch (error) {
-            console.error("Error checking Steam keys:", error);
-            return false;
-        }
+    steamCheckKeys = async (_sceneID: string): Promise<boolean> => {
+        return false;
     };
 
     steamSaveKeys = async (appId: string, apiKey: string, sceneID: string): Promise<void> => {
@@ -227,26 +206,8 @@ class ApplicationAuthStore {
     };
 
     // CrazyGames integration methods
-    crazyGamesCheckKeys = async (sceneID: string): Promise<boolean> => {
-        if (IS_OSS) return false;
-        try {
-            const response = await fetch(`/api/CrazyGames/CheckKeys?sceneID=${sceneID}`, {
-                method: "GET",
-                headers: {
-                    Authorization: `Bearer ${this.authToken}`,
-                    "Content-Type": "application/json",
-                },
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                return result.data?.configured || false;
-            }
-            return false;
-        } catch (error) {
-            console.error("Error checking CrazyGames keys:", error);
-            return false;
-        }
+    crazyGamesCheckKeys = async (_sceneID: string): Promise<boolean> => {
+        return false;
     };
 
     crazyGamesSaveKeys = async (gameId: string, gameSecret: string, sceneID: string): Promise<void> => {
@@ -318,13 +279,14 @@ class ApplicationAuthStore {
      * Check if the current user is anonymous
      */
     isAnonymous = (): boolean => {
-        return playerIsAnonymous();
+        return getAuthProvider().getCurrentUser()?.isAnonymous || false;
     };
 
     /**
      * Check for existing Firebase authentication
      */
     checkExistingAuth = async (): Promise<IUser | null> => {
+        const {checkPlayerExists} = await import("../playerProfile/game-service-controllers/GuestController");
         return await checkPlayerExists();
     };
 }

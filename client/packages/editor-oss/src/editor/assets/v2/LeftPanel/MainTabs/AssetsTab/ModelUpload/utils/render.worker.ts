@@ -129,7 +129,7 @@ let pendingModelPayload: ArrayBuffer | undefined;
 async function updateModelPayload(payload: ArrayBuffer) {
     if (!renderer) return;
 
-    const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
     const loader = new GLTFLoader();
 
     try {
@@ -229,9 +229,9 @@ self.onmessage = async (e: MessageEvent) => {
                 return dispatchEventPolyfill(offscreenCanvas, event);
             };
 
-            const { ModelPreviewRenderer } = await import('./ModelPreviewRenderer');
+            const { ModelPreviewWebGLRenderer } = await import('./ModelPreviewWebGLRenderer');
             rendererReady = false;
-            renderer = new ModelPreviewRenderer(canvas, width as number, height as number, pixelRatio as number);
+            renderer = new ModelPreviewWebGLRenderer(canvas, width as number, height as number, pixelRatio as number);
             await renderer.init();
             rendererReady = true;
 

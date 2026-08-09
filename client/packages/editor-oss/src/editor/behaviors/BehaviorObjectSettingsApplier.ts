@@ -6,6 +6,7 @@ import { BodyShapeType } from "../../physics/common/types";
 import { PhysicsUtil } from "../../physics/PhysicsUtil";
 import ShadowUtils from "@stem/editor-oss/utils/ShadowUtils";
 import { CollisionType } from "../assets/v2/types/physics";
+import {findObjectDepthFirst} from "../../utils/SceneTraverser";
 
 /**
  * Class for applying object settings from the behavior configuration
@@ -127,18 +128,7 @@ class BehaviorObjectSettingsApplier {
     }
 
     private static findFirstMeshWithGeometry(object: THREE.Object3D): THREE.Mesh | null {
-        if (object instanceof THREE.Mesh && object.geometry) {
-            return object;
-        }
-
-        let foundMesh: THREE.Mesh | null = null;
-        object.traverse(child => {
-            if (!foundMesh && child instanceof THREE.Mesh && child.geometry) {
-                foundMesh = child;
-            }
-        });
-
-        return foundMesh;
+        return findObjectDepthFirst(object, child => child instanceof THREE.Mesh && !!child.geometry) as THREE.Mesh | null;
     }
 
     private static applyLightingSettings(object: THREE.Object3D, lightingSettings: ObjectSettings['lighting']): void {

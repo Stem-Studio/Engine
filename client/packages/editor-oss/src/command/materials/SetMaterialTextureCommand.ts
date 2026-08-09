@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {HDRLoader} from "three/examples/jsm/loaders/HDRLoader.js";
+import {HDRLoader} from "three/addons/loaders/HDRLoader.js";
 import {toast} from "toastywave";
 
 import {AssetType} from "@stem/network/api/asset";
@@ -10,12 +10,13 @@ import {applyTextureOverridesToObject} from "../../editor/assets/v2/materials/ma
 import {IMaterialSettingsTextures} from "../../editor/assets/v2/RightPanel/sections/MaterialRenderingSection/types";
 import global from "../../global";
 import {getAIBackend} from "../../ai";
+import {cloneJsonCompatible} from "../../utils/cloneJsonCompatible";
+import {traverseObjectDepthFirst} from "../../utils/SceneTraverser";
 import Command from "../Command";
 
 class SetMaterialTextureCommand extends Command {
     private assetId: string;
     private provider: string;
-    private position: THREE.Vector3 | null = null;
     private model: THREE.Object3D | null = null;
     private assetName: string = "Generate 3D Object";
     private assetType: string = "textures";
@@ -70,7 +71,7 @@ class SetMaterialTextureCommand extends Command {
         }
 
         this.originalMaterialSettings = this.model.userData?.materialSettings
-            ? JSON.parse(JSON.stringify(this.model.userData.materialSettings))
+            ? cloneJsonCompatible(this.model.userData.materialSettings)
             : undefined;
 
         const downloads = this.downloads.additionalFiles;
@@ -131,7 +132,7 @@ class SetMaterialTextureCommand extends Command {
 
         await Promise.allSettled(importPromises);
 
-        this.model.traverse(child => {
+        traverseObjectDepthFirst(this.model, child => {
             if (child instanceof THREE.Mesh) {
                 this.originalMaterials.set(child, child.material);
             }
@@ -174,7 +175,7 @@ class SetMaterialTextureCommand extends Command {
             });
 
             // Apply HDRI as environment map to model materials
-            this.model.traverse(child => {
+            traverseObjectDepthFirst(this.model, child => {
                 if (child instanceof THREE.Mesh) {
                     // Store original material for undo
                     this.originalMaterials.set(child, child.material);
@@ -200,58 +201,9 @@ class SetMaterialTextureCommand extends Command {
         }
     }
 
-    private async loadTextureViaProxy(mapType: string, textureUrl: string): Promise<THREE.Texture | null> {
-        try {
-            // Determine file extension from URL for proper MIME type
-            const urlParts = textureUrl.split(".");
-            const extension = (urlParts[urlParts.length - 1] ?? "png").toLowerCase();
-            const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
-
-            // Use urlToFile to download texture through backend proxy
-            const file = await urlToFile(textureUrl, `${mapType}.${extension}`, mimeType);
-
-            // Create object URL from file
-            const url = await uploadImage(file);
-
-            // Load texture from object URL
-            const loader = new THREE.TextureLoader();
-            return new Promise<THREE.Texture>((resolve, reject) => {
-                loader.load(
-                    url,
-                    texture => {
-                        // Set texture properties based on map type
-                        texture.wrapS = THREE.RepeatWrapping;
-                        texture.wrapT = THREE.RepeatWrapping;
-                        texture.flipY = false;
-
-                        // Set encoding based on map type
-                        if (
-                            mapType.toLowerCase().includes("color") ||
-                            mapType.toLowerCase().includes("diffuse") ||
-                            mapType.toLowerCase().includes("albedo")
-                        ) {
-                            texture.colorSpace = THREE.SRGBColorSpace;
-                        } else {
-                            texture.colorSpace = THREE.LinearSRGBColorSpace;
-                        }
-
-                        resolve(texture);
-                    },
-                    undefined,
-                    error => {
-                        reject(error);
-                    },
-                );
-            });
-        } catch (error) {
-            console.error(`Error loading texture ${mapType}:`, error);
-            return null;
-        }
-    }
-
     undo(): {message: string; status: "success" | "info" | "error"} | void {
         if (this.assetType === "textures" && this.model && this.originalMaterials.size > 0) {
-            this.model.traverse(child => {
+            traverseObjectDepthFirst(this.model, child => {
                 if (child instanceof THREE.Mesh && this.originalMaterials.has(child)) {
                     child.material = this.originalMaterials.get(child)!;
                 }
@@ -268,7 +220,7 @@ class SetMaterialTextureCommand extends Command {
             };
         } else if (this.assetType === "hdris" && this.model && this.originalMaterials.size > 0) {
             // Restore original materials for HDRI
-            this.model.traverse(child => {
+            traverseObjectDepthFirst(this.model, child => {
                 if (child instanceof THREE.Mesh && this.originalMaterials.has(child)) {
                     child.material = this.originalMaterials.get(child)!;
                 }

@@ -1,0 +1,3198 @@
+# Owner Decision Bucket
+# Generated from current worktree by scripts/build-builder-cad-pr-split-patches.mjs
+diff --git a/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.test.ts b/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.test.ts
+index 60e7869..567cca3 100644
+--- a/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.test.ts
++++ b/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.test.ts
+@@ -4,6 +4,7 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
+ const hoisted = vi.hoisted(() => ({
+     addMutateAsync: vi.fn(),
+     removeMutateAsync: vi.fn(),
++    changeAssetRevision: vi.fn(),
+     changeModelRevision: vi.fn(),
+     changePrefabRevision: vi.fn(),
+     changeLambdaRevision: vi.fn(),
+@@ -13,6 +14,9 @@ const hoisted = vi.hoisted(() => ({
+     assetSource: null,
+ }));
+ 
++vi.mock("./useChangeAssetRevision", () => ({
++    useChangeAssetRevision: () => hoisted.changeAssetRevision,
++}));
+ vi.mock("./useChangeModelRevision", () => ({
+     useChangeModelRevision: () => hoisted.changeModelRevision,
+ }));
+@@ -26,7 +30,20 @@ vi.mock("./useChangeQuarksRevision", () => ({
+     useChangeQuarksRevision: () => hoisted.changeQuarksRevision,
+ }));
+ vi.mock("@stem/network/api/asset", () => ({
+-    AssetType: {Behavior: "behavior", Model: "model", Prefab: "prefab", Lambda: "lambda", Quarks: "quarks"},
++    AssetType: {
++        Animation: "animation",
++        Audio: "audio",
++        Behavior: "behavior",
++        File: "file",
++        Image: "image",
++        Lambda: "lambda",
++        Model: "model",
++        Npc: "npc",
++        Prefab: "prefab",
++        Quarks: "quarks",
++        Script: "script",
++        Video: "video",
++    },
+ }));
+ vi.mock("@stem/network/api/behavior", () => ({
+     getBehaviorRevisionData: (...args: unknown[]) => hoisted.getBehaviorRevisionData(...args),
+@@ -54,6 +71,7 @@ describe("useReplaceAsset", () => {
+         setupAssetSource();
+         hoisted.addMutateAsync.mockResolvedValue(undefined);
+         hoisted.removeMutateAsync.mockResolvedValue(undefined);
++        hoisted.changeAssetRevision.mockResolvedValue(undefined);
+         hoisted.changeModelRevision.mockResolvedValue(undefined);
+         hoisted.changePrefabRevision.mockResolvedValue(undefined);
+         hoisted.changeLambdaRevision.mockResolvedValue(undefined);
+@@ -181,6 +199,29 @@ describe("useReplaceAsset", () => {
+         expect(hoisted.changeModelRevision).toHaveBeenCalledTimes(1);
+     });
+ 
++    const genericAssetTypes = ["image", "audio", "video", "animation", "npc", "file", "script"] as const;
++    it.each(genericAssetTypes)(
++        "%s swap: remaps generic AssetRefs through useChangeAssetRevision",
++        async assetType => {
++            const {result} = renderHook(() => useReplaceAsset());
++            await result.current({
++                originalAssetId: "old-ref",
++                newAssetId: "new-ref",
++                newRevisionId: "rev-ref",
++                assetType,
++            });
++
++            expect(hoisted.addMutateAsync).toHaveBeenCalledWith({"new-ref": "rev-ref"});
++            expect(hoisted.changeAssetRevision).toHaveBeenCalledWith(
++                "old-ref",
++                "rev-ref",
++                undefined,
++                "new-ref",
++            );
++            expect(hoisted.removeMutateAsync).toHaveBeenCalledWith(["old-ref"]);
++        },
++    );
++
+     it("propagates the swap error and skips the dep removal so the new dep stays attached for retry", async () => {
+         hoisted.changeModelRevision.mockRejectedValue(new Error("loader failed"));
+ 
+@@ -205,7 +246,7 @@ describe("useReplaceAsset", () => {
+                 originalAssetId: "old",
+                 newAssetId: "new",
+                 newRevisionId: "rev",
+-                assetType: "image",
++                assetType: "scene",
+             }),
+         ).rejects.toThrow(/not yet supported/);
+ 
+diff --git a/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.ts b/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.ts
+index e586c2a..d76ac01 100644
+--- a/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.ts
++++ b/client/packages/editor-oss/src/editor/asset-management/hooks/useReplaceAsset.ts
+@@ -1,6 +1,7 @@
+ import {useCallback} from "react";
+ 
+ import {useAddEditorDependencies, useRemoveEditorDependencies} from "./assets";
++import {useChangeAssetRevision} from "./useChangeAssetRevision";
+ import {useChangeLambdaRevision} from "./useChangeLambdaRevision";
+ import {useChangeModelRevision} from "./useChangeModelRevision";
+ import {useChangePrefabRevision} from "./useChangePrefabRevision";
+@@ -48,13 +49,14 @@ export type ReplaceAssetParams = {
+  * Sits alongside useChangeAssetRevision, which handles "same id, new
+  * revision". useReplaceAsset handles "new id + new revision".
+  *
+- * TODO: extend to the remaining AssetType values — Image, Audio, Video,
+- * Animation, Npc, File. Each needs a per-type swap helper that locates
+- * instances by old id, re-keys them to newAssetId, and pins newRevisionId
+- * in the resolution context (via useChangeAssetRevision). Until those
+- * land, this dispatcher throws for unsupported types.
++ * Reference-only assets — Image, Audio, Video, Animation, Npc, File, and
++ * Script — are swapped through the generic AssetRef remapper in
++ * useChangeAssetRevision. Scene object asset types still route through their
++ * per-type helpers because they need instance reloads in addition to ref
++ * remapping.
+  */
+ export const useReplaceAsset = () => {
++    const changeAssetRevision = useChangeAssetRevision();
+     const changeModelRevision = useChangeModelRevision();
+     const changePrefabRevision = useChangePrefabRevision();
+     const changeLambdaRevision = useChangeLambdaRevision();
+@@ -109,6 +111,15 @@ export const useReplaceAsset = () => {
+                 case AssetType.Quarks:
+                     await changeQuarksRevision(originalAssetId, newRevisionId, newAssetId, excludeUuids);
+                     break;
++                case AssetType.Image:
++                case AssetType.Audio:
++                case AssetType.Video:
++                case AssetType.Animation:
++                case AssetType.Npc:
++                case AssetType.File:
++                case AssetType.Script:
++                    await changeAssetRevision(originalAssetId, newRevisionId, undefined, newAssetId);
++                    break;
+                 default:
+                     throw new Error(
+                         `useReplaceAsset: asset type "${String(assetType)}" is not yet supported. ` +
+@@ -124,6 +135,7 @@ export const useReplaceAsset = () => {
+             }
+         },
+         [
++            changeAssetRevision,
+             changeModelRevision,
+             changePrefabRevision,
+             changeLambdaRevision,
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/CreateDashboard/DashboardLayout/SideNavigation/SideNavigation.tsx b/client/packages/editor-oss/src/editor/assets/v2/CreateDashboard/DashboardLayout/SideNavigation/SideNavigation.tsx
+index bb7c2c0..dbf4421 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/CreateDashboard/DashboardLayout/SideNavigation/SideNavigation.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/CreateDashboard/DashboardLayout/SideNavigation/SideNavigation.tsx
+@@ -23,6 +23,7 @@ import logo from "../../../HUD/HUDView/FloatingNav/AppVersion/stem-studio-alpha.
+ import {DASHBOARD_MENU, PAGES} from "../../constants";
+ import {getConfiguredSocialLinks} from "@stem/editor-oss/v2/pages/constants";
+ import {MOBILE_DASHBOARD_BREAKPOINT} from "../DashboardHeader/DashboardHeader.style";
++import {getEditorDocsUrl} from "../../../common/docsUrl";
+ 
+ // Map env-configured channels to local logo assets. Channels with no env
+ // value are omitted from the list by `getConfiguredSocialLinks()`, so the
+@@ -47,12 +48,12 @@ export const SideNavigation = ({mobileOpen = false, onClose}: Props) => {
+ 
+     const handleActivePage = async (label: PAGES) => {
+         if (label === PAGES.TUTORIALS) {
+-            window.open(`https://docs.${window.location.hostname}`, "_blank");
++            window.open(getEditorDocsUrl(), "_blank");
+             onClose?.();
+             return;
+         }
+         if (label === PAGES.LEARN) {
+-            window.open(`https://docs.${window.location.hostname}`, "_blank");
++            window.open(getEditorDocsUrl(), "_blank");
+             onClose?.();
+             return;
+         }
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiModelsTab.tsx b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiModelsTab.tsx
+index d5407f8..57c888d 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiModelsTab.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiModelsTab.tsx
+@@ -20,6 +20,7 @@ import AiModelUtils from "@stem/editor-oss/utils/AiModelUtils";
+ import Ajax from "@stem/editor-oss/utils/Ajax";
+ import {backendUrlFromPath} from "@stem/editor-oss/utils/UrlUtils";
+ import {AiAssetsList} from "../../../../common/AiAsssetsList";
++import defaultModelThumbnail from "../../../../icons/assetsTab/prefabs/prefab-placeholder.svg";
+ 
+ export const AiModelsTab = () => {
+     const [search, setSearch] = useState("");
+@@ -72,6 +73,54 @@ export const AiModelsTab = () => {
+             });
+     };
+ 
++    const getThumbnailExtension = (blob: Blob, sourceUrl?: string) => {
++        const mime = blob.type.split(";")[0];
++        if (mime === "image/jpeg") return "jpg";
++        if (mime === "image/png") return "png";
++        if (mime === "image/webp") return "webp";
++        if (mime === "image/svg+xml") return "svg";
++        const urlExtension = sourceUrl?.split("?")[0]?.split(".").pop();
++        return urlExtension || "png";
++    };
++
++    const downloadThumbnailBlob = async (thumbnailUrl?: string) => {
++        if (thumbnailUrl) {
++            try {
++                const modelThumbnailResponse = await Ajax.get({
++                    url: thumbnailUrl,
++                    needAuthorization: false,
++                });
++                if (modelThumbnailResponse?.data instanceof Blob) {
++                    return {blob: modelThumbnailResponse.data, sourceUrl: thumbnailUrl};
++                }
++            } catch (error) {
++                console.log(error);
++            }
++        }
++
++        try {
++            const fallbackResponse = await fetch(defaultModelThumbnail);
++            if (!fallbackResponse.ok) return null;
++            return {blob: await fallbackResponse.blob(), sourceUrl: defaultModelThumbnail};
++        } catch (error) {
++            console.log(error);
++            return null;
++        }
++    };
++
++    const uploadModelThumbnail = async (model: IAnythingModel, objData: any) => {
++        const thumbnailUrl = model.thumbnails?.aw_thumbnail || model.thumbnails?.aw_reference;
++        const thumbnail = await downloadThumbnailBlob(thumbnailUrl);
++        if (!thumbnail) return;
++
++        const file = new File(
++            [thumbnail.blob],
++            `${THREE.MathUtils.generateUUID()}.${getThumbnailExtension(thumbnail.blob, thumbnail.sourceUrl)}`,
++            {type: thumbnail.blob.type || "image/png"},
++        );
++        handleUploadThumbnail(file, objData);
++    };
++
+     const onModelSelectedFromList = async (model: IAnythingModel) => {
+         if (!model) {
+             return;
+@@ -94,43 +143,21 @@ export const AiModelsTab = () => {
+ 
+             const zipper = new JSZip();
+             zipper.file(file.name, file);
+-            zipper.generateAsync({type: "blob"}).then(async zip => {
+-                const zippedFile = new File([zip], `${modelName}.zip`);
+-                try {
+-                    const meshAddResponse = await Ajax.post({
+-                        url: backendUrlFromPath(`/api/Mesh/Add`),
+-                        data: {
+-                            file: zippedFile,
+-                            IsAIGenerated: true,
+-                            SceneID: app.editor.sceneID,
+-                        },
+-                        msgBodyType: "multipart",
+-                    });
+-                    if (meshAddResponse?.data.Code === 200) {
+-                        //download the thumbnail for the model
+-                        const modelThumbnailResponse = await Ajax.get({
+-                            url: (model.thumbnails.aw_thumbnail || model.thumbnails.aw_reference),
+-                            needAuthorization: false,
+-                        });
+-                        const thumbnailBlob = await modelThumbnailResponse?.data;
+-                        // eslint-disable-next-line eqeqeq
+-                        if (thumbnailBlob == null) {
+-                            //TODO replace with a default thumbnail here
+-                            throw new Error("Thumbnail not found");
+-                        }
+-                        const file = new File(
+-                            [thumbnailBlob],
+-                            `${THREE.MathUtils.generateUUID()}.${thumbnailBlob.type.split("/")[1]}`,
+-                            {type: thumbnailBlob.type},
+-                        );
+-
+-                        handleUploadThumbnail(file, meshAddResponse.data.Data);
+-                        loadModel(meshAddResponse.data.Data, model);
+-                    }
+-                } catch (error) {
+-                    console.log(error);
+-                }
++            const zip = await zipper.generateAsync({type: "blob"});
++            const zippedFile = new File([zip], `${modelName}.zip`);
++            const meshAddResponse = await Ajax.post({
++                url: backendUrlFromPath(`/api/Mesh/Add`),
++                data: {
++                    file: zippedFile,
++                    IsAIGenerated: true,
++                    SceneID: app.editor.sceneID,
++                },
++                msgBodyType: "multipart",
+             });
++            if (meshAddResponse?.data.Code === 200) {
++                void uploadModelThumbnail(model, meshAddResponse.data.Data);
++                loadModel(meshAddResponse.data.Data, model);
++            }
+         } catch (error) {
+             console.log(error);
+         }
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiNpcsTab.tsx b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiNpcsTab.tsx
+index ef1190c..de46920 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiNpcsTab.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/AiNpcsTab.tsx
+@@ -49,14 +49,6 @@ export const AiNpcsTab = ({search}: {search: string}) => {
+         }
+     };
+ 
+-    const handleClone = () => {
+-        // TODO: Implement clone using new API - requires asset duplication endpoint
+-        showToast({
+-            type: "info",
+-            title: "Clone feature coming soon",
+-        });
+-    };
+-
+     useEffect(() => {
+         if (!search) {
+             setFilteredData(sceneAssets);
+@@ -77,7 +69,6 @@ export const AiNpcsTab = ({search}: {search: string}) => {
+                     data={filteredData}
+                     selectedItemsIds={[]}
+                     onClick={handleEdit}
+-                    onReplace={handleClone}
+                     onDelete={handleDelete}
+                 />
+             ) : (
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/MiscTab.tsx b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/MiscTab.tsx
+index 57fd96c..042aadb 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/MiscTab.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/MiscTab.tsx
+@@ -54,13 +54,12 @@ export enum NEW_MISC_NAME {
+     VIDEO_BILLBOARD = "Video Billboard",
+     VOLUMES = "Scene Volumes",
+     SPAWN_POINT = "Spawn Point",
+-    CHECK_POINT = "Check Point",
+     POINT_SOUND = "Point Sound",
+     DEFAULT_LIGHTS_FOG = "Environment lights and fog",
+     AVATAR_CREATOR = "Avatar Creator",
+ }
+ 
+-export const ADMIN_ONLY_MISC_NAMES = [NEW_MISC_NAME.CESIUM, NEW_MISC_NAME.CHECK_POINT, LIGHT_NAME.RECT_AREA];
++export const ADMIN_ONLY_MISC_NAMES = [NEW_MISC_NAME.CESIUM, LIGHT_NAME.RECT_AREA];
+ 
+ const LIGHTS_MISC_OPTIONS = [
+     {icon: terrainIcon, text: "Terrain", name: NEW_MISC_NAME.TERRAIN},
+@@ -70,7 +69,6 @@ const LIGHTS_MISC_OPTIONS = [
+     {icon: billboardIcon, text: NEW_MISC_NAME.VIDEO_BILLBOARD, name: NEW_MISC_NAME.VIDEO_BILLBOARD},
+     {icon: boxIcon, text: "Scene Volumes", name: NEW_MISC_NAME.VOLUMES},
+     {icon: spawnPoint, text: "Spawn Point", name: NEW_MISC_NAME.SPAWN_POINT},
+-    {icon: spawnPoint, text: "Check Point", name: NEW_MISC_NAME.CHECK_POINT},
+     {icon: soundIcon, text: "Point Sound", name: NEW_MISC_NAME.POINT_SOUND},
+     {icon: avatarCreatorIcon, text: "Avatar Creator", name: NEW_MISC_NAME.AVATAR_CREATOR},
+     {
+@@ -93,10 +91,6 @@ const LIGHTS_MISC_OPTIONS = [
+     // },
+ ];
+ 
+-// TODO: simplify addition of objects with behaviors
+-// Because its just an object with a behavior
+-// we can have a list of behavior ids and their attributes optionally
+-// the rest of the logic should be handled in the behavior itself
+ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) => {
+     const {isAdmin} = useAuthorizationContext();
+     const {setActiveRightPanel} = useAppGlobalContext();
+@@ -169,6 +163,34 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+         return names;
+     };
+ 
++    async function addBehaviorObject<T extends THREE.Object3D>({
++        object,
++        baseName,
++        behaviorID,
++        behaviorOptions,
++        offset,
++        clearSelection = false,
++        callback,
++    }: {
++        object: T;
++        baseName: string;
++        behaviorID: string;
++        behaviorOptions?: any;
++        offset?: THREE.Vector3;
++        clearSelection?: boolean;
++        callback?: (obj: T) => void;
++    }) {
++        if (clearSelection && engine?.editor?.selected) {
++            engine.editor.select(null);
++        }
++
++        object.name = generateUniqueName(baseName, getCurrentNames());
++        await editor.addBehaviorToObject(object, behaviorID, behaviorOptions);
++        addObjectToSceneInCameraView(object, offset);
++        callback?.(object);
++        return object;
++    }
++
+     const handleAddAmbientLight = useCallback(
+         (callback?: (obj: THREE.AmbientLight) => void) => {
+             const names = getCurrentNames();
+@@ -300,12 +322,7 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+     );
+ 
+     const handleAddVolumes = async (callback?: (obj: THREE.Mesh) => void) => {
+-        const names = getCurrentNames();
+-        if (engine?.editor?.selected) {
+-            engine.editor.select(null);
+-        }
+-
+-        let geometry = new THREE.BoxGeometry(3, 3, 3);
++        const geometry = new THREE.BoxGeometry(3, 3, 3);
+         const material = new THREE.MeshBasicMaterial({
+             color: 0x00aaff,
+             transparent: true,
+@@ -319,57 +336,47 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+         volumeObject.userData.editorVisibility = true;
+         volumeObject.userData.gameVisibility = false;
+ 
+-        const uniqueName = generateUniqueName(NEW_MISC_NAME.VOLUMES, names);
+-        volumeObject.name = uniqueName;
+-        await editor.addBehaviorToObject(volumeObject, VOLUME_BEHAVIOR_ID);
+-
+-        addObjectToSceneInCameraView(volumeObject);
+-        if (callback) callback(volumeObject);
++        await addBehaviorObject({
++            object: volumeObject,
++            baseName: NEW_MISC_NAME.VOLUMES,
++            behaviorID: VOLUME_BEHAVIOR_ID,
++            clearSelection: true,
++            callback,
++        });
+     };
+ 
+-    const handleStartSpawnOrCheckPointTool = useCallback(
+-        async (openCheckPoint: boolean, callback?: (obj: THREE.Object3D) => void) => {
+-            const names = getCurrentNames();
+-            if (engine?.editor?.selected) {
+-                engine.editor.select(null);
+-            }
+-
++    const handleStartSpawnPointTool = useCallback(
++        async (callback?: (obj: THREE.Object3D) => void) => {
+             const point = new THREE.Object3D();
+-
+-            if (openCheckPoint) {
+-                const uniqueName = generateUniqueName(NEW_MISC_NAME.CHECK_POINT, names);
+-                point.name = uniqueName;
+-                // TODO: implement checkpoint, for now we just add spawnpoint behavior
+-                await editor.addBehaviorToObject(point, SPAWN_POINT_BEHAVIOR_ID);
+-            } else {
+-                const uniqueName = generateUniqueName(NEW_MISC_NAME.SPAWN_POINT, names);
+-                point.name = uniqueName;
+-                await editor.addBehaviorToObject(point, SPAWN_POINT_BEHAVIOR_ID);
+-            }
+-            addObjectToSceneInCameraView(point);
+-            if (callback) callback(point);
++            await addBehaviorObject({
++                object: point,
++                baseName: NEW_MISC_NAME.SPAWN_POINT,
++                behaviorID: SPAWN_POINT_BEHAVIOR_ID,
++                clearSelection: true,
++                callback,
++            });
+         },
+         [editor],
+     );
+ 
+     const handleAddPointSound = useCallback(async () => {
+-        const names = getCurrentNames();
+         const object = new THREE.Object3D();
+-        object.name = generateUniqueName("Point Sound", names);
+-        await editor.addBehaviorToObject(object, GENERIC_SOUND_BEHAVIOR_ID, {
+-            attributesData: {autoPlay: true, positional: true},
++        await addBehaviorObject({
++            object,
++            baseName: NEW_MISC_NAME.POINT_SOUND,
++            behaviorID: GENERIC_SOUND_BEHAVIOR_ID,
++            behaviorOptions: {attributesData: {autoPlay: true, positional: true}},
++            offset: new THREE.Vector3(0, 5, 0),
+         });
+-
+-        addObjectToSceneInCameraView(object, new THREE.Vector3(0, 5, 0));
+     }, [editor, I18n]);
+ 
+-    const handleBillboard = async (name: NEW_MISC_NAME) => {
++    const handleBillboard = async (name: NEW_MISC_NAME, callback?: (obj: THREE.Object3D) => void) => {
+         if (name === NEW_MISC_NAME.IMAGE_BILLBOARD) {
+-            await handleAddPlane(IMAGE_BILLBOARD_BEHAVIOR_ID);
++            await handleAddPlane(IMAGE_BILLBOARD_BEHAVIOR_ID, callback);
+         } else if (name === NEW_MISC_NAME.VIDEO_BILLBOARD) {
+-            await handleAddPlane(VIDEO_BILLBOARD_BEHAVIOR_ID);
++            await handleAddPlane(VIDEO_BILLBOARD_BEHAVIOR_ID, callback);
+         } else if (name === NEW_MISC_NAME.BILLBOARD) {
+-            await handleAddPlane(BILLBOARD_BEHAVIOR_ID);
++            await handleAddPlane(BILLBOARD_BEHAVIOR_ID, callback);
+         }
+     };
+ 
+@@ -393,18 +400,14 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+             case NEW_MISC_NAME.BILLBOARD:
+             case NEW_MISC_NAME.IMAGE_BILLBOARD:
+             case NEW_MISC_NAME.VIDEO_BILLBOARD:
+-                await handleBillboard(name);
++                await handleBillboard(name, callback);
+                 break;
+             case NEW_MISC_NAME.VOLUMES:
+                 await handleAddVolumes(callback);
+                 setActiveRightPanel(RIGHT_PANEL_VERSIONS.Volume);
+                 break;
+             case NEW_MISC_NAME.SPAWN_POINT:
+-                await handleStartSpawnOrCheckPointTool(false, callback);
+-                setActiveRightPanel(RIGHT_PANEL_VERSIONS.SpawnPoint);
+-                break;
+-            case NEW_MISC_NAME.CHECK_POINT:
+-                await handleStartSpawnOrCheckPointTool(true, callback);
++                await handleStartSpawnPointTool(callback);
+                 setActiveRightPanel(RIGHT_PANEL_VERSIONS.SpawnPoint);
+                 break;
+             case NEW_MISC_NAME.POINT_SOUND:
+@@ -468,7 +471,6 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+ 
+     const handleAddPlane = useCallback(
+         async (behaviorID: string, callback?: (obj: THREE.Object3D) => void) => {
+-            const names = getCurrentNames();
+             const material = new THREE.MeshStandardMaterial({
+                 color: generateRandomColor(),
+                 side: THREE.DoubleSide,
+@@ -482,14 +484,14 @@ export const MiscTab = ({search, isOpen}: {search: string; isOpen: boolean}) =>
+             billboard.userData.isRuntimeOnly = true;
+ 
+             billboardWrapper.add(billboard);
+-            const uniqueName = generateUniqueName("Billboard", names);
+-            billboardWrapper.name = uniqueName;
+             billboardWrapper.userData.isBillboard = true;
+             billboardWrapper.userData.billboardBehaviorID = behaviorID;
+-            await editor.addBehaviorToObject(billboardWrapper, behaviorID);
+-
+-            addObjectToSceneInCameraView(billboardWrapper);
+-            if (callback) callback(billboardWrapper);
++            await addBehaviorObject({
++                object: billboardWrapper,
++                baseName: NEW_MISC_NAME.BILLBOARD,
++                behaviorID,
++                callback,
++            });
+         },
+         [editor],
+     );
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/ProjectTab/ProjectTab.tsx b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/ProjectTab/ProjectTab.tsx
+index a4d152e..712d3e4 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/ProjectTab/ProjectTab.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/ProjectTab/ProjectTab.tsx
+@@ -54,6 +54,8 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
+     const [anchorUuid, setAnchorUuid] = useState<string | null>(null);
+     const foundObjectsRef = useRef<THREE.Object3D[]>([]);
+     const searchRef = useRef("");
++    const quickBuildBatchDepthRef = useRef(0);
++    const quickBuildBatchNeedsUpdateRef = useRef(false);
+ 
+     const app = global.app as EngineRuntime;
+     const editor = app.editor as Editor;
+@@ -316,6 +318,26 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
+         setSelected([(app.editor.selected as any)?.uuid]);
+     };
+ 
++    const updateSceneTreeForSceneChange = () => {
++        if (quickBuildBatchDepthRef.current > 0) {
++            quickBuildBatchNeedsUpdateRef.current = true;
++            return;
++        }
++        updateUI();
++    };
++
++    const handleQuickBuildBatchStarted = () => {
++        quickBuildBatchDepthRef.current += 1;
++    };
++
++    const handleQuickBuildBatchEnded = () => {
++        quickBuildBatchDepthRef.current = Math.max(0, quickBuildBatchDepthRef.current - 1);
++        if (quickBuildBatchDepthRef.current !== 0 || !quickBuildBatchNeedsUpdateRef.current) return;
++
++        quickBuildBatchNeedsUpdateRef.current = false;
++        updateUI();
++    };
++
+     const expandData = (uuid: string, list: readonly TreeItemData[]) => {
+         for (const item of list) {
+             if (uuid === item.value) {
+@@ -652,16 +674,18 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
+     useEffect(() => {
+         if (!app) return;
+         updateUI();
+-        app.on(`sceneGraphChanged.ProjectTab`, updateUI);
+-        app.on(`objectChanged.ProjectTab`, updateUI);
+-        app.on(`objectRemoved.ProjectTab`, updateUI);
++        app.on(`sceneGraphChanged.ProjectTab`, updateSceneTreeForSceneChange);
++        app.on(`objectChanged.ProjectTab`, updateSceneTreeForSceneChange);
++        app.on(`objectRemoved.ProjectTab`, updateSceneTreeForSceneChange);
++        app.on(`quickBuildBatchStarted.ProjectTab`, handleQuickBuildBatchStarted);
++        app.on(`quickBuildBatchEnded.ProjectTab`, handleQuickBuildBatchEnded);
+         app.on(`objectSelected.ProjectTab`, handleObjectSelected);
+         app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
+-        app?.on(`objectRemoved.ProjectTab`, () => {
++        app?.on(`objectRemoved.ProjectTabSearch`, () => {
+             const results = searchObjects(app.editor!.scene, searchRef.current);
+             setFoundObjects(results);
+         });
+-        app?.on(`objectCloned.ProjectTab`, () => {
++        app?.on(`objectCloned.ProjectTabSearch`, () => {
+             const results = searchObjects(app.editor!.scene, searchRef.current);
+             setFoundObjects(results);
+         });
+@@ -670,9 +694,12 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
+             app.on(`sceneGraphChanged.ProjectTab`, null);
+             app.on(`objectChanged.ProjectTab`, null);
+             app.on(`objectRemoved.ProjectTab`, null);
++            app.on(`quickBuildBatchStarted.ProjectTab`, null);
++            app.on(`quickBuildBatchEnded.ProjectTab`, null);
+             app.on(`objectSelected.ProjectTab`, null);
+             app.on(`objectArraySelected.ProjectTab`, handleObjectArraySelected);
+-            app?.on(`objectRemoved.ModelsTabContext`, null);
++            app?.on(`objectRemoved.ProjectTabSearch`, null);
++            app?.on(`objectCloned.ProjectTabSearch`, null);
+         };
+     }, []);
+ 
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/OSSBootstrapModal/OSSBootstrapModal.tsx b/client/packages/editor-oss/src/editor/assets/v2/OSSBootstrapModal/OSSBootstrapModal.tsx
+index 43e021c..bd5114c 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/OSSBootstrapModal/OSSBootstrapModal.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/OSSBootstrapModal/OSSBootstrapModal.tsx
+@@ -42,7 +42,7 @@ type ChoiceKind = "indexeddb" | "filesystem";
+ export const OSSBootstrapModal = () => {
+     const [visible, setVisible] = useState<boolean>(() => IS_OSS && !isOSSBootstrapped());
+     const [fsSupported] = useState<boolean>(() => isFileSystemAccessSupported());
+-    const [choice, setChoice] = useState<ChoiceKind>(fsSupported ? "filesystem" : "indexeddb");
++    const [choice, setChoice] = useState<ChoiceKind>("indexeddb");
+     const [submitting, setSubmitting] = useState(false);
+     const [error, setError] = useState<string | undefined>(undefined);
+ 
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/LightingSection.tsx b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/LightingSection.tsx
+index 818cf0c..56bffdd 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/LightingSection.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/LightingSection.tsx
+@@ -20,8 +20,46 @@ const shadowTooltipContent =
+     "Use these only when shadows show acne, peter-panning, or shimmer. Bias changes are usually tiny, often around -0.0005 to 0.0005. Normal bias is commonly around 0.01-0.2. Start with very small adjustments.";
+ 
+ type AxisType = "x" | "y" | "z";
++type ShadowCastingLight = THREE.Light & {shadow?: THREE.LightShadow | null; castShadow: boolean};
++
++const SHADOW_MAP_REBUILD_DELAY_MS = 100;
+ 
+ const AxisArray: AxisType[] = ["x", "y", "z"];
++
++const disposeShadowMap = (shadow: THREE.LightShadow) => {
++    if (shadow.map) {
++        shadow.map.dispose();
++        shadow.map = null;
++    }
++};
++
++const updateShadowCameraProjection = (camera: THREE.Camera) => {
++    (camera as THREE.Camera & {updateProjectionMatrix?: () => void}).updateProjectionMatrix?.();
++};
++
++const rebuildShadowMapAfterRendererCleanup = (
++    light: ShadowCastingLight,
++    applyShadowChanges: (shadow: THREE.LightShadow) => void,
++    notifyChanged: () => void,
++) => {
++    light.castShadow = false;
++    notifyChanged();
++
++    // Three r184 can keep a stale shadow render target when map size changes.
++    // Let the renderer observe castShadow=false for a task, then rebuild.
++    setTimeout(() => {
++        const shadow = light.shadow;
++        if (!shadow) return;
++
++        applyShadowChanges(shadow);
++        disposeShadowMap(shadow);
++        updateShadowCameraProjection(shadow.camera);
++        shadow.needsUpdate = true;
++        light.castShadow = true;
++        notifyChanged();
++    }, SHADOW_MAP_REBUILD_DELAY_MS);
++};
++
+ interface Props {
+     lightState: ILightState;
+     isLocked?: boolean;
+@@ -473,31 +511,13 @@ export const LightingSection = ({lightState, isLocked, selectedObj}: Props) => {
+                                 const value = Number(item.value);
+                                 const selected = app.editor.objectByUuid(selectedObj.uuid);
+                                 if (selected && selected.shadow) {
+-                                    // Disable shadow first
+-                                    selected.castShadow = false;
+-                                    app.call(`objectChanged`, selected, selected);
+-
+-                                    // Re-enable with new settings after a short delay to ensure renderer cleanup
+-                                    // NOTE: there is a bug in Three.js where changing the shadow map size does not update
+-                                    // the shadow map correctly, causing shadows to render incorrectly until the camera is
+-                                    // manually updated or shadow is toggled. This is a workaround for that issue in Three.js.
+-                                    // FIXME: remove setTimeout and directly update shadow map size once the corresponding upstream Three.js issue/PR is resolved.
+-                                    setTimeout(() => {
+-                                        if (selected.shadow) {
+-                                            selected.shadow.mapSize.set(value, value);
+-
+-                                            if (selected.shadow.map) {
+-                                                selected.shadow.map.dispose();
+-                                                selected.shadow.map = null;
+-                                            }
+-
+-                                            selected.shadow.camera.updateProjectionMatrix?.();
+-                                            selected.shadow.needsUpdate = true;
+-                                            selected.castShadow = true;
+-
+-                                            app.call(`objectChanged`, selected, selected);
+-                                        }
+-                                    }, 100);
++                                    rebuildShadowMapAfterRendererCleanup(
++                                        selected,
++                                        shadow => {
++                                            shadow.mapSize.set(value, value);
++                                        },
++                                        () => app.call(`objectChanged`, selected, selected),
++                                    );
+                                 }
+                             }}
+                             disableTyping
+@@ -639,38 +659,25 @@ export const LightingSection = ({lightState, isLocked, selectedObj}: Props) => {
+                         onClick={() => {
+                             const selected = app.editor.objectByUuid(selectedObj.uuid);
+                             if (selected && selected.shadow) {
+-                                // Disable shadow first
+-                                selected.castShadow = false;
+-                                app.call(`objectChanged`, selected, selected);
+-
+-                                setTimeout(() => {
+-                                    if (selected.shadow) {
+-                                        selected.shadow.radius = 3;
+-                                        selected.shadow.bias = 0;
+-                                        selected.shadow.normalBias = 0.1;
+-                                        selected.shadow.mapSize.set(2048, 2048);
+-
+-                                        if (selected.shadow.map) {
+-                                            selected.shadow.map.dispose();
+-                                            selected.shadow.map = null;
+-                                        }
+-
+-                                        selected.shadow.camera.updateProjectionMatrix?.();
+-                                        selected.shadow.needsUpdate = true;
+-                                        if (selected.shadow.camera) {
++                                rebuildShadowMapAfterRendererCleanup(
++                                    selected,
++                                    shadow => {
++                                        shadow.radius = 3;
++                                        shadow.bias = 0;
++                                        shadow.normalBias = 0.1;
++                                        shadow.mapSize.set(2048, 2048);
++
++                                        if (shadow.camera instanceof THREE.OrthographicCamera) {
+                                             const value = 200;
+                                             const half = value / 2;
+-                                            selected.shadow.camera.left = -half;
+-                                            selected.shadow.camera.right = half;
+-                                            selected.shadow.camera.top = half;
+-                                            selected.shadow.camera.bottom = -half;
+-                                            selected.shadow.camera.updateProjectionMatrix?.();
++                                            shadow.camera.left = -half;
++                                            shadow.camera.right = half;
++                                            shadow.camera.top = half;
++                                            shadow.camera.bottom = -half;
+                                         }
+-
+-                                        selected.castShadow = true;
+-                                        app.call(`objectChanged`, selected, selected);
+-                                    }
+-                                }, 100);
++                                    },
++                                    () => app.call(`objectChanged`, selected, selected),
++                                );
+                             }
+                         }}
+                         disabled={isLocked || !castShadow}
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/PhysicsSection.tsx b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/PhysicsSection.tsx
+index bf3fbfa..fd67c08 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/PhysicsSection.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/PhysicsSection.tsx
+@@ -62,8 +62,6 @@ export const PhysicsSection = ({isLocked}: Props) => {
+     const previewShapeColor = 0x00ff00;
+     const previewShapeOpacity = 0.5;
+ 
+-    const cachedConvexHullPoints = new Map<string, number[]>();
+-
+     let userData: any = undefined;
+     let rigidBodyPreviewObjects = [] as any;
+     if (selected && !(selected instanceof Array)) {
+@@ -189,7 +187,7 @@ export const PhysicsSection = ({isLocked}: Props) => {
+             app.editor?.selected instanceof Array ? app.editor?.selected[0] : (app.editor?.selected as Object3D);
+ 
+         if (name === "shape" && PhysicsUtil.isPhysicsEnabled(selectedObject as any)) {
+-            PhysicsUtil.updateShapeOffsetAndScale(selectedObject as any); // TODO: use event
++            PhysicsUtil.updateShapeOffsetAndScale(selectedObject as any);
+         }
+     };
+ 
+@@ -347,18 +345,12 @@ export const PhysicsSection = ({isLocked}: Props) => {
+     };
+ 
+     const getConvexHullPreview = (object: Object3D) => {
+-        // TODO: what if the object scale or the children have changed? That
+-        // should invalidate the cached points.
+         const physicsConfig = PhysicsUtil.getPhysicsConfig(object)!;
+-        let hullsPoints = cachedConvexHullPoints.get(object.uuid);
+-        if (!hullsPoints) {
+-            hullsPoints = PhysicsUtil.getShapeData(
+-                object,
+-                BodyShapeType.CONVEX_HULL,
+-                physicsConfig.shapeExcludesHiddenObjects,
+-            ).vertices;
+-            cachedConvexHullPoints.set(object.uuid, hullsPoints);
+-        }
++        const hullsPoints = PhysicsUtil.getShapeData(
++            object,
++            BodyShapeType.CONVEX_HULL,
++            physicsConfig.shapeExcludesHiddenObjects,
++        ).vertices;
+ 
+         const convexVerts: Vector3[] = [];
+         for (let i = 0; i < hullsPoints.length; i += 3) {
+@@ -423,7 +415,6 @@ export const PhysicsSection = ({isLocked}: Props) => {
+ 
+         return () => {
+             clearScenePreviewObjects();
+-            cachedConvexHullPoints.clear();
+             app?.on("objectChanged.PhysicsSection", null);
+             app?.on("objectSelected.PhysicsSection", null);
+             app?.on("objectArraySelected.PhysicsSection", null);
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/v2/PhysicsSection.tsx b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/v2/PhysicsSection.tsx
+index 344cdab..c05c372 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/v2/PhysicsSection.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/RightPanel/sections/v2/PhysicsSection.tsx
+@@ -61,8 +61,6 @@ export const PhysicsSection = ({ isLocked }: Props) => {
+     const previewShapeColor = 0x00ff00;
+     const previewShapeOpacity = 0.5;
+ 
+-    const cachedConvexHullPoints = new Map<string, number[]>();
+-
+     let userData: any = undefined;
+     let rigidBodyPreviewObjects = [] as any;
+     if (selected && !(selected instanceof Array)) {
+@@ -299,14 +297,8 @@ export const PhysicsSection = ({ isLocked }: Props) => {
+     };
+ 
+     const getConvexHullPreview = (object: Object3D) => {
+-        // TODO: what if the object scale or the children have changed? That
+-        // should invalidate the cached points.
+         const physicsConfig = PhysicsUtil.getPhysicsConfig(object)!;
+-        let hullPoints = cachedConvexHullPoints.get(object.uuid);
+-        if (!hullPoints) {
+-            hullPoints = PhysicsUtil.getShapeData(object, BodyShapeType.CONVEX_HULL, physicsConfig.shapeExcludesHiddenObjects).vertices;
+-            cachedConvexHullPoints.set(object.uuid, hullPoints);
+-        }
++        const hullPoints = PhysicsUtil.getShapeData(object, BodyShapeType.CONVEX_HULL, physicsConfig.shapeExcludesHiddenObjects).vertices;
+ 
+         const convexVerts: Vector3[] = [];
+         for (let i = 0; i < hullPoints.length; i += 3) {
+@@ -379,7 +371,6 @@ export const PhysicsSection = ({ isLocked }: Props) => {
+ 
+         return () => {
+             clearScenePreviewObjects();
+-            cachedConvexHullPoints.clear();
+             app?.on("objectChanged.PhysicsSection", null);
+             app?.on("objectSelected.PhysicsSection", null);
+             app?.on("objectArraySelected.PhysicsSection", null);
+diff --git a/client/packages/editor-oss/src/editor/assets/v2/common/InfoCard/StemVersionPicker/StemVersionPicker.tsx b/client/packages/editor-oss/src/editor/assets/v2/common/InfoCard/StemVersionPicker/StemVersionPicker.tsx
+index 5862325..c24b8bd 100644
+--- a/client/packages/editor-oss/src/editor/assets/v2/common/InfoCard/StemVersionPicker/StemVersionPicker.tsx
++++ b/client/packages/editor-oss/src/editor/assets/v2/common/InfoCard/StemVersionPicker/StemVersionPicker.tsx
+@@ -68,7 +68,6 @@ export const StemVersionPicker = ({stem}: {stem: AssetStateType}) => {
+ 
+         saveScene().catch(console.error);
+         app.call("objectChanged");
+-        app.call("currentRevisionUpdated");
+     };
+ 
+     return (
+diff --git a/client/packages/editor-oss/src/editor/lambdas/hooks/lambdas.ts b/client/packages/editor-oss/src/editor/lambdas/hooks/lambdas.ts
+index d45aa6a..8f32077 100644
+--- a/client/packages/editor-oss/src/editor/lambdas/hooks/lambdas.ts
++++ b/client/packages/editor-oss/src/editor/lambdas/hooks/lambdas.ts
+@@ -143,10 +143,6 @@ export const useUpdateSceneLambdaRevision = () => {
+             configStr: JSON.stringify(newConfig),
+         });
+ 
+-        // RevisionList subscribes to this on top of the objectChanged path
+-        // updateSceneLambdaRevision already fires; harmless redundancy is
+-        // worth it for parity with the behavior flow.
+-        app.call("currentRevisionUpdated");
+         return true;
+     };
+ };
+diff --git a/client/packages/editor-oss/src/event/TransformControlsEvent.js b/client/packages/editor-oss/src/event/TransformControlsEvent.js
+index acbe81c..2442812 100644
+--- a/client/packages/editor-oss/src/event/TransformControlsEvent.js
++++ b/client/packages/editor-oss/src/event/TransformControlsEvent.js
+@@ -1,746 +1,847 @@
+ import * as THREE from "three";
+ 
+-import {TransformControls} from "../assets/js/controls/TransformControls";
++import { TransformControls } from "../assets/js/controls/TransformControls";
+ import global from "../global";
+ import BoundingBoxUtil from "../utils/BoundingBoxUtil";
+-import {GeometricSnapHelper} from "../utils/GeometricSnapHelper";
+-import {TransformUtils} from "../utils/TransformUtils";
+-import {MultiCmdsCommand} from "./../command/MultiCmdsCommand";
+-import {SetPositionCommand} from "./../command/SetPositionCommand";
+-import {SetRotationCommand} from "./../command/SetRotationCommand";
+-import {SetScaleCommand} from "./../command/SetScaleCommand";
++import { GeometricSnapHelper } from "../utils/GeometricSnapHelper";
++import { TransformUtils } from "../utils/TransformUtils";
++import { MultiCmdsCommand } from "./../command/MultiCmdsCommand";
++import { SetPositionCommand } from "./../command/SetPositionCommand";
++import { SetRotationCommand } from "./../command/SetRotationCommand";
++import { SetScaleCommand } from "./../command/SetScaleCommand";
+ import BaseEvent from "./BaseEvent";
+-import {isInputActive} from "../editor/assets/v2/utils/isInputActive";
++import { isInputActive } from "../editor/assets/v2/utils/isInputActive";
+ 
+ const TRANSFORM_MODES = {
+-    ALL: "all",
+-    TRANSLATE: "translate",
+-    ROTATE: "rotate",
+-    SCALE: "scale",
++  ALL: "all",
++  TRANSLATE: "translate",
++  ROTATE: "rotate",
++  SCALE: "scale",
+ };
+ 
+ const TRANSFORM_STATES = {
+-    IDLE: "idle",
+-    DISABLED: "disabled",
+-    TRANSFORMING: "transforming",
++  IDLE: "idle",
++  DISABLED: "disabled",
++  TRANSFORMING: "transforming",
+ };
+ 
+ class TransformControlsEvent extends BaseEvent {
+-    constructor() {
+-        super();
+-        this.state = TRANSFORM_STATES.DISABLED;
+-        this.mode = TRANSFORM_MODES.ALL;
+-
+-        this.activeTransforms = [];
+-        this.selectedObjects = null;
+-
+-        this.transformHelperInitialState = null;
+-        this.transformHelper = null; // helper object for all transformations (single or multiple)
+-
+-        this.isCmdOrControlClicked = false;
+-        this.app = global.app;
+-    }
+-
+-    start() {
+-        this.app.on(`editorStarted.${this.id}`, this.onEditorStarted.bind(this));
+-    }
+-
+-    stop() {
+-        if (this.state !== TRANSFORM_STATES.DISABLED) {
+-            this.disableTransformation();
+-        }
+-
+-        this.unlistenAppEvents();
+-        this.unlistenTransformControlsEvents();
+-        this.unlistenKeyboardEvents();
+-
+-        // Cleanup geometric snap helper if exists
+-        if (this.geometricSnapHelper) {
+-            this.geometricSnapHelper.dispose();
+-            this.geometricSnapHelper = null;
+-        }
+-
+-        this.app.on(`appStarted.${this.id}`, null);
+-    }
+-
+-    reset() {
+-        if (this.state !== TRANSFORM_STATES.DISABLED) {
+-            this.disableTransformation();
+-        }
+-    }
+-
+-    onEditorStarted() {
+-        this.transformControls = new TransformControls(this.app.camera, this.app.viewport);
+-        // this.transformControls.setMode("all");
+-        this.transformControls.setSpace("world");
+-        this.app.transformControls = this.transformControls;
+-
+-        // TODO: clean up, this looks weird
+-        let controlHelper = this.transformControls;
+-        if (this.transformControls.getHelper) {
+-            controlHelper = this.transformControls.getHelper();
+-        }
+-
+-        // recursively add tag "gizmo" to all children to disable ability to select them
+-        controlHelper.traverse(n => {
+-            n.tag = "gizmo";
+-        });
+-        this.app.sceneHelpers.add(controlHelper);
+-
+-        this.listenTransformControlEvents();
+-        this.listenAppEvents();
+-        this.listenKeyboardEvents();
+-
+-        // Re-apply snapping settings if they exist from previous session
+-        const snappingSettings = this.app?.editor?.scene?.userData?.snapping;
+-        if (snappingSettings) {
+-            this.onSnappingSettingsChanged(snappingSettings);
+-        }
+-
+-        const angleUnitsSettings = this.app?.editor?.scene?.userData?.angleUnits;
+-        if (angleUnitsSettings) {
+-            this.onAngleUnitsSettingsChanged(angleUnitsSettings);
+-        }
+-    }
+-
+-    listenTransformControlEvents() {
+-        // Store bound methods for proper cleanup
+-        this.boundOnMouseDown = this.onMouseDown.bind(this);
+-        this.boundOnMouseUp = this.onMouseUp.bind(this);
+-        this.boundOnTransformChange = this.onTransformChange.bind(this);
+-
+-        this.transformControls.addEventListener("mouseDown", this.boundOnMouseDown);
+-        this.transformControls.addEventListener("mouseUp", this.boundOnMouseUp);
+-        this.transformControls.addEventListener("objectChange", this.boundOnTransformChange);
+-    }
+-
+-    unlistenTransformControlsEvents() {
+-        if (this.transformControls && this.boundOnMouseDown) {
+-            this.transformControls.removeEventListener("mouseDown", this.boundOnMouseDown);
+-            this.transformControls.removeEventListener("mouseUp", this.boundOnMouseUp);
+-            this.transformControls.removeEventListener("objectChange", this.boundOnTransformChange);
+-        }
+-    }
+-
+-    listenAppEvents() {
+-        this.app.on(`objectSelected.${this.id}`, this.onObjectSelected.bind(this));
+-        this.app.on(`objectArraySelected.${this.id}`, this.onObjectArraySelected.bind(this));
+-        this.app.on(`objectLocked.${this.id}`, this.onObjectLocked.bind(this));
+-        this.app.on(`objectChanged.${this.id}`, this.onObjectChanged.bind(this));
+-        this.app.on(`objectUpdated.${this.id}`, this.onObjectUpdated.bind(this));
+-        this.app.on(`cadModeChanged.${this.id}`, this.onCADModeChanged.bind(this));
+-        this.app.on(`undo.${this.id}`, this.onUndo.bind(this));
+-        this.app.on(`redo.${this.id}`, this.onRedo.bind(this));
+-        this.app.on(`changeMode.${this.id}`, this.onChangeMode.bind(this));
+-        this.app.on(`snapChanged.${this.id}`, this.onSnapChanged.bind(this));
+-        this.app.on(`snappingSettingsChanged.${this.id}`, this.onSnappingSettingsChanged.bind(this));
+-        this.app.on(`angleUnitsSettingsChanged.${this.id}`, this.onAngleUnitsSettingsChanged.bind(this));
+-        this.app.on(`spaceChanged.${this.id}`, this.onSpaceChanged.bind(this));
+-    }
+-
+-    unlistenAppEvents() {
+-        this.app.on(`objectSelected.${this.id}`, null);
+-        this.app.on(`objectArraySelected.${this.id}`, null);
+-        this.app.on(`objectLocked.${this.id}`, null);
+-        this.app.on(`objectChanged.${this.id}`, null);
+-        this.app.on(`objectUpdated.${this.id}`, null);
+-        this.app.on(`cadModeChanged.${this.id}`, null);
+-        this.app.on(`undo.${this.id}`, null);
+-        this.app.on(`redo.${this.id}`, null);
+-        this.app.on(`changeMode.${this.id}`, null);
+-        this.app.on(`snapChanged.${this.id}`, null);
+-        this.app.on(`snappingSettingsChanged.${this.id}`, null);
+-        this.app.on(`angleUnitsSettingsChanged.${this.id}`, null);
+-        this.app.on(`spaceChanged.${this.id}`, null);
+-    }
+-
+-    listenKeyboardEvents() {
+-        this.boundOnKeyDown = this.onKeyDown.bind(this);
+-        this.boundOnKeyUp = this.onKeyUp.bind(this);
+-
+-        document.addEventListener("keydown", this.boundOnKeyDown);
+-        document.addEventListener("keyup", this.boundOnKeyUp);
+-    }
+-
+-    unlistenKeyboardEvents() {
+-        if (this.boundOnKeyDown) {
+-            document.removeEventListener("keydown", this.boundOnKeyDown);
+-            document.removeEventListener("keyup", this.boundOnKeyUp);
+-        }
+-    }
+-
+-    onKeyDown(e) {
+-        this.isCmdOrControlClicked = !!(e.ctrlKey || e.metaKey);
+-        if (e.key === "Tab") {
+-            if (!isInputActive()) {
+-                e.preventDefault();
+-                this.cycleTransformMode();
+-            }
+-        }
+-    }
+-
+-    onKeyUp() {
+-        this.isCmdOrControlClicked = false;
++  constructor() {
++    super();
++    this.state = TRANSFORM_STATES.DISABLED;
++    this.mode = TRANSFORM_MODES.ALL;
++
++    this.activeTransforms = [];
++    this.selectedObjects = null;
++
++    this.transformHelperInitialState = null;
++    this.transformHelper = null; // helper object for all transformations (single or multiple)
++
++    this.isCmdOrControlClicked = false;
++    this.app = global.app;
++  }
++
++  start() {
++    this.app.on(`editorStarted.${this.id}`, this.onEditorStarted.bind(this));
++  }
++
++  stop() {
++    if (this.state !== TRANSFORM_STATES.DISABLED) {
++      this.disableTransformation();
++    }
++
++    this.unlistenAppEvents();
++    this.unlistenTransformControlsEvents();
++    this.unlistenKeyboardEvents();
++
++    // Cleanup geometric snap helper if exists
++    if (this.geometricSnapHelper) {
++      this.geometricSnapHelper.dispose();
++      this.geometricSnapHelper = null;
++    }
++
++    this.app.on(`appStarted.${this.id}`, null);
++  }
++
++  reset() {
++    if (this.state !== TRANSFORM_STATES.DISABLED) {
++      this.disableTransformation();
++    }
++  }
++
++  onEditorStarted() {
++    this.transformControls = new TransformControls(
++      this.app.camera,
++      this.app.viewport,
++    );
++    // this.transformControls.setMode("all");
++    this.transformControls.setSpace("world");
++    this.app.transformControls = this.transformControls;
++
++    // TODO: clean up, this looks weird
++    let controlHelper = this.transformControls;
++    if (this.transformControls.getHelper) {
++      controlHelper = this.transformControls.getHelper();
++    }
++
++    // recursively add tag "gizmo" to all children to disable ability to select them
++    controlHelper.traverse((n) => {
++      n.tag = "gizmo";
++    });
++    this.app.sceneHelpers.add(controlHelper);
++
++    this.listenTransformControlEvents();
++    this.listenAppEvents();
++    this.listenKeyboardEvents();
++
++    // Re-apply snapping settings if they exist from previous session
++    const snappingSettings = this.app?.editor?.scene?.userData?.snapping;
++    if (snappingSettings) {
++      this.onSnappingSettingsChanged(snappingSettings);
++    }
++
++    const angleUnitsSettings = this.app?.editor?.scene?.userData?.angleUnits;
++    if (angleUnitsSettings) {
++      this.onAngleUnitsSettingsChanged(angleUnitsSettings);
++    }
++  }
++
++  listenTransformControlEvents() {
++    // Store bound methods for proper cleanup
++    this.boundOnMouseDown = this.onMouseDown.bind(this);
++    this.boundOnMouseUp = this.onMouseUp.bind(this);
++    this.boundOnTransformChange = this.onTransformChange.bind(this);
++
++    this.transformControls.addEventListener("mouseDown", this.boundOnMouseDown);
++    this.transformControls.addEventListener("mouseUp", this.boundOnMouseUp);
++    this.transformControls.addEventListener(
++      "objectChange",
++      this.boundOnTransformChange,
++    );
++  }
++
++  unlistenTransformControlsEvents() {
++    if (this.transformControls && this.boundOnMouseDown) {
++      this.transformControls.removeEventListener(
++        "mouseDown",
++        this.boundOnMouseDown,
++      );
++      this.transformControls.removeEventListener(
++        "mouseUp",
++        this.boundOnMouseUp,
++      );
++      this.transformControls.removeEventListener(
++        "objectChange",
++        this.boundOnTransformChange,
++      );
++    }
++  }
++
++  listenAppEvents() {
++    this.app.on(`objectSelected.${this.id}`, this.onObjectSelected.bind(this));
++    this.app.on(
++      `objectArraySelected.${this.id}`,
++      this.onObjectArraySelected.bind(this),
++    );
++    this.app.on(`objectLocked.${this.id}`, this.onObjectLocked.bind(this));
++    this.app.on(`objectChanged.${this.id}`, this.onObjectChanged.bind(this));
++    this.app.on(`objectUpdated.${this.id}`, this.onObjectUpdated.bind(this));
++    this.app.on(`cadModeChanged.${this.id}`, this.onCADModeChanged.bind(this));
++    this.app.on(`undo.${this.id}`, this.onUndo.bind(this));
++    this.app.on(`redo.${this.id}`, this.onRedo.bind(this));
++    this.app.on(`changeMode.${this.id}`, this.onChangeMode.bind(this));
++    this.app.on(`snapChanged.${this.id}`, this.onSnapChanged.bind(this));
++    this.app.on(
++      `snappingSettingsChanged.${this.id}`,
++      this.onSnappingSettingsChanged.bind(this),
++    );
++    this.app.on(
++      `angleUnitsSettingsChanged.${this.id}`,
++      this.onAngleUnitsSettingsChanged.bind(this),
++    );
++    this.app.on(`spaceChanged.${this.id}`, this.onSpaceChanged.bind(this));
++  }
++
++  unlistenAppEvents() {
++    this.app.on(`objectSelected.${this.id}`, null);
++    this.app.on(`objectArraySelected.${this.id}`, null);
++    this.app.on(`objectLocked.${this.id}`, null);
++    this.app.on(`objectChanged.${this.id}`, null);
++    this.app.on(`objectUpdated.${this.id}`, null);
++    this.app.on(`cadModeChanged.${this.id}`, null);
++    this.app.on(`undo.${this.id}`, null);
++    this.app.on(`redo.${this.id}`, null);
++    this.app.on(`changeMode.${this.id}`, null);
++    this.app.on(`snapChanged.${this.id}`, null);
++    this.app.on(`snappingSettingsChanged.${this.id}`, null);
++    this.app.on(`angleUnitsSettingsChanged.${this.id}`, null);
++    this.app.on(`spaceChanged.${this.id}`, null);
++  }
++
++  listenKeyboardEvents() {
++    this.boundOnKeyDown = this.onKeyDown.bind(this);
++    this.boundOnKeyUp = this.onKeyUp.bind(this);
++
++    document.addEventListener("keydown", this.boundOnKeyDown);
++    document.addEventListener("keyup", this.boundOnKeyUp);
++  }
++
++  unlistenKeyboardEvents() {
++    if (this.boundOnKeyDown) {
++      document.removeEventListener("keydown", this.boundOnKeyDown);
++      document.removeEventListener("keyup", this.boundOnKeyUp);
++    }
++  }
++
++  onKeyDown(e) {
++    this.isCmdOrControlClicked = !!(e.ctrlKey || e.metaKey);
++    if (e.key === "Tab") {
++      if (!isInputActive()) {
++        e.preventDefault();
++        this.cycleTransformMode();
++      }
++    }
++  }
++
++  onKeyUp() {
++    this.isCmdOrControlClicked = false;
++  }
++
++  onMouseDown() {
++    if (this.state !== TRANSFORM_STATES.IDLE) {
++      return;
++    }
++
++    void this.beginTransformation();
++  }
++
++  onMouseUp() {
++    if (this.state !== TRANSFORM_STATES.TRANSFORMING) {
++      return;
++    }
++
++    this.endTransformation();
++  }
++
++  onObjectArraySelected(objects) {
++    this.objectsSelected(objects);
++  }
++
++  onObjectSelected(object) {
++    this.objectsSelected(object ? [object] : null);
++  }
++
++  objectsSelected(objects) {
++    if (this.state !== TRANSFORM_STATES.DISABLED) {
++      this.disableTransformation();
++    }
++
++    objects = this.removeLockedObjects(objects);
++
++    if (!this.canEnableTransformation(objects)) {
++      return;
++    }
++
++    this.enableTransformation(objects);
++  }
++
++  onObjectChanged(object) {
++    if (
++      this.state !== TRANSFORM_STATES.IDLE ||
++      !this.selectedObjects?.includes(object)
++    ) {
++      return;
+     }
+ 
+-    onMouseDown() {
+-        if (this.state !== TRANSFORM_STATES.IDLE) {
+-            return;
+-        }
+-
+-        void this.beginTransformation();
+-    }
+-
+-    onMouseUp() {
+-        if (this.state !== TRANSFORM_STATES.TRANSFORMING) {
+-            return;
+-        }
++    const center = BoundingBoxUtil.calculateObjectsCenter(this.selectedObjects);
++    this.transformHelper.position.copy(center);
+ 
+-        this.endTransformation();
++    // Invalidate vertex cache for this object (geometric snapping)
++    if (this.geometricSnapHelper && object) {
++      this.geometricSnapHelper.invalidateObject(object);
+     }
++  }
+ 
+-    onObjectArraySelected(objects) {
+-        this.objectsSelected(objects);
++  onObjectUpdated(object) {
++    if (!object || !this.selectedObjects) {
++      return;
+     }
++    const found = this.selectedObjects.find((obj) => obj.uuid === object.uuid);
+ 
+-    onObjectSelected(object) {
+-        this.objectsSelected(object ? [object] : null);
+-    }
+-
+-    objectsSelected(objects) {
+-        if (this.state !== TRANSFORM_STATES.DISABLED) {
+-            this.disableTransformation();
+-        }
+-
+-        objects = this.removeLockedObjects(objects);
+-
+-        if (!this.canEnableTransformation(objects)) {
+-            return;
+-        }
+-
+-        this.enableTransformation(objects);
+-    }
+-
+-    onObjectChanged(object) {
+-        if (this.state !== TRANSFORM_STATES.IDLE || !this.selectedObjects?.includes(object)) {
+-            return;
+-        }
+-
+-        const center = BoundingBoxUtil.calculateObjectsCenter(this.selectedObjects);
+-        this.transformHelper.position.copy(center);
+-
+-        // Invalidate vertex cache for this object (geometric snapping)
+-        if (this.geometricSnapHelper && object) {
+-            this.geometricSnapHelper.invalidateObject(object);
+-        }
+-    }
+-
+-    onObjectUpdated(object) {
+-        if (!object || !this.selectedObjects) {
+-            return;
+-        }
+-        const found = this.selectedObjects.find(obj => obj.uuid === object.uuid);
+-
+-        if (found) {
+-            const filteredObjects = this.selectedObjects.filter(obj => obj.uuid !== object.uuid);
+-            this.selectedObjects = [...filteredObjects, object];
+-            if (!this.app.isPlaying) {
+-                this.updateGizmoPosition();
+-            }
+-        }
+-    }
+-
+-    onCADModeChanged(state) {
+-        if (state?.enabled) {
+-            if (this.state !== TRANSFORM_STATES.DISABLED) {
+-                this.disableTransformation();
+-            }
+-            return;
+-        }
+-
+-        const selected = this.app?.editor?.selected;
+-        if (Array.isArray(selected)) {
+-            this.objectsSelected(selected);
+-        } else {
+-            this.objectsSelected(selected ? [selected] : null);
+-        }
+-    }
+-
+-    onTransformChange() {
+-        if (this.state !== TRANSFORM_STATES.TRANSFORMING) {
+-            return;
+-        }
+-
+-        // Check for geometric snapping (vertex/edge/face)
+-        if (
+-            this.geometricSnapHelper &&
+-            this.snappingSettings?.geometric?.enabled &&
+-            this.mode === TRANSFORM_MODES.TRANSLATE
+-        ) {
+-            const snapResult = this.geometricSnapHelper.findSnapTarget(
+-                this.transformHelper.position,
+-                this.selectedObjects,
+-            );
+-
+-            if (snapResult) {
+-                // Apply geometric snap
+-                this.transformHelper.position.copy(snapResult.position);
+-
+-                // If priority is geometric-only, skip grid snap
+-                if (this.snappingSettings.priority === "geometric") {
+-                    this.updateTransforms();
+-                    return;
+-                }
+-            }
+-        }
+-
+-        this.updateTransforms();
+-    }
+-
+-    onObjectLocked(object) {
+-        if (this.state === TRANSFORM_STATES.DISABLED || !this.selectedObjects?.includes(object)) {
+-            return;
+-        }
+-
+-        // If the locked object is currently selected, disable transformation for now
+-        // TODO: handle locked objects in a better way
+-        this.disableTransformation();
+-    }
+-
+-    onUndo() {
+-        if (this.state === TRANSFORM_STATES.DISABLED) {
+-            return;
+-        }
+-
+-        this.updateGizmoPosition();
+-    }
+-
+-    onRedo() {
+-        if (this.state === TRANSFORM_STATES.DISABLED) {
+-            return;
+-        }
++    if (found) {
++      const filteredObjects = this.selectedObjects.filter(
++        (obj) => obj.uuid !== object.uuid,
++      );
++      this.selectedObjects = [...filteredObjects, object];
++      if (!this.app.isPlaying) {
+         this.updateGizmoPosition();
++      }
+     }
++  }
+ 
+-    onChangeMode(mode) {
+-        this.mode = mode;
+-
+-        if (!this.transformControls) {
+-            return;
+-        }
+-
+-        if (this.mode === TRANSFORM_MODES.ALL && this.selectedObjects?.length > 1) {
+-            this.transformControls.showScale = false;
+-        } else {
+-            this.transformControls.showScale = true;
+-        }
+-
+-        if (this.isValidTransformMode(mode)) {
+-            this.transformControls?.setMode(mode);
+-        } else {
+-            this.transformControls?.detach();
+-        }
+-    }
+-
+-    onSnapChanged(dist) {
+-        this.transformControls?.setTranslationSnap(dist);
+-    }
+-
+-    onAngleUnitsSettingsChanged(settings) {
+-        if (!this.transformControls || !settings) {
+-            return;
+-        }
+-
+-        this.transformControls.setRotationDisplayUnit(settings.currentUnit || "degrees");
++  onCADModeChanged(state) {
++    if (state?.enabled) {
++      if (this.state !== TRANSFORM_STATES.DISABLED) {
++        this.disableTransformation();
++      }
++      return;
+     }
+ 
+-    /**
+-     * Set world or local coordinate system
+-     * @param {*} space Parameter
+-     */
+-    onSpaceChanged(space) {
+-        if (!this.transformControls) {
+-            return;
+-        }
+-
+-        if (this.selectedObjects && this.selectedObjects.length > 1) {
+-            space = "world";
+-        }
+-
+-        this.transformControls.setSpace(space);
++    const selected = this.app?.editor?.selected;
++    if (Array.isArray(selected)) {
++      this.objectsSelected(selected);
++    } else {
++      this.objectsSelected(selected ? [selected] : null);
+     }
++  }
+ 
+-    /**
+-     * Handle snapping settings change
+-     * @param {*} settings Snapping settings object
+-     *
+-     * Note: Event system passes data parameters only (sender is filtered out)
+-     */
+-    onSnappingSettingsChanged(settings) {
+-        if (!this.transformControls) {
+-            console.warn('[TransformControls] No TransformControls instance when trying to apply snapping settings');
+-            return;
+-        }
+-
+-        // Safety check: ensure settings is defined
+-        if (!settings) {
+-            console.warn('[TransformControls] Settings is undefined:', settings);
+-            return;
+-        }
+-
+-        // Store settings for later use
+-        this.snappingSettings = settings;
+-
+-        // Update TransformControls snap properties
+-        // Grid snapping
+-        const translationSnap = settings.grid.enabled ? settings.grid.increment : null;
+-        this.transformControls.setTranslationSnap(translationSnap);
+-        console.log('[TransformControls] Grid snapping:', settings.grid.enabled ? `${settings.grid.increment} units` : 'disabled');
+-        console.log('[TransformControls] Verified translationSnap value:', this.transformControls.translationSnap);
+-
+-        // Rotation snapping (convert degrees to radians)
+-        const rotationSnap = settings.rotation.enabled
+-            ? settings.rotation.angleDegrees * Math.PI / 180
+-            : null;
+-        this.transformControls.setRotationSnap(rotationSnap);
+-        console.log('[TransformControls] Rotation snapping:', settings.rotation.enabled ? `${settings.rotation.angleDegrees}°` : 'disabled');
+-
+-        // Scale snapping
+-        const scaleSnap = settings.scale.enabled ? settings.scale.increment : null;
+-        this.transformControls.setScaleSnap(scaleSnap);
+-        console.log('[TransformControls] Scale snapping:', settings.scale.enabled ? `${settings.scale.increment}` : 'disabled');
+-
+-        // Geometric snapping — wired up 2026-04-22.
+-        // Vertex snapping is fully implemented in GeometricSnapHelper.
+-        // Edge and face snapping are scoped to a follow-up (see the helper's
+-        // commented-out Phase 5 blocks). Until those ship, edge/face toggles
+-        // in the SnappingSection UI are visible but no-op; vertex toggles
+-        // are the only ones that affect runtime behavior.
+-        if (settings.geometric.enabled && !this.geometricSnapHelper) {
+-            this.geometricSnapHelper = new GeometricSnapHelper(
+-                this.app.scene,
+-                this.app.sceneHelpers,
+-                settings.geometric,
+-            );
+-        } else if (!settings.geometric.enabled && this.geometricSnapHelper) {
+-            this.geometricSnapHelper.dispose();
+-            this.geometricSnapHelper = null;
+-        } else if (this.geometricSnapHelper) {
+-            this.geometricSnapHelper.updateSettings(settings.geometric);
+-        }
++  onTransformChange() {
++    if (this.state !== TRANSFORM_STATES.TRANSFORMING) {
++      return;
+     }
+ 
+-    enableTransformation(selected) {
+-        this.state = TRANSFORM_STATES.IDLE;
+-
+-        this.selectedObjects = selected;
+-
+-        if (this.selectedObjects.length > 1) {
+-            this.transformControls.setSpace("world");
+-        }
++    // Check for geometric snapping (vertex/edge/face)
++    if (
++      this.geometricSnapHelper &&
++      this.snappingSettings?.geometric?.enabled &&
++      this.mode === TRANSFORM_MODES.TRANSLATE
++    ) {
++      const snapResult = this.geometricSnapHelper.findSnapTarget(
++        this.transformHelper.position,
++        this.selectedObjects,
++      );
+ 
+-        this.createTransformHelper(this.selectedObjects);
+-        this.transformControls.attach(this.transformHelper);
+-        this.transformControls.visible = true;
++      if (snapResult) {
++        // Apply geometric snap
++        this.transformHelper.position.copy(snapResult.position);
+ 
+-        if (this.mode === TRANSFORM_MODES.ALL && this.selectedObjects.length > 1) {
+-            this.transformControls.showScale = false;
+-        } else {
+-            this.transformControls.showScale = true;
++        // If priority is geometric-only, skip grid snap
++        if (this.snappingSettings.priority === "geometric") {
++          this.updateTransforms();
++          return;
+         }
+-
+-        this.selectedObjects.forEach(obj => {
+-            if (this.app.game?.player === obj || !obj.userData?.isSelectable) {
+-                return; // Skip player and non-selectable objects
+-            }
+-            this.app.editor?.pauseObject(obj);
+-        });
++      }
+     }
+ 
+-    disableTransformation() {
+-        if (this.state === TRANSFORM_STATES.TRANSFORMING) {
+-            this.endTransformation();
+-        }
+-
+-        this.state = TRANSFORM_STATES.DISABLED;
+-
+-        this.selectedObjects.forEach(obj => {
+-            if (this.app.game?.player === obj) {
+-                return; // Skip player object
+-            }
+-            this.app.editor.retargetObjectBehaviors(obj.uuid, obj);
+-            this.app.editor?.resumeObject(obj);
+-        });
+-
+-        this.transformControls.visible = false;
+-        this.transformControls?.detach();
+-        this.disposeTransformHelper();
++    this.updateTransforms();
++  }
+ 
+-        this.selectedObjects = null;
+-        this.clearTransforms();
++  onObjectLocked(object) {
++    if (
++      this.state === TRANSFORM_STATES.DISABLED ||
++      !this.selectedObjects?.includes(object)
++    ) {
++      return;
+     }
+ 
+-    async beginTransformation() {
+-        this.app.isCameraLocked = true;
+-        this.app.editor.controls?.disable();
+-        this.state = TRANSFORM_STATES.TRANSFORMING;
+-        if (window.event?.altKey && this.selectedObjects?.length > 0) {
+-            for (const obj of this.selectedObjects) {
+-                await this.app.editor.cloneObjectByUuid(obj.uuid, obj, undefined, undefined, true);
+-            }
+-        }
++    // If the locked object is currently selected, disable transformation for now
++    // TODO: handle locked objects in a better way
++    this.disableTransformation();
++  }
+ 
+-        this.initializeTransforms(this.selectedObjects);
++  onUndo() {
++    if (this.state === TRANSFORM_STATES.DISABLED) {
++      return;
+     }
+ 
+-    endTransformation() {
+-        this.app.isCameraLocked = false;
+-        this.state = TRANSFORM_STATES.IDLE;
+-        this.app.editor.controls?.enable();
+-
+-        this.createTransformCommands();
+-        this.clearTransforms();
+-    }
+-
+-    initializeTransforms(objects) {
+-        objects.forEach(obj => {
+-            if (!obj) return;
+-
+-            const worldTransform = TransformUtils.getWorldTransform(obj);
++    this.updateGizmoPosition();
++  }
+ 
+-            this.activeTransforms.push({
+-                object: obj,
+-                initialTransform: TransformUtils.cloneTransform(worldTransform),
+-                // Keep local coordinates for command creation
+-                initialLocalPosition: obj.position.clone(),
+-                initialLocalQuaternion: obj.quaternion.clone(),
+-                initialLocalScale: obj.scale.clone(),
+-            });
+-        });
+-
+-        this.transformHelperInitialState = TransformUtils.getWorldTransform(this.transformHelper);
++  onRedo() {
++    if (this.state === TRANSFORM_STATES.DISABLED) {
++      return;
+     }
++    this.updateGizmoPosition();
++  }
+ 
+-    updateTransforms() {
+-        let mode = this.transformControls.getMode();
+-        if (mode === "all" && this.transformControls.subMode) {
+-            mode = this.transformControls.subMode;
+-        }
+-
+-        if (mode === "scale" && this.transformControls.space === "world") {
+-            const worldScaleFeatures = this.transformHelper.scale;
+-            const initialHelperScale = this.transformHelperInitialState.scale;
+-
+-            const wrx = worldScaleFeatures.x / initialHelperScale.x;
+-            const wry = worldScaleFeatures.y / initialHelperScale.y;
+-            const wrz = worldScaleFeatures.z / initialHelperScale.z;
+-
+-            if (!this._worldScaleTempV1) {
+-                this._worldScaleTempV1 = new THREE.Vector3();
+-                this._worldScaleTempV2 = new THREE.Vector3();
+-                this._worldScaleTempV3 = new THREE.Vector3();
+-            }
+-            const _v1 = this._worldScaleTempV1;
+-            const _v2 = this._worldScaleTempV2;
+-            const _v3 = this._worldScaleTempV3;
+-
+-            this.activeTransforms.forEach(transformData => {
+-                const object = transformData.object;
+-                const startQuat = transformData.initialTransform.quaternion;
+-                const startScale = transformData.initialLocalScale;
+-
+-                _v1.set(1, 0, 0).applyQuaternion(startQuat);
+-                _v2.set(0, 1, 0).applyQuaternion(startQuat);
+-                _v3.set(0, 0, 1).applyQuaternion(startQuat);
+-
+-                const sx = Math.sqrt(
+-                    Math.pow(_v1.x * wrx, 2) + Math.pow(_v1.y * wry, 2) + Math.pow(_v1.z * wrz, 2),
+-                );
+-
+-                const sy = Math.sqrt(
+-                    Math.pow(_v2.x * wrx, 2) + Math.pow(_v2.y * wry, 2) + Math.pow(_v2.z * wrz, 2),
+-                );
+-
+-                const sz = Math.sqrt(
+-                    Math.pow(_v3.x * wrx, 2) + Math.pow(_v3.y * wry, 2) + Math.pow(_v3.z * wrz, 2),
+-                );
+-
+-                object.scale.copy(startScale);
+-                object.scale.x *= sx;
+-                object.scale.y *= sy;
+-                object.scale.z *= sz;
+-
+-                object.updateMatrixWorld(true);
+-            });
+-            return;
+-        }
+-
+-        const currentHelperTransform = TransformUtils.getWorldTransform(this.transformHelper);
++  onChangeMode(mode) {
++    this.mode = mode;
+ 
+-        const deltaMatrix = TransformUtils.calculateDeltaMatrix(
+-            this.transformHelperInitialState,
+-            currentHelperTransform,
++    if (!this.transformControls) {
++      return;
++    }
++
++    if (this.mode === TRANSFORM_MODES.ALL && this.selectedObjects?.length > 1) {
++      this.transformControls.showScale = false;
++    } else {
++      this.transformControls.showScale = true;
++    }
++
++    if (this.isValidTransformMode(mode)) {
++      this.transformControls?.setMode(mode);
++    } else {
++      this.transformControls?.detach();
++    }
++  }
++
++  onSnapChanged(dist) {
++    this.transformControls?.setTranslationSnap(dist);
++  }
++
++  onAngleUnitsSettingsChanged(settings) {
++    if (!this.transformControls || !settings) {
++      return;
++    }
++
++    this.transformControls.setRotationDisplayUnit(
++      settings.currentUnit || "degrees",
++    );
++  }
++
++  /**
++   * Set world or local coordinate system
++   * @param {*} space Parameter
++   */
++  onSpaceChanged(space) {
++    if (!this.transformControls) {
++      return;
++    }
++
++    if (this.selectedObjects && this.selectedObjects.length > 1) {
++      space = "world";
++    }
++
++    this.transformControls.setSpace(space);
++  }
++
++  /**
++   * Handle snapping settings change
++   * @param {*} settings Snapping settings object
++   *
++   * Note: Event system passes data parameters only (sender is filtered out)
++   */
++  onSnappingSettingsChanged(settings) {
++    if (!this.transformControls) {
++      console.warn(
++        "[TransformControls] No TransformControls instance when trying to apply snapping settings",
++      );
++      return;
++    }
++
++    // Safety check: ensure settings is defined
++    if (!settings) {
++      console.warn("[TransformControls] Settings is undefined:", settings);
++      return;
++    }
++
++    // Store settings for later use
++    this.snappingSettings = settings;
++
++    // Update TransformControls snap properties
++    // Grid snapping
++    const translationSnap = settings.grid.enabled
++      ? settings.grid.increment
++      : null;
++    this.transformControls.setTranslationSnap(translationSnap);
++    console.log(
++      "[TransformControls] Grid snapping:",
++      settings.grid.enabled ? `${settings.grid.increment} units` : "disabled",
++    );
++    console.log(
++      "[TransformControls] Verified translationSnap value:",
++      this.transformControls.translationSnap,
++    );
++
++    // Rotation snapping (convert degrees to radians)
++    const rotationSnap = settings.rotation.enabled
++      ? (settings.rotation.angleDegrees * Math.PI) / 180
++      : null;
++    this.transformControls.setRotationSnap(rotationSnap);
++    console.log(
++      "[TransformControls] Rotation snapping:",
++      settings.rotation.enabled
++        ? `${settings.rotation.angleDegrees}°`
++        : "disabled",
++    );
++
++    // Scale snapping
++    const scaleSnap = settings.scale.enabled ? settings.scale.increment : null;
++    this.transformControls.setScaleSnap(scaleSnap);
++    console.log(
++      "[TransformControls] Scale snapping:",
++      settings.scale.enabled ? `${settings.scale.increment}` : "disabled",
++    );
++
++    // Geometric snapping — wired up 2026-04-22.
++    // Vertex snapping is fully implemented in GeometricSnapHelper.
++    // Edge and face snapping are scoped to a follow-up (see the helper's
++    // commented-out Phase 5 blocks). Until those ship, edge/face toggles
++    // in the SnappingSection UI are visible but no-op; vertex toggles
++    // are the only ones that affect runtime behavior.
++    if (settings.geometric.enabled && !this.geometricSnapHelper) {
++      this.geometricSnapHelper = new GeometricSnapHelper(
++        this.app.scene,
++        this.app.sceneHelpers,
++        settings.geometric,
++      );
++    } else if (!settings.geometric.enabled && this.geometricSnapHelper) {
++      this.geometricSnapHelper.dispose();
++      this.geometricSnapHelper = null;
++    } else if (this.geometricSnapHelper) {
++      this.geometricSnapHelper.updateSettings(settings.geometric);
++    }
++  }
++
++  enableTransformation(selected) {
++    this.state = TRANSFORM_STATES.IDLE;
++
++    this.selectedObjects = selected;
++
++    if (this.selectedObjects.length > 1) {
++      this.transformControls.setSpace("world");
++    }
++
++    this.createTransformHelper(this.selectedObjects);
++    this.transformControls.attach(this.transformHelper);
++    this.transformControls.visible = true;
++
++    if (this.mode === TRANSFORM_MODES.ALL && this.selectedObjects.length > 1) {
++      this.transformControls.showScale = false;
++    } else {
++      this.transformControls.showScale = true;
++    }
++
++    this.selectedObjects.forEach((obj) => {
++      if (this.app.game?.player === obj || !obj.userData?.isSelectable) {
++        return; // Skip player and non-selectable objects
++      }
++      this.app.editor?.pauseObject(obj);
++    });
++  }
++
++  disableTransformation() {
++    if (this.state === TRANSFORM_STATES.TRANSFORMING) {
++      this.endTransformation();
++    }
++
++    this.state = TRANSFORM_STATES.DISABLED;
++
++    this.selectedObjects.forEach((obj) => {
++      if (this.app.game?.player === obj) {
++        return; // Skip player object
++      }
++      this.app.editor.retargetObjectBehaviors(obj.uuid, obj);
++      this.app.editor?.resumeObject(obj);
++    });
++
++    this.transformControls.visible = false;
++    this.transformControls?.detach();
++    this.disposeTransformHelper();
++
++    this.selectedObjects = null;
++    this.clearTransforms();
++  }
++
++  async beginTransformation() {
++    this.app.isCameraLocked = true;
++    this.app.editor.controls?.disable();
++    this.state = TRANSFORM_STATES.TRANSFORMING;
++    if (window.event?.altKey && this.selectedObjects?.length > 0) {
++      for (const obj of this.selectedObjects) {
++        await this.app.editor.cloneObjectByUuid(
++          obj.uuid,
++          obj,
++          undefined,
++          undefined,
++          true,
+         );
+-
+-        const newWorldMatrix = new THREE.Matrix4();
+-
+-        this.activeTransforms.forEach(transformData => {
+-            const init = transformData.initialTransform;
+-            newWorldMatrix.compose(init.position, init.quaternion, init.scale);
+-            newWorldMatrix.premultiply(deltaMatrix);
+-
+-            TransformUtils.setWorldTransform(transformData.object, newWorldMatrix);
+-            transformData.object.updateMatrixWorld(true);
+-        });
+-    }
+-
+-    createTransformCommands() {
+-        if (!this.hasTransformsChanged()) {
+-            return;
+-        }
+-
+-        const commands = [];
+-        const editor = this.app.editor;
+-
+-        this.activeTransforms.forEach(transformData => {
+-            const objectCommands = this.createCommandsForObject(transformData);
+-            commands.push(...objectCommands);
+-        });
+-
+-        if (commands.length > 0) {
+-            const multiCommand = new MultiCmdsCommand(commands);
+-            void editor.execute(multiCommand);
+-        }
+-    }
+-
+-    createCommandsForObject(transformData) {
+-        const commands = [];
++      }
++    }
++
++    this.initializeTransforms(this.selectedObjects);
++  }
++
++  endTransformation() {
++    this.app.isCameraLocked = false;
++    this.state = TRANSFORM_STATES.IDLE;
++    this.app.editor.controls?.enable();
++
++    this.createTransformCommands();
++    this.clearTransforms();
++  }
++
++  initializeTransforms(objects) {
++    objects.forEach((obj) => {
++      if (!obj) return;
++
++      const worldTransform = TransformUtils.getWorldTransform(obj);
++
++      this.activeTransforms.push({
++        object: obj,
++        initialTransform: TransformUtils.cloneTransform(worldTransform),
++        // Keep local coordinates for command creation
++        initialLocalPosition: obj.position.clone(),
++        initialLocalQuaternion: obj.quaternion.clone(),
++        initialLocalScale: obj.scale.clone(),
++      });
++    });
++
++    this.transformHelperInitialState = TransformUtils.getWorldTransform(
++      this.transformHelper,
++    );
++  }
++
++  updateTransforms() {
++    let mode = this.transformControls.getMode();
++    if (mode === "all" && this.transformControls.subMode) {
++      mode = this.transformControls.subMode;
++    }
++
++    if (mode === "scale" && this.transformControls.space === "world") {
++      const worldScaleFeatures = this.transformHelper.scale;
++      const initialHelperScale = this.transformHelperInitialState.scale;
++
++      const wrx = worldScaleFeatures.x / initialHelperScale.x;
++      const wry = worldScaleFeatures.y / initialHelperScale.y;
++      const wrz = worldScaleFeatures.z / initialHelperScale.z;
++
++      if (!this._worldScaleTempV1) {
++        this._worldScaleTempV1 = new THREE.Vector3();
++        this._worldScaleTempV2 = new THREE.Vector3();
++        this._worldScaleTempV3 = new THREE.Vector3();
++      }
++      const _v1 = this._worldScaleTempV1;
++      const _v2 = this._worldScaleTempV2;
++      const _v3 = this._worldScaleTempV3;
++
++      this.activeTransforms.forEach((transformData) => {
+         const object = transformData.object;
++        const startQuat = transformData.initialTransform.quaternion;
++        const startScale = transformData.initialLocalScale;
+ 
+-        if (!object.position.equals(transformData.initialLocalPosition)) {
+-            commands.push(new SetPositionCommand(object, object.position.clone(), transformData.initialLocalPosition));
+-        }
+-
+-        if (!object.quaternion.equals(transformData.initialLocalQuaternion)) {
+-            const currentRotation = TransformUtils.quaternionToEuler(object.quaternion);
+-            const initialRotation = TransformUtils.quaternionToEuler(transformData.initialLocalQuaternion);
+-            commands.push(new SetRotationCommand(object, currentRotation, initialRotation));
+-        }
+-
+-        if (!object.scale.equals(transformData.initialLocalScale)) {
+-            commands.push(new SetScaleCommand(object, object.scale.clone(), transformData.initialLocalScale));
+-        }
+-
+-        return commands;
+-    }
+-
+-    hasTransformsChanged() {
+-        return this.activeTransforms.some(transformData => {
+-            const obj = transformData.object;
+-
+-            // Compare local transforms instead of world transforms for more reliable detection
+-            const positionChanged = !obj.position.equals(transformData.initialLocalPosition);
+-            const rotationChanged = !obj.quaternion.equals(transformData.initialLocalQuaternion);
+-            const scaleChanged = !obj.scale.equals(transformData.initialLocalScale);
+-
+-            return positionChanged || rotationChanged || scaleChanged;
+-        });
+-    }
++        _v1.set(1, 0, 0).applyQuaternion(startQuat);
++        _v2.set(0, 1, 0).applyQuaternion(startQuat);
++        _v3.set(0, 0, 1).applyQuaternion(startQuat);
+ 
+-    clearTransforms() {
+-        this.activeTransforms = [];
+-        this.transformHelperInitialState = null;
+-    }
+-
+-    cycleTransformMode() {
+-        const modes = [TRANSFORM_MODES.ALL, TRANSFORM_MODES.TRANSLATE, TRANSFORM_MODES.ROTATE, TRANSFORM_MODES.SCALE];
+-        const currentIndex = modes.indexOf(this.mode);
+-        const nextIndex = (currentIndex + 1) % modes.length;
+-        this.onChangeMode(modes[nextIndex]);
+-    }
+-
+-    createTransformHelper(objects) {
+-        let center;
+-        if (objects.length === 1) {
+-            center = new THREE.Vector3();
+-            objects[0].getWorldPosition(center);
+-        } else {
+-            center = BoundingBoxUtil.calculateObjectsCenter(objects);
+-        }
+-
+-        this.transformHelper = new THREE.Object3D();
+-        this.transformHelper.userData.controlledObjects = objects;
+-        this.transformHelper.position.copy(center);
+-
+-        if (objects.length === 1 && this.transformControls.space === "local") {
+-            const tempQuat = new THREE.Quaternion();
+-            objects[0].getWorldQuaternion(tempQuat);
+-            this.transformHelper.quaternion.copy(tempQuat);
+-            this.transformHelper.scale.copy(objects[0].scale);
+-        }
+-
+-        this.transformHelper.updateMatrixWorld = (force) => {
+-            if (this.state === TRANSFORM_STATES.IDLE && objects.length === 1) {
+-                const obj = objects[0];
+-                obj.getWorldPosition(this.transformHelper.position);
+-
+-                if (this.transformControls.space === "local") {
+-                    obj.getWorldQuaternion(this.transformHelper.quaternion);
+-                    this.transformHelper.scale.copy(obj.scale);
+-                }
+-            }
+-            THREE.Object3D.prototype.updateMatrixWorld.call(this.transformHelper, force);
+-        };
+-
+-        this.transformHelper.name = "TransformHelper";
+-        this.transformHelper.tag = "gizmo";
+-
+-        this.app.sceneHelpers.add(this.transformHelper);
+-
+-        return this.transformHelper;
+-    }
+-
+-    updateGizmoPosition() {
+-        const currentObjects = this.selectedObjects;
+-        this.disableTransformation();
+-        this.enableTransformation(currentObjects);
+-    }
+-
+-    disposeTransformHelper() {
+-        this.app.sceneHelpers.remove(this.transformHelper);
+-        this.transformHelper = null;
+-    }
++        const sx = Math.sqrt(
++          Math.pow(_v1.x * wrx, 2) +
++            Math.pow(_v1.y * wry, 2) +
++            Math.pow(_v1.z * wrz, 2),
++        );
+ 
+-    canEnableTransformation(objects) {
+-        // Don't show gizmo when the scene root is selected
+-        if (objects?.length === 1 && objects[0] === this.app.editor.scene) {
+-            return false;
+-        }
+-        if (this.app?.editor?.cadMode) {
+-            return false;
+-        }
+-        return (
+-            objects &&
+-            objects.length > 0 &&
+-            !this.app.disableClickEvents &&
+-            this.isValidTransformMode(this.mode) &&
+-            this.transformControls
++        const sy = Math.sqrt(
++          Math.pow(_v2.x * wrx, 2) +
++            Math.pow(_v2.y * wry, 2) +
++            Math.pow(_v2.z * wrz, 2),
+         );
+-    }
+ 
+-    removeLockedObjects(objects) {
+-        return objects?.filter(obj => {
+-            // Skip locked objects
+-            if (this.app.editor.sceneLockedItems?.includes(obj?.uuid)) {
+-                return false;
+-            }
+-            return true;
+-        });
+-    }
++        const sz = Math.sqrt(
++          Math.pow(_v3.x * wrx, 2) +
++            Math.pow(_v3.y * wry, 2) +
++            Math.pow(_v3.z * wrz, 2),
++        );
+ 
+-    isValidTransformMode(mode) {
+-        return Object.values(TRANSFORM_MODES).includes(mode);
+-    }
++        object.scale.copy(startScale);
++        object.scale.x *= sx;
++        object.scale.y *= sy;
++        object.scale.z *= sz;
++
++        object.updateMatrixWorld(true);
++      });
++      return;
++    }
++
++    const currentHelperTransform = TransformUtils.getWorldTransform(
++      this.transformHelper,
++    );
++
++    const deltaMatrix = TransformUtils.calculateDeltaMatrix(
++      this.transformHelperInitialState,
++      currentHelperTransform,
++    );
++
++    const newWorldMatrix = new THREE.Matrix4();
++
++    this.activeTransforms.forEach((transformData) => {
++      const init = transformData.initialTransform;
++      newWorldMatrix.compose(init.position, init.quaternion, init.scale);
++      newWorldMatrix.premultiply(deltaMatrix);
++
++      TransformUtils.setWorldTransform(transformData.object, newWorldMatrix);
++      transformData.object.updateMatrixWorld(true);
++    });
++  }
++
++  createTransformCommands() {
++    if (!this.hasTransformsChanged()) {
++      return;
++    }
++
++    const commands = [];
++    const editor = this.app.editor;
++
++    this.activeTransforms.forEach((transformData) => {
++      const objectCommands = this.createCommandsForObject(transformData);
++      commands.push(...objectCommands);
++    });
++
++    if (commands.length > 0) {
++      const multiCommand = new MultiCmdsCommand(commands);
++      void editor.execute(multiCommand);
++    }
++  }
++
++  createCommandsForObject(transformData) {
++    const commands = [];
++    const object = transformData.object;
++
++    if (!object.position.equals(transformData.initialLocalPosition)) {
++      commands.push(
++        new SetPositionCommand(
++          object,
++          object.position.clone(),
++          transformData.initialLocalPosition,
++        ),
++      );
++    }
++
++    if (!object.quaternion.equals(transformData.initialLocalQuaternion)) {
++      const currentRotation = TransformUtils.quaternionToEuler(
++        object.quaternion,
++      );
++      const initialRotation = TransformUtils.quaternionToEuler(
++        transformData.initialLocalQuaternion,
++      );
++      commands.push(
++        new SetRotationCommand(object, currentRotation, initialRotation),
++      );
++    }
++
++    if (!object.scale.equals(transformData.initialLocalScale)) {
++      commands.push(
++        new SetScaleCommand(
++          object,
++          object.scale.clone(),
++          transformData.initialLocalScale,
++        ),
++      );
++    }
++
++    return commands;
++  }
++
++  hasTransformsChanged() {
++    return this.activeTransforms.some((transformData) => {
++      const obj = transformData.object;
++
++      // Compare local transforms instead of world transforms for more reliable detection
++      const positionChanged = !obj.position.equals(
++        transformData.initialLocalPosition,
++      );
++      const rotationChanged = !obj.quaternion.equals(
++        transformData.initialLocalQuaternion,
++      );
++      const scaleChanged = !obj.scale.equals(transformData.initialLocalScale);
++
++      return positionChanged || rotationChanged || scaleChanged;
++    });
++  }
++
++  clearTransforms() {
++    this.activeTransforms = [];
++    this.transformHelperInitialState = null;
++  }
++
++  cycleTransformMode() {
++    const modes = [
++      TRANSFORM_MODES.ALL,
++      TRANSFORM_MODES.TRANSLATE,
++      TRANSFORM_MODES.ROTATE,
++      TRANSFORM_MODES.SCALE,
++    ];
++    const currentIndex = modes.indexOf(this.mode);
++    const nextIndex = (currentIndex + 1) % modes.length;
++    this.onChangeMode(modes[nextIndex]);
++  }
++
++  createTransformHelper(objects) {
++    let center;
++    if (objects.length === 1) {
++      center = new THREE.Vector3();
++      objects[0].getWorldPosition(center);
++    } else {
++      center = BoundingBoxUtil.calculateObjectsCenter(objects);
++    }
++
++    this.transformHelper = new THREE.Object3D();
++    this.transformHelper.userData.controlledObjects = objects;
++    this.transformHelper.position.copy(center);
++
++    if (objects.length === 1 && this.transformControls.space === "local") {
++      const tempQuat = new THREE.Quaternion();
++      objects[0].getWorldQuaternion(tempQuat);
++      this.transformHelper.quaternion.copy(tempQuat);
++      this.transformHelper.scale.copy(objects[0].scale);
++    }
++
++    this.transformHelper.updateMatrixWorld = (force) => {
++      if (this.state === TRANSFORM_STATES.IDLE && objects.length === 1) {
++        const obj = objects[0];
++        obj.getWorldPosition(this.transformHelper.position);
++
++        if (this.transformControls.space === "local") {
++          obj.getWorldQuaternion(this.transformHelper.quaternion);
++          this.transformHelper.scale.copy(obj.scale);
++        }
++      }
++      THREE.Object3D.prototype.updateMatrixWorld.call(
++        this.transformHelper,
++        force,
++      );
++    };
++
++    this.transformHelper.name = "TransformHelper";
++    this.transformHelper.tag = "gizmo";
++
++    this.app.sceneHelpers.add(this.transformHelper);
++
++    return this.transformHelper;
++  }
++
++  updateGizmoPosition() {
++    const currentObjects = this.selectedObjects;
++    this.disableTransformation();
++    this.enableTransformation(currentObjects);
++  }
++
++  disposeTransformHelper() {
++    this.app.sceneHelpers.remove(this.transformHelper);
++    this.transformHelper = null;
++  }
++
++  canEnableTransformation(objects) {
++    // Don't show gizmo when the scene root is selected
++    if (objects?.length === 1 && objects[0] === this.app.editor.scene) {
++      return false;
++    }
++    if (this.app?.editor?.cadMode) {
++      return false;
++    }
++    return (
++      objects &&
++      objects.length > 0 &&
++      !this.app.disableClickEvents &&
++      this.isValidTransformMode(this.mode) &&
++      this.transformControls
++    );
++  }
++
++  removeLockedObjects(objects) {
++    return objects?.filter((obj) => {
++      // Skip locked objects
++      if (this.app.editor.sceneLockedItems?.includes(obj?.uuid)) {
++        return false;
++      }
++      if (obj?.userData?.isTransformLocked || obj?.userData?.isPlanCadManaged) {
++        return false;
++      }
++      return true;
++    });
++  }
++
++  isValidTransformMode(mode) {
++    return Object.values(TRANSFORM_MODES).includes(mode);
++  }
+ }
+ 
+ export default TransformControlsEvent;
+diff --git a/client/packages/editor-oss/src/global.ts b/client/packages/editor-oss/src/global.ts
+index 1b5f5c8..541deb1 100644
+--- a/client/packages/editor-oss/src/global.ts
++++ b/client/packages/editor-oss/src/global.ts
+@@ -1,6 +1,6 @@
+ import * as THREE from "three";
+ 
+-import EngineRuntime from './EngineRuntime';
++import type EngineRuntime from "./EngineRuntime";
+ 
+ interface GlobalType {
+     app: EngineRuntime | null;
+diff --git a/client/packages/editor-oss/src/physics/PhysicsUtil.test.ts b/client/packages/editor-oss/src/physics/PhysicsUtil.test.ts
+index 0decde2..5c72585 100644
+--- a/client/packages/editor-oss/src/physics/PhysicsUtil.test.ts
++++ b/client/packages/editor-oss/src/physics/PhysicsUtil.test.ts
+@@ -5,6 +5,43 @@ import { BodyShapeType, IPhysics } from './common/types';
+ import { PhysicsUtil } from './PhysicsUtil';
+ 
+ describe('PhysicsUtil', () => {
++    describe('copyPhysicsConfig', () => {
++        it('copies physics config without sharing nested mutable state', () => {
++            const from = new Object3D();
++            const to = new Object3D();
++            from.userData.physics = {
++                enabled: true,
++                shape: 'btBoxShape',
++                anchorOffset: {x: 1, y: 2, z: 3},
++                scale: {x: 1, y: 1, z: 1},
++                rotationLock: {x: false, y: true, z: false},
++            };
++
++            PhysicsUtil.copyPhysicsConfig(from, to);
++
++            expect(to.userData.physics).toEqual(from.userData.physics);
++            expect(to.userData.physics).not.toBe(from.userData.physics);
++            expect(to.userData.physics.anchorOffset).not.toBe(from.userData.physics.anchorOffset);
++            expect(to.userData.physics.rotationLock).not.toBe(from.userData.physics.rotationLock);
++
++            to.userData.physics.anchorOffset.x = 99;
++            to.userData.physics.rotationLock.y = false;
++
++            expect(from.userData.physics.anchorOffset.x).toBe(1);
++            expect(from.userData.physics.rotationLock.y).toBe(true);
++        });
++
++        it('clears target physics when source has no physics config', () => {
++            const from = new Object3D();
++            const to = new Object3D();
++            to.userData.physics = {enabled: true};
++
++            PhysicsUtil.copyPhysicsConfig(from, to);
++
++            expect(to.userData.physics).toBeUndefined();
++        });
++    });
++
+     describe('calculatePhysicsPositionFromObject', () => {
+         const position = new Vector3();
+         const quaternion = new Quaternion();
+diff --git a/client/packages/editor-oss/src/physics/PhysicsUtil.ts b/client/packages/editor-oss/src/physics/PhysicsUtil.ts
+index 3771b03..e9e010b 100644
+--- a/client/packages/editor-oss/src/physics/PhysicsUtil.ts
++++ b/client/packages/editor-oss/src/physics/PhysicsUtil.ts
+@@ -160,9 +160,20 @@ export class PhysicsUtil {
+         return defaultShape;
+     }
+ 
++    public static clonePhysicsConfig(config: PhysicsConfig | undefined): PhysicsConfig | undefined {
++        if (!config) {
++            return undefined;
++        }
++
++        if (typeof structuredClone === "function") {
++            return structuredClone(config);
++        }
++
++        return JSON.parse(JSON.stringify(config)) as PhysicsConfig;
++    }
++
+     public static copyPhysicsConfig(from: Object3D, to: Object3D) {
+-        // TODO: should we do an actual copy here instead of an assignment?
+-        to.userData.physics = PhysicsUtil.getPhysicsConfig(from);
++        to.userData.physics = PhysicsUtil.clonePhysicsConfig(PhysicsUtil.getPhysicsConfig(from));
+     }
+ 
+     public static updateShapeOffsetAndScale(object: Object3D) {
+diff --git a/client/packages/editor-oss/src/scheduler/CommandBuffer.ts b/client/packages/editor-oss/src/scheduler/CommandBuffer.ts
+index c4d9ce5..09b1028 100644
+--- a/client/packages/editor-oss/src/scheduler/CommandBuffer.ts
++++ b/client/packages/editor-oss/src/scheduler/CommandBuffer.ts
+@@ -9,14 +9,28 @@ export type DeferredCommand =
+     | { type: "remove"; target: string; system: string }
+     | { type: "custom"; callback: () => void };
+ 
++export interface DeferredCommandHandler {
++    add?(target: string, data?: unknown): void;
++    remove?(target: string): void;
++}
++
+ export class CommandBuffer {
+     private commands: DeferredCommand[] = [];
++    private handlers = new Map<string, DeferredCommandHandler>();
+     private hasWarnedUnwiredCommands = false;
+ 
+     push(cmd: DeferredCommand): void {
+         this.commands.push(cmd);
+     }
+ 
++    registerHandler(system: string, handler: DeferredCommandHandler): void {
++        this.handlers.set(system, handler);
++    }
++
++    unregisterHandler(system: string): void {
++        this.handlers.delete(system);
++    }
++
+     /**
+      * Execute and clear all queued commands.
+      * Called by FrameOrchestrator at stage boundaries.
+@@ -38,9 +52,23 @@ export class CommandBuffer {
+                 continue;
+             }
+ 
+-            // TODO: wire add/remove commands to concrete system adapters.
+-            // Warn once to avoid silent data loss if callers start relying on this path.
+-            droppedUnwiredCommands++;
++            const handler = this.handlers.get(cmd.system);
++            const commandHandler = cmd.type === "add" ? handler?.add : handler?.remove;
++
++            if (!commandHandler) {
++                droppedUnwiredCommands++;
++                continue;
++            }
++
++            try {
++                if (cmd.type === "add") {
++                    commandHandler.call(handler, cmd.target, cmd.data);
++                } else {
++                    commandHandler.call(handler, cmd.target);
++                }
++            } catch (e) {
++                console.error(`[CommandBuffer] Error executing ${cmd.type} command for system "${cmd.system}":`, e);
++            }
+         }
+ 
+         if (droppedUnwiredCommands > 0 && !this.hasWarnedUnwiredCommands) {
+@@ -57,6 +85,7 @@ export class CommandBuffer {
+ 
+     dispose(): void {
+         this.commands = [];
++        this.handlers.clear();
+         this.hasWarnedUnwiredCommands = false;
+     }
+ }
+diff --git a/client/packages/editor-oss/src/scheduler/__tests__/CommandBuffer.test.ts b/client/packages/editor-oss/src/scheduler/__tests__/CommandBuffer.test.ts
+index bd52b23..d89ab9f 100644
+--- a/client/packages/editor-oss/src/scheduler/__tests__/CommandBuffer.test.ts
++++ b/client/packages/editor-oss/src/scheduler/__tests__/CommandBuffer.test.ts
+@@ -107,22 +107,62 @@ describe("CommandBuffer", () => {
+             consoleSpy.mockRestore();
+         });
+ 
+-        it("should not execute add/remove commands directly", () => {
++        it("should execute add/remove commands through registered handlers", () => {
++            const handler = {
++                add: vi.fn(),
++                remove: vi.fn(),
++            };
++            buffer.registerHandler("behavior", handler);
++
++            buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
++            buffer.push({ type: "remove", target: "obj2", system: "behavior" });
++
++            buffer.flush();
++
++            expect(buffer.pending).toBe(0);
++            expect(handler.add).toHaveBeenCalledWith("obj1", {});
++            expect(handler.remove).toHaveBeenCalledWith("obj2");
++        });
++
++        it("should warn for add/remove commands without registered handlers", () => {
+             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+-            // Add and remove commands are stored but not directly executed
+-            // They are meant for listener patterns in adapters
++
+             buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
+             buffer.push({ type: "remove", target: "obj2", system: "lambda" });
+ 
+-            // Should not throw - commands are processed but not executed
+             buffer.flush();
+-            expect(buffer.pending).toBe(0);
++
+             expect(warnSpy).toHaveBeenCalledWith(
+                 expect.stringContaining("Dropped 2 add/remove command(s)"),
+             );
+             warnSpy.mockRestore();
+         });
+ 
++        it("should handle errors in registered handlers gracefully", () => {
++            const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
++            const successHandler = vi.fn();
++            buffer.registerHandler("behavior", {
++                add: () => {
++                    throw new Error("add failed");
++                },
++            });
++            buffer.registerHandler("lambda", {
++                remove: successHandler,
++            });
++
++            buffer.push({ type: "add", target: "obj1", system: "behavior", data: {} });
++            buffer.push({ type: "remove", target: "obj2", system: "lambda" });
++
++            buffer.flush();
++
++            expect(consoleSpy).toHaveBeenCalledWith(
++                '[CommandBuffer] Error executing add command for system "behavior":',
++                expect.any(Error),
++            );
++            expect(successHandler).toHaveBeenCalledWith("obj2");
++            consoleSpy.mockRestore();
++        });
++
+         it("should warn only once for unwired add/remove commands", () => {
+             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+ 
+@@ -191,5 +231,21 @@ describe("CommandBuffer", () => {
+ 
+             expect(callback).not.toHaveBeenCalled();
+         });
++
++        it("should clear registered handlers", () => {
++            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
++            const handler = { add: vi.fn() };
++            buffer.registerHandler("behavior", handler);
++
++            buffer.dispose();
++            buffer.push({ type: "add", target: "a", system: "behavior" });
++            buffer.flush();
++
++            expect(handler.add).not.toHaveBeenCalled();
++            expect(warnSpy).toHaveBeenCalledWith(
++                expect.stringContaining("Dropped 1 add/remove command(s)"),
++            );
++            warnSpy.mockRestore();
++        });
+     });
+ });
+diff --git a/client/packages/editor-oss/src/serialization/core/PrefabSerializer.test.ts b/client/packages/editor-oss/src/serialization/core/PrefabSerializer.test.ts
+index f256bc1..32a1d60 100644
+--- a/client/packages/editor-oss/src/serialization/core/PrefabSerializer.test.ts
++++ b/client/packages/editor-oss/src/serialization/core/PrefabSerializer.test.ts
+@@ -247,6 +247,77 @@ describe('PrefabSerializer', () => {
+             expect(obj?.userData.behaviors.length).toBe(1);
+             expect(obj?.userData.behaviors[0].attributesData).toEqual({ someAssetRef: { assetId: 'a2', revisionId: 'r2' } });
+         });
++
++        it('should skip behavior overrides with mismatched behavior ids', async () => {
++            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
++            const prefabBehavior: BehaviorData = {
++                id: 'enemy',
++                uuid: 'uuid-b1',
++                prefabBehaviorUuid: 'pb1',
++                enabled: true,
++                priority: 0,
++                attributesData: { value: 1 },
++            };
++
++            const prefabInstance = new Object3D();
++            prefabInstance.userData.behaviors = [prefabBehavior];
++            (loadPrefab as any).mockResolvedValue(prefabInstance);
++
++            const json = {
++                metadata: {
++                    generator: 'PrefabSerializer',
++                },
++                prefabId: 'prefab-123',
++                userData: {
++                    behaviors: [{
++                        id: 'shop',
++                        uuid: 'uuid-b1',
++                        prefabBehaviorUuid: 'pb1',
++                        enabled: true,
++                        priority: 0,
++                        attributesData: { value: 99 },
++                    }],
++                },
++            };
++
++            const obj = await serializer.fromJSON(json, null, { assetResolutionContext: context });
++
++            expect(obj?.userData.behaviors[0].attributesData).toEqual({ value: 1 });
++            expect(warn).toHaveBeenCalledWith(
++                expect.stringContaining('because behavior id changed'),
++            );
++            warn.mockRestore();
++        });
++
++        it('should skip behavior overrides with invalid attributesData', async () => {
++            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
++            const prefabBehavior: BehaviorData = {
++                id: 'b1',
++                uuid: 'uuid-b1',
++                prefabBehaviorUuid: 'pb1',
++                enabled: true,
++                priority: 0,
++                attributesData: { value: 1 },
++            };
++
++            const prefabInstance = new Object3D();
++            prefabInstance.userData.behaviors = [prefabBehavior];
++
++            (serializer as any).applyBehaviorOverrides(prefabInstance, [{
++                id: 'b1',
++                uuid: 'uuid-b1',
++                prefabBehaviorUuid: 'pb1',
++                enabled: true,
++                priority: 0,
++                attributesData: [],
++            }], context);
++
++            expect(prefabInstance.userData.behaviors[0].attributesData).toEqual({ value: 1 });
++            expect(warn).toHaveBeenCalledWith(
++                expect.stringContaining('with invalid attributesData'),
++            );
++            warn.mockRestore();
++        });
+     });
+ 
+     describe('physics handling during deserialization', () => {
+diff --git a/client/packages/editor-oss/src/serialization/core/PrefabSerializer.ts b/client/packages/editor-oss/src/serialization/core/PrefabSerializer.ts
+index 38ae836..e0f1129 100644
+--- a/client/packages/editor-oss/src/serialization/core/PrefabSerializer.ts
++++ b/client/packages/editor-oss/src/serialization/core/PrefabSerializer.ts
+@@ -14,6 +14,11 @@ interface PrefabUuidNode {
+     children?: PrefabUuidNode[];
+ }
+ 
++const isPlainRecord = (value: unknown): value is Record<string, any> =>
++    typeof value === "object" &&
++    value !== null &&
++    !Array.isArray(value);
++
+ export class PrefabSerializer {
+     toJSON(obj: Object3D): SerializedPrefab {
+         const prefabId = getPrefabId(obj);
+@@ -90,30 +95,7 @@ export class PrefabSerializer {
+             userData: undefined, // Don't override the prefab's userData
+         });
+ 
+-        // Individual prefab instances may:
+-        // - override behavior attributes of a prefab
+-        //
+-        // They may not add or remove existing behaviors or modify anything
+-        // else.
+-        //
+-        // TODO: this behavior override is a bit fragile. We should validate the
+-        // attributes, for example, rather than blindly applying them.
+-        if (prefab.userData?.behaviors && userData?.behaviors) {
+-            const jsonBehaviors = userData.behaviors;
+-            const prefabBehaviors = (prefab.userData?.behaviors || []) as BehaviorData[];
+-            for (const jsonBehavior of jsonBehaviors) {
+-                const prefabBehavior = prefabBehaviors.find(
+-                    b => b.prefabBehaviorUuid === jsonBehavior.prefabBehaviorUuid,
+-                );
+-                if (prefabBehavior) {
+-                    prefabBehavior.attributesData = jsonBehavior.attributesData;
+-                }
+-            }
+-
+-            // Re-resolve the behavior asset references since we have overridden
+-            // their values.
+-            resolveBehaviorAttributeAssetRefs(prefab, context);
+-        }
++        this.applyBehaviorOverrides(prefab, userData?.behaviors, context);
+ 
+         // Lambda component overrides: individual prefab instances may override
+         // componentData of lambda components on the prefab.
+@@ -171,6 +153,58 @@ export class PrefabSerializer {
+         return prefab;
+     }
+ 
++    private applyBehaviorOverrides(
++        prefab: Object3D,
++        jsonBehaviors: unknown,
++        context: ReadonlyAssetResolutionContext,
++    ): void {
++        if (!Array.isArray(jsonBehaviors) || !Array.isArray(prefab.userData?.behaviors)) {
++            return;
++        }
++
++        const prefabBehaviors = prefab.userData.behaviors as BehaviorData[];
++        let didOverride = false;
++
++        for (const jsonBehavior of jsonBehaviors as BehaviorData[]) {
++            const prefabBehaviorUuid = jsonBehavior?.prefabBehaviorUuid;
++            if (!prefabBehaviorUuid) {
++                console.warn("Skipping prefab behavior override without prefabBehaviorUuid");
++                continue;
++            }
++
++            const prefabBehavior = prefabBehaviors.find(
++                b => b.prefabBehaviorUuid === prefabBehaviorUuid,
++            );
++            if (!prefabBehavior) {
++                console.warn(`Skipping prefab behavior override for unknown behavior "${prefabBehaviorUuid}"`);
++                continue;
++            }
++
++            if (jsonBehavior.id && prefabBehavior.id && jsonBehavior.id !== prefabBehavior.id) {
++                console.warn(
++                    `Skipping prefab behavior override "${prefabBehaviorUuid}" because behavior id changed from "${prefabBehavior.id}" to "${jsonBehavior.id}"`,
++                );
++                continue;
++            }
++
++            if (jsonBehavior.attributesData === undefined) {
++                continue;
++            }
++
++            if (!isPlainRecord(jsonBehavior.attributesData)) {
++                console.warn(`Skipping prefab behavior override "${prefabBehaviorUuid}" with invalid attributesData`);
++                continue;
++            }
++
++            prefabBehavior.attributesData = {...jsonBehavior.attributesData};
++            didOverride = true;
++        }
++
++        if (didOverride) {
++            resolveBehaviorAttributeAssetRefs(prefab, context);
++        }
++    }
++
+     /**
+      * Builds a map from current UUIDs to instance-specific UUIDs.
+      * This mirrors the structure traversal of revertUUID.
+
+diff --git a/scripts/playwright/_tinyskies-diag.mjs b/scripts/playwright/_tinyskies-diag.mjs
+new file mode 100644
+index 0000000..00bba72
+--- /dev/null
++++ b/scripts/playwright/_tinyskies-diag.mjs
+@@ -0,0 +1,306 @@
++#!/usr/bin/env node
++// Parametrized import diagnostic. Isolates WHERE the import cost is.
++//   KEEP=""              -> strip ALL `behavior attach` lines (imports-only)
++//   KEEP="globeVisual,…" -> keep only attaches whose behaviorId ends with one of these
++//   KEEP="*"             -> full script unchanged
++//   MP=0                 -> force `game settings ... isMultiplayer=false`
++// Reports wall-clock for each phase and whether the tab crashed.
++import {chromium} from "playwright";
++import {readFileSync, readdirSync, statSync, writeFileSync} from "node:fs";
++import {join} from "node:path";
++
++const ROOT = "/Users/n/erth/Games-StemScript/tinyskies";
++const baseUrl = "http://localhost:5173";
++const BUDGET_MS = parseInt(process.env.BUDGET_MIN ?? "8", 10) * 60 * 1000;
++const KEEP = (process.env.KEEP ?? "").trim();
++const MP = process.env.MP ?? "1";
++const LABEL = process.env.LABEL || (KEEP === "*" ? "full" : KEEP === "" ? "imports-only" : "subset");
++const LOG = `/tmp/tinyskies-diag-${LABEL}.log`;
++
++function walk(dir, prefix = "") {
++    const out = [];
++    for (const e of readdirSync(dir)) {
++        if (e === ".DS_Store" || e === ".git") continue;
++        const abs = join(dir, e), rel = prefix ? `${prefix}/${e}` : e;
++        if (statSync(abs).isDirectory()) out.push(...walk(abs, rel));
++        else out.push({name: rel, abs});
++    }
++    return out;
++}
++const mimeFor = n => n.endsWith(".glb") ? "model/gltf-binary" : n.endsWith(".png") ? "image/png"
++    : n.endsWith(".json") ? "application/json" : n.endsWith(".js") ? "text/javascript"
++    : n.endsWith(".yaml") || n.endsWith(".yml") ? "text/yaml" : "text/plain";
++
++const files = walk(ROOT);
++const scriptFile = files.find(f => f.name.endsWith(".stemscript"));
++const folderFiles = files.filter(f => f !== scriptFile)
++    .map(f => ({name: f.name, mime: mimeFor(f.name), data: readFileSync(f.abs).toString("base64")}));
++
++let scriptContent = readFileSync(scriptFile.abs, "utf8");
++if (KEEP !== "*") {
++    const keepSet = KEEP === "" ? [] : KEEP.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
++    scriptContent = scriptContent.split("\n").filter(line => {
++        const a = line.match(/^\s*behavior\s+attach\b.*behaviorId="?([^"\s]+)"?/);
++        if (a) { const id = a[1].toLowerCase(); return keepSet.some(k => id.endsWith("." + k) || id.endsWith(k) || id === k); }
++        // When a specific KEEP set is given, also skip importing behaviors not in it.
++        const imp = line.match(/^\s*import\s+behavior\b.*filepath="?([^"\s]+)"?/);
++        if (imp && keepSet.length) { const fp = imp[1].toLowerCase(); return keepSet.some(k => fp.includes(k)); }
++        return true;
++    }).join("\n");
++}
++if (MP === "0") scriptContent = scriptContent.replace(/isMultiplayer=true/g, "isMultiplayer=false");
++
++// IMPORT_LIMIT=N keeps only the first N `import behavior` lines (fast probe).
++const IMPORT_LIMIT = parseInt(process.env.IMPORT_LIMIT ?? "0", 10);
++if (IMPORT_LIMIT > 0) {
++    let seen = 0;
++    scriptContent = scriptContent.split("\n").filter(line => {
++        if (/^\s*import\s+behavior\b/.test(line)) { seen++; return seen <= IMPORT_LIMIT; }
++        return true;
++    }).join("\n");
++}
++
++const t0 = Date.now();
++const lines = [];
++const rel = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(7);
++const rec = (tag, text) => lines.push(`[${rel()}s] ${tag} ${text}`);
++
++const browser = await chromium.launch({
++    headless: process.env.HEADED !== "1",
++    args: process.env.HEADED === "1"
++        ? ["--ignore-gpu-blocklist", "--enable-gpu", "--enable-unsafe-webgpu"]
++        : [],
++});
++const ctx = await browser.newContext({bypassCSP: true});
++const page = await ctx.newPage();
++let crashed = false;
++page.on("crash", () => { crashed = true; rec("CRASH", "page crashed"); });
++const errCounts = {};
++const NOISE = /URLModifier|TSL: Vertex attribute|deprecat|ResizeObserver|\[Violation\]|WebGLProgram: Shader Error/i;
++const KEEPMSG = /import|behavior|hang|skip|revis|dedup|fail|createAsset|getAsset|Behavior|ScriptImport|__stemRunScript/i;
++page.on("console", m => {
++    const tx = m.text();
++    if (m.type() === "error") { const k = tx.slice(0, 80); errCounts[k] = (errCounts[k] || 0) + 1; }
++    if (!NOISE.test(tx) && (m.type() === "error" || KEEPMSG.test(tx))) rec(m.type().toUpperCase().slice(0, 4), tx.slice(0, 220));
++});
++page.on("pageerror", e => rec("PAGEERR", (e.message || String(e)).slice(0, 200)));
++
++const dismiss = async () => {
++    for (const t of ["Browser storage", "Continue", "Got it", "Skip", "Start from scratch"]) {
++        const b = page.locator(`button:has-text("${t}")`).first();
++        if (await b.isVisible().catch(() => false)) await b.click().catch(() => {});
++    }
++};
++
++try {
++    const attachCount = (scriptContent.match(/^\s*behavior\s+attach\b/gm) || []).length;
++    rec("CFG", `LABEL=${LABEL} KEEP="${KEEP}" MP=${MP} attaches=${attachCount} files=${folderFiles.length}`);
++    await page.goto(baseUrl + "/dashboard?mode=playground", {waitUntil: "domcontentloaded", timeout: 30000});
++    await page.waitForLoadState("networkidle", {timeout: 15000}).catch(() => {});
++    await dismiss();
++    await page.goto(baseUrl + "/create/project", {waitUntil: "domcontentloaded", timeout: 30000});
++    await page.waitForLoadState("networkidle", {timeout: 15000}).catch(() => {});
++    await dismiss();
++    await page.waitForTimeout(6000);
++    await dismiss();
++    await page.locator('[data-testid="actionbar-copilot"]').first().click({timeout: 5000, force: true}).catch(() => {});
++    await page.waitForTimeout(2000);
++    const hook = await page.evaluate(() => typeof window.__stemRunScript === "function");
++    rec("STEP", `hook=${hook}`);
++    if (!hook) throw new Error("no hook");
++
++    rec("STEP", "import START");
++    await page.evaluate(({content, fileList}) => {
++        window.__d = null;
++        window.__stemRunScript(content, fileList).then(
++            s => { window.__d = {ok: true, summary: s}; },
++            e => { window.__d = {ok: false, err: String(e && e.message ? e.message : e)}; });
++    }, {content: scriptContent, fileList: folderFiles}).catch(() => {});
++
++    let res = null;
++    const deadline = Date.now() + BUDGET_MS;
++    while (Date.now() < deadline && !crashed) {
++        res = await page.evaluate(() => window.__d).catch(() => null);
++        if (res) break;
++        await page.waitForTimeout(2000);
++    }
++    rec("STEP", `import DONE resolved=${!!res} crashed=${crashed} ${JSON.stringify(res)}`);
++
++    const timings = await page.evaluate(() => window.__stemImportTimings || []).catch(() => []);
++    // group by type with totals; list slowest individual imports
++    const byType = {};
++    for (const t of timings) { (byType[t.type] ||= {n: 0, ms: 0, fail: 0}); byType[t.type].n++; byType[t.type].ms += t.ms; if (!t.success) byType[t.type].fail++; }
++    rec("TIMINGS", `byType=${JSON.stringify(byType)}`);
++    const slow = [...timings].sort((a, b) => b.ms - a.ms).slice(0, 10);
++    for (const t of slow) rec("SLOW", `${t.ms}ms ${t.type} "${t.label}" ok=${t.success} ${t.success ? "" : t.message}`);
++    const fails = timings.filter(t => !t.success);
++    for (const t of fails) rec("IMPFAIL", `${t.type} "${t.label}" :: ${t.message}`);
++
++    const cmds = await page.evaluate(() => window.__stemCmdTimings || []).catch(() => []);
++    const slowCmds = [...cmds].sort((a, b) => b.ms - a.ms).slice(0, 15);
++    for (const c of slowCmds) rec("CMD", `${c.ms}ms ${c.cmd} ok=${c.ok} :: ${c.raw}`);
++
++    const bhv = await page.evaluate(() => window.__stemBhvTimings || {}).catch(() => ({}));
++    rec("BHVSPLIT", JSON.stringify(Object.fromEntries(Object.entries(bhv).map(([k, v]) => [k, Math.round(v)]))));
++
++    if (!crashed) {
++        const counts = await page.evaluate(() => {
++            const ed = (window.app || globalThis.app)?.editor;
++            let objs = 0; const names = [];
++            try { (ed?.scene)?.traverse?.(o => { objs++; if (o.name && names.length < 50) names.push(o.name); }); } catch {}
++            return {objs, names};
++        }).catch(() => ({objs: -1, names: []}));
++        rec("STEP", `scene objects=${counts.objs}`);
++        rec("STEP", `names: ${[...new Set(counts.names)].join(", ")}`);
++        // Scrape terminal error entries (runScript addEntry "Line N: ...").
++        const termErrs = await page.evaluate(() => {
++            const out = [];
++            for (const el of document.querySelectorAll("body *")) {
++                const t = el.childElementCount === 0 ? (el.textContent || "") : "";
++                if (/^Line \d+:/.test(t.trim())) out.push(t.trim().slice(0, 200));
++            }
++            return [...new Set(out)].slice(0, 40);
++        }).catch(() => []);
++        for (const e of termErrs) rec("TERMERR", e);
++        await page.screenshot({path: `/tmp/tinyskies-diag-${LABEL}.png`}).catch(() => {});
++
++        if (process.env.PLAY === "1") {
++            const playErrs = [];
++            page.on("console", m => { if (m.type() === "error" && !NOISE.test(m.text())) playErrs.push(m.text().slice(0, 160)); });
++            const playBtn = page.locator('[data-testid="topnav-play"]').first();
++            if (await playBtn.isVisible().catch(() => false)) {
++                let startCdp = null;
++                if (process.env.PROFILE_START === "1") {
++                    startCdp = await page.context().newCDPSession(page);
++                    await startCdp.send("Profiler.enable");
++                    await startCdp.send("Profiler.setSamplingInterval", {interval: 300});
++                    await startCdp.send("Profiler.start");
++                }
++                await playBtn.click({timeout: 3000, force: true}).catch(() => {});
++                const dontSave = page.locator("button", {hasText: /don['’]t\s*save/i}).first();
++                if (await dontSave.isVisible().catch(() => false)) { await dontSave.click().catch(() => {}); }
++                // Measure UI responsiveness DURING the play-start build: sample rAF
++                // gaps. If the build blocks the main thread, there's one multi-second
++                // gap; if it yields progressively, gaps stay small.
++                await page.evaluate(() => {
++                    window.__startFrames = []; let last = performance.now();
++                    const tick = () => { const n = performance.now(); window.__startFrames.push(n - last); last = n; if (window.__startFrames.length < 3000) requestAnimationFrame(tick); };
++                    requestAnimationFrame(tick);
++                }).catch(() => {});
++                await page.waitForTimeout(12000);
++                const sf = await page.evaluate(() => window.__startFrames || []).catch(() => []);
++                const sMax = Math.max(0, ...sf); const sLong = sf.filter(f => f > 100).length;
++                rec("STARTUP", `playStart rAF frames=${sf.length} maxGap=${sMax.toFixed(0)}ms gaps>100ms=${sLong}`);
++                const measures = await page.evaluate(() =>
++                    performance.getEntriesByType("measure").filter(m => /scene-|precompile|gameCreate|physics/i.test(m.name))
++                        .map(m => [m.name, Math.round(m.duration)]).sort((a, b) => b[1] - a[1]).slice(0, 14)
++                ).catch(() => []);
++                rec("STAGES", JSON.stringify(measures));
++                if (startCdp) {
++                    const prof = await startCdp.send("Profiler.stop");
++                    const nodes = new Map(); for (const n of prof.profile.nodes) nodes.set(n.id, n);
++                    const self = new Map();
++                    for (const id of prof.profile.samples) { const n = nodes.get(id); if (!n) continue; const cf = n.callFrame;
++                        const key = `${cf.functionName || "(anon)"} @ ${(cf.url || "").split("/").slice(-1)[0]}:${cf.lineNumber}`;
++                        self.set(key, (self.get(key) || 0) + 1); }
++                    const tot = prof.profile.samples.length || 1;
++                    for (const [k, c] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 22)) rec("STARTPROF", `${(100 * c / tot).toFixed(1)}% ${k}`);
++                    await startCdp.detach().catch(() => {});
++                }
++                const start = page.locator("#startGameBtn").first();
++                if (await start.isVisible().catch(() => false)) { await start.click({force: true}).catch(() => {}); rec("PLAY", "clicked START"); }
++                await page.waitForTimeout(4000);
++                // CPU profile of the play loop to find per-frame jank.
++                if (process.env.PROFILE === "1") {
++                    const cdp = await page.context().newCDPSession(page);
++                    await cdp.send("Profiler.enable");
++                    await cdp.send("Profiler.setSamplingInterval", {interval: 200});
++                    await cdp.send("Profiler.start");
++                    // also measure rAF frame deltas in-page
++                    await page.evaluate(() => {
++                        window.__frames = [];
++                        let last = performance.now();
++                        const tick = () => {
++                            const n = performance.now(); window.__frames.push(n - last); last = n;
++                            if (window.__frames.length < 600) requestAnimationFrame(tick);
++                        };
++                        requestAnimationFrame(tick);
++                    });
++                    await page.waitForTimeout(8000);
++                    const prof = await cdp.send("Profiler.stop");
++                    // aggregate self-time by function (id->node), using sample counts
++                    const nodes = new Map();
++                    for (const n of prof.profile.nodes) nodes.set(n.id, n);
++                    const self = new Map();
++                    for (const id of prof.profile.samples) {
++                        const n = nodes.get(id); if (!n) continue;
++                        const cf = n.callFrame;
++                        const key = `${cf.functionName || "(anon)"} @ ${(cf.url || "").split("/").slice(-1)[0]}:${cf.lineNumber}`;
++                        self.set(key, (self.get(key) || 0) + 1);
++                    }
++                    const totalSamples = prof.profile.samples.length || 1;
++                    const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
++                    for (const [k, c] of top) rec("PROF", `${(100 * c / totalSamples).toFixed(1)}% ${k}`);
++                    const frames = await page.evaluate(() => window.__frames || []);
++                    const long = frames.filter(f => f > 20).length;
++                    const max = Math.max(0, ...frames);
++                    const avg = frames.reduce((a, b) => a + b, 0) / (frames.length || 1);
++                    rec("FRAMES", `n=${frames.length} avg=${avg.toFixed(1)}ms max=${max.toFixed(1)}ms long(>20ms)=${long}`);
++                    // long-frame timeline: index + ms, to see if big stalls recur
++                    const longList = frames.map((f, i) => [i, f]).filter(([, f]) => f > 20)
++                        .map(([i, f]) => `#${i}:${f.toFixed(0)}ms`).join(" ");
++                    rec("LONGFRAMES", longList || "(none)");
++                }
++                // Render metrics + per-behavior-root mesh/material breakdown.
++                const metrics = await page.evaluate(() => {
++                    const app = window.app || globalThis.app;
++                    const r = app?.renderer;
++                    const info = r?.info ? {
++                        calls: r.info.render?.calls, tris: r.info.render?.triangles,
++                        geometries: r.info.memory?.geometries, textures: r.info.memory?.textures,
++                        programs: r.info.programs?.length,
++                    } : null;
++                    // group meshes by nearest named ancestor (the behavior root group)
++                    const sc = app?.scene; const byRoot = {}; const mats = new Set(); let inst = 0, mesh = 0;
++                    const rootName = (o) => { let p = o; while (p) { if (p.name && /^tinyskies|Globe|Plane|Starfield|Aurora|GodRays|FloatingLanterns|MeteorShower|Contrails|BoostRings|SkyGremlins|VehicleSwitcher|Progression|PackageQuest|RemotePlayers|ControlsHud|PaintballManager|DayNightCycle/.test(p.name)) return p.name; p = p.parent; } return "(other)"; };
++                    const matByRoot = {};
++                    try { sc?.traverse?.(o => {
++                        if (o.isInstancedMesh) { inst++; return; }
++                        if (o.isMesh) { mesh++; const rn = rootName(o); byRoot[rn] = (byRoot[rn] || 0) + 1;
++                            const m = o.material; (Array.isArray(m) ? m : [m]).forEach(x => { if (x) { mats.add(x.uuid); (matByRoot[rn] ||= new Set()).add(x.uuid); } }); }
++                    }); } catch {}
++                    const matRoots = Object.entries(matByRoot).map(([k, v]) => [k, v.size]).sort((a,b)=>b[1]-a[1]).slice(0, 12);
++                    var matRootsOut = matRoots;
++                    // sample names for "(other)" meshes to identify them
++                    var otherSample = [];
++                    try { sc?.traverse?.(o => {
++                        if (o.isMesh && !o.isInstancedMesh && rootName(o) === "(other)" && otherSample.length < 25) {
++                            otherSample.push(`${o.name || "?"}<${o.parent?.name || "?"}<${o.parent?.parent?.name || "?"}`);
++                        }
++                    }); } catch {}
++                    const topRoots = Object.entries(byRoot).sort((a,b)=>b[1]-a[1]).slice(0, 18);
++                    return {info, instancedMeshes: inst, individualMeshes: mesh, uniqueMaterials: mats.size, topRoots, matRoots: matRootsOut, otherSample};
++                }).catch(() => null);
++                rec("METRICS", JSON.stringify(metrics?.info));
++                rec("MESHES", `instanced=${metrics?.instancedMeshes} individual=${metrics?.individualMeshes} uniqueMaterials=${metrics?.uniqueMaterials}`);
++                rec("BYROOT", JSON.stringify(metrics?.topRoots));
++                rec("MATBYROOT", JSON.stringify(metrics?.matRoots));
++                rec("OTHER", JSON.stringify(metrics?.otherSample));
++                await page.waitForTimeout(2000);
++                await page.screenshot({path: `/tmp/tinyskies-diag-${LABEL}-play.png`}).catch(() => {});
++                const playObjs = await page.evaluate(() => {
++                    const sc = (window.app || globalThis.app)?.scene; let n = 0; try { sc?.traverse?.(() => n++); } catch {} return n;
++                }).catch(() => -1);
++                rec("PLAY", `play scene objects=${playObjs} playErrors=${[...new Set(playErrs)].length}`);
++                for (const e of [...new Set(playErrs)].slice(0, 12)) rec("PLAYERR", e);
++            } else rec("PLAY", "no play button");
++        }
++    }
++} catch (e) {
++    rec("FATAL", (e.message || String(e)).slice(0, 200));
++} finally {
++    rec("ERRORS", JSON.stringify(errCounts));
++    writeFileSync(LOG, lines.join("\n"));
++    console.log(lines.join("\n"));
++    await browser.close().catch(() => {});
++}
+

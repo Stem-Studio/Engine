@@ -6,6 +6,7 @@ import {Object3D, PerspectiveCamera} from "three";
 import {describe, it, expect, vi, beforeEach} from "vitest";
 
 import type GameManager from "@stem/editor-oss/behaviors/game/GameManager";
+import {ComponentDataPool} from "../ComponentDataPool";
 import {LambdaBase} from "../LambdaBase";
 
 class TestLambda extends LambdaBase {
@@ -88,6 +89,60 @@ describe("LambdaBase", () => {
             expect(lambda.getComponentData(obj)).toEqual(expect.objectContaining({mass: 10}));
         });
 
+        it("releases replaced component data after successful duplicate registration", () => {
+            const obj = new Object3D();
+            const previousData = {mass: 5};
+            const nextData = {mass: 10};
+            const releaseSpy = vi.spyOn(ComponentDataPool, "release");
+
+            lambda._registerObject(obj, previousData);
+            lambda._registerObject(obj, nextData);
+
+            expect(releaseSpy).toHaveBeenCalledWith("test-lambda", previousData);
+            expect(lambda.getComponentData(obj)).toBe(nextData);
+
+            releaseSpy.mockRestore();
+        });
+
+        it("rolls back first registration when onObjectAdded throws", () => {
+            const obj = new Object3D();
+            obj.userData._isSceneStatic = true;
+            obj.matrixAutoUpdate = true;
+            obj.matrixWorldAutoUpdate = false;
+            vi.spyOn(lambda, "onObjectAdded").mockImplementation(() => {
+                throw new Error("add failed");
+            });
+
+            expect(() => lambda._registerObject(obj, {mass: 5})).toThrow("add failed");
+
+            expect(lambda.entityCount).toBe(0);
+            expect(lambda.getComponentData(obj)).toBeNull();
+            expect(obj.userData._lambdaRegCount).toBeUndefined();
+            expect(obj.userData._isSceneStatic).toBe(true);
+            expect(obj.matrixAutoUpdate).toBe(true);
+            expect(obj.matrixWorldAutoUpdate).toBe(false);
+        });
+
+        it("restores previous data when duplicate registration onObjectAdded throws", () => {
+            const obj = new Object3D();
+            const previousData = {mass: 5};
+            lambda._registerObject(obj, previousData);
+            const releaseSpy = vi.spyOn(ComponentDataPool, "release");
+            vi.spyOn(lambda, "onObjectAdded").mockImplementation(() => {
+                throw new Error("refresh failed");
+            });
+
+            expect(() => lambda._registerObject(obj, {mass: 10})).toThrow("refresh failed");
+
+            expect(lambda.entityCount).toBe(1);
+            expect(lambda.getComponentData(obj)).toBe(previousData);
+            expect(obj.userData._lambdaRegCount).toBe(1);
+            expect(obj.matrixAutoUpdate).toBe(false);
+            expect(releaseSpy).not.toHaveBeenCalled();
+
+            releaseSpy.mockRestore();
+        });
+
         it("should queue when _isApplying is true", () => {
             const obj = new Object3D();
             lambda["_isApplying"] = true;
@@ -101,6 +156,30 @@ describe("LambdaBase", () => {
                 target: obj,
                 data: {mass: 5},
             });
+        });
+
+        it("keeps lambda registration counts out of serialized userData", () => {
+            const obj = new Object3D();
+
+            lambda._registerObject(obj, {mass: 5});
+
+            expect(obj.userData._lambdaRegCount).toBe(1);
+            expect(Object.prototype.propertyIsEnumerable.call(obj.userData, "_lambdaRegCount")).toBe(false);
+            expect(JSON.stringify(obj.userData)).not.toContain("_lambdaRegCount");
+        });
+
+        it("clears legacy scene-static markers when a lambda claims the object", () => {
+            const obj = new Object3D();
+            obj.userData._isSceneStatic = true;
+            obj.matrixWorldAutoUpdate = false;
+
+            expect(Object.prototype.propertyIsEnumerable.call(obj.userData, "_isSceneStatic")).toBe(true);
+
+            lambda._registerObject(obj, {mass: 5});
+
+            expect(obj.matrixWorldAutoUpdate).toBe(true);
+            expect(obj.userData._isSceneStatic).toBeUndefined();
+            expect(JSON.stringify(obj.userData)).not.toContain("_isSceneStatic");
         });
     });
 
@@ -143,6 +222,23 @@ describe("LambdaBase", () => {
 
             expect(lambda.entityCount).toBe(1); // not removed yet
             expect(lambda["_pendingOps"]).toHaveLength(1);
+        });
+
+        it("does not inflate lambda ref counts when refreshing the same object", () => {
+            const obj = new Object3D();
+
+            lambda._registerObject(obj, {mass: 5});
+            lambda._registerObject(obj, {mass: 10});
+
+            expect(lambda.entityCount).toBe(1);
+            expect(lambda.getComponentData(obj)).toEqual(expect.objectContaining({mass: 10}));
+            expect(obj.userData._lambdaRegCount).toBe(1);
+            expect(obj.matrixAutoUpdate).toBe(false);
+
+            lambda._deregisterObject(obj);
+
+            expect(obj.userData._lambdaRegCount).toBeUndefined();
+            expect(obj.matrixAutoUpdate).toBe(true);
         });
     });
 
@@ -305,6 +401,43 @@ describe("LambdaBase", () => {
             expect(lambda.entityCount).toBe(0);
         });
 
+        it("releases component data and restores matrix state", () => {
+            const obj = new Object3D();
+            const data = {mass: 5};
+            const releaseSpy = vi.spyOn(ComponentDataPool, "release");
+            lambda._registerObject(obj, data);
+            expect(obj.userData._lambdaRegCount).toBe(1);
+            expect(obj.matrixAutoUpdate).toBe(false);
+
+            lambda.dispose();
+
+            expect(releaseSpy).toHaveBeenCalledWith("test-lambda", data);
+            expect(obj.userData._lambdaRegCount).toBeUndefined();
+            expect(obj.matrixAutoUpdate).toBe(true);
+            expect(lambda.entityCount).toBe(0);
+
+            releaseSpy.mockRestore();
+        });
+
+        it("keeps shared object matrix ownership until the last lambda disposes", () => {
+            const obj = new Object3D();
+            const other = new TestLambda("other-lambda", {});
+            lambda._registerObject(obj, {mass: 5});
+            other._registerObject(obj, {mass: 10});
+            expect(obj.userData._lambdaRegCount).toBe(2);
+
+            lambda.dispose();
+
+            expect(obj.userData._lambdaRegCount).toBe(1);
+            expect(obj.matrixAutoUpdate).toBe(false);
+            expect(other.entityCount).toBe(1);
+
+            other.dispose();
+
+            expect(obj.userData._lambdaRegCount).toBeUndefined();
+            expect(obj.matrixAutoUpdate).toBe(true);
+        });
+
         it("should clear pending ops", () => {
             lambda["_isApplying"] = true;
             lambda._registerObject(new Object3D(), {});
@@ -387,50 +520,6 @@ describe("LambdaBase", () => {
         });
     });
 
-    describe("fixedApplySliced", () => {
-        it("should call fixedUpdate when implemented", () => {
-            class FixedLambda extends LambdaBase {
-                public fixedCalls = 0;
-                fixedUpdate(): void {
-                    this.fixedCalls++;
-                }
-            }
-
-            const fixedLambda = new FixedLambda("fixed-lambda", {});
-            const gen = fixedLambda.fixedApplySliced(0.016);
-            let res = gen.next();
-            while (!res.done) {
-                res = gen.next();
-            }
-
-            expect(fixedLambda.fixedCalls).toBe(1);
-        });
-
-        it("should not call update when fixedUpdate is not implemented", () => {
-            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-            class NoFixedLambda extends LambdaBase {
-                public updateCalls = 0;
-                update(): void {
-                    this.updateCalls++;
-                }
-            }
-
-            const noFixed = new NoFixedLambda("no-fixed-lambda", {});
-            const gen = noFixed.fixedApplySliced(0.016);
-            let res = gen.next();
-            while (!res.done) {
-                res = gen.next();
-            }
-
-            expect(noFixed.updateCalls).toBe(0);
-            expect(warnSpy).toHaveBeenCalledWith(
-                expect.stringContaining("does not implement fixedUpdate()"),
-            );
-            warnSpy.mockRestore();
-        });
-    });
-
     describe("fixedApply", () => {
         it("should call fixedUpdate without generator overhead", () => {
             class FixedLambda extends LambdaBase {
@@ -469,13 +558,65 @@ describe("LambdaBase", () => {
     });
 
     describe("processObjects deadline handling", () => {
+        it("should process scheduled objects without per-object map lookup", () => {
+            class CountingMap<K, V> extends Map<K, V> {
+                public getCalls = 0;
+
+                get(key: K): V | undefined {
+                    this.getCalls++;
+                    return super.get(key);
+                }
+            }
+
+            class EntryIterationLambda extends LambdaBase {
+                public processed = 0;
+                public processedData: Array<Record<string, any>> = [];
+
+                update(deltaTime: number = 0.016): void {
+                    this.processObjects(deltaTime, (_object, data) => {
+                        this.processed++;
+                        this.processedData.push(data);
+                    });
+                }
+            }
+
+            const entryIteration = new EntryIterationLambda("entry-iteration", {});
+            const object = new Object3D();
+            const data = {mass: 5};
+            const camera = new PerspectiveCamera();
+            const scheduler = {
+                frameDeadline: Infinity,
+                shouldProcess: vi.fn(() => 1),
+            };
+            const registeredObjects = new CountingMap<Object3D, Record<string, any>>([[object, data]]);
+
+            entryIteration.init({
+                camera,
+                lambdaManager: {
+                    scheduler,
+                },
+            } as unknown as GameManager);
+            (entryIteration as unknown as {
+                _registeredObjects: Map<Object3D, Record<string, any>>;
+            })._registeredObjects = registeredObjects;
+
+            entryIteration.apply(0.016);
+
+            expect(entryIteration.processed).toBe(1);
+            expect(entryIteration.processedData).toEqual([data]);
+            expect(registeredObjects.getCalls).toBe(0);
+            expect(scheduler.shouldProcess).toHaveBeenCalledWith(object, camera, 0, false);
+        });
+
         it("should stop processing once the shared frame deadline is exceeded", () => {
             class DeadlineAwareLambda extends LambdaBase {
                 public processed = 0;
+                public processedLabels: number[] = [];
 
                 update(deltaTime: number = 0.016): void {
-                    this.processObjects(deltaTime, () => {
+                    this.processObjects(deltaTime, (_object, data) => {
                         this.processed++;
+                        this.processedLabels.push(data.label as number);
                     });
                 }
             }
@@ -495,7 +636,7 @@ describe("LambdaBase", () => {
             } as unknown as GameManager);
 
             for (let i = 0; i < 65; i++) {
-                deadlineAware._registerObject(new Object3D(), {});
+                deadlineAware._registerObject(new Object3D(), {label: i});
             }
 
             const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
@@ -503,6 +644,60 @@ describe("LambdaBase", () => {
             deadlineAware.apply(0.016);
 
             expect(deadlineAware.processed).toBe(64);
+            expect(deadlineAware.processedLabels).toEqual(Array.from({length: 64}, (_value, index) => index));
+
+            deadlineAware.processed = 0;
+            deadlineAware.processedLabels = [];
+            deadlineAware.apply(0.016);
+
+            expect(deadlineAware.processed).toBe(64);
+            expect(deadlineAware.processedLabels[0]).toBe(64);
+            expect(deadlineAware.processedLabels.slice(1)).toEqual(Array.from({length: 63}, (_value, index) => index));
+            nowSpy.mockRestore();
+        });
+
+        it("should resume budgeted processing without rescanning earlier map entries", () => {
+            class CountingEntriesMap<K, V> extends Map<K, V> {
+                public entriesCalls = 0;
+
+                entries(): MapIterator<[K, V]> {
+                    this.entriesCalls++;
+                    return super.entries();
+                }
+            }
+
+            class ResumableLambda extends LambdaBase {
+                public processedLabels: number[] = [];
+
+                update(deltaTime: number = 0.016): void {
+                    this.processObjects(deltaTime, (_object, data) => {
+                        this.processedLabels.push(data.label as number);
+                    });
+                }
+            }
+
+            const resumable = new ResumableLambda("resumable", {});
+            const camera = new PerspectiveCamera();
+            const scheduler = {
+                frameDeadline: 5,
+                shouldProcess: vi.fn(() => 1),
+            };
+            const registeredObjects = new CountingEntriesMap<Object3D, Record<string, any>>();
+            for (let i = 0; i < 129; i++) {
+                registeredObjects.set(new Object3D(), {label: i});
+            }
+
+            resumable.init({camera, lambdaManager: {scheduler}} as unknown as GameManager);
+            (resumable as unknown as {
+                _registeredObjects: Map<Object3D, Record<string, any>>;
+            })._registeredObjects = registeredObjects;
+            const nowSpy = vi.spyOn(performance, "now").mockReturnValue(10);
+
+            resumable.apply(0.016);
+            resumable.apply(0.016);
+
+            expect(resumable.processedLabels).toEqual(Array.from({length: 128}, (_value, index) => index));
+            expect(registeredObjects.entriesCalls).toBe(1);
             nowSpy.mockRestore();
         });
     });

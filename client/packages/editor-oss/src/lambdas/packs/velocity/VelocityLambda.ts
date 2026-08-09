@@ -2,6 +2,8 @@ import { VELOCITY_SCHEMA } from "../../data/PhysicsComponentSchemas";
 import type { LambdaOptions } from "../../Lambda";
 import { SoALambdaBase } from "../../SoALambdaBase";
 
+const VELOCITY_SYNC_FIELDS = ["vx", "vy", "vz"] as const;
+
 export default class VelocityLambda extends SoALambdaBase {
     constructor(id: string, options: LambdaOptions) {
         super(id, options, VELOCITY_SCHEMA);
@@ -17,9 +19,11 @@ export default class VelocityLambda extends SoALambdaBase {
         const vz = store.getField("vz") as Float32Array;
         const damping = store.getField("damping") as Float32Array;
         const maxSpeed = store.getField("maxSpeed") as Float32Array;
+        const objects = store.getObjectRefs();
+        const visibilityMask = this._visibilityMask;
 
         for (let i = 0; i < count; i++) {
-            const multiplier = this._visibilityMask?.[i] ?? 1;
+            const multiplier = visibilityMask ? visibilityMask[i]! : 1;
             if (multiplier === 0) continue;
             const effectiveDt = deltaTime * multiplier;
 
@@ -38,7 +42,7 @@ export default class VelocityLambda extends SoALambdaBase {
             }
 
             // Integrate velocity → position (time-integrated)
-            const obj = store.getObject(i);
+            const obj = objects[i];
             if (obj) {
                 obj.position.x += cvx * effectiveDt;
                 obj.position.y += cvy * effectiveDt;
@@ -61,6 +65,6 @@ export default class VelocityLambda extends SoALambdaBase {
         }
 
         // Sync modified velocity back to Map records for external readers
-        this.syncSoAToMap(["vx", "vy", "vz"]);
+        this.syncSoAToMap(VELOCITY_SYNC_FIELDS);
     }
 }

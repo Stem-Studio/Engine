@@ -1,11 +1,16 @@
 import { SparkWebGpuRenderer } from '@querielo/spark';
 import { Camera, Float32BufferAttribute, Material, MeshDepthMaterial, Object3D, Scene, SkinnedMesh, WebGLRenderer } from 'three';
 import type { BufferAttribute, InterleavedBufferAttribute, Skeleton } from 'three';
-import type { WebGPURenderer } from 'three/webgpu';
+import type {WebGPURenderer} from "three/webgpu";
+import {findObjectByNameDepthFirst, traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 const SPARK_COMPOSITE_NAME = '__SparkWebGpuRenderer';
 const SPARK_SKINNED_DEPTH_PATCHED = Symbol('sparkSkinnedDepthPatched');
 const SPARK_SKINNED_DEPTH_MATERIAL = Symbol('sparkSkinnedDepthMaterial');
+const SPARK_SKINNED_DEPTH_CANDIDATES = Symbol('sparkSkinnedDepthCandidates');
+const SPARK_SKINNED_DEPTH_VISIBLE_MESHES = Symbol('sparkSkinnedDepthVisibleMeshes');
+const SPARK_SKINNED_DEPTH_LAST_SCAN_TIME = Symbol('sparkSkinnedDepthLastScanTime');
+const SPARK_SKINNED_DEPTH_SCAN_INTERVAL_MS = 250;
 
 type SparkRendererLike = Object3D & {
     render: (scene: Scene, camera: Camera) => unknown;
@@ -14,6 +19,9 @@ type SparkRendererLike = Object3D & {
 type SparkCompositeRuntime = Object3D & {
     [SPARK_SKINNED_DEPTH_PATCHED]?: boolean;
     [SPARK_SKINNED_DEPTH_MATERIAL]?: MeshDepthMaterial;
+    [SPARK_SKINNED_DEPTH_CANDIDATES]?: SkinnedMesh[];
+    [SPARK_SKINNED_DEPTH_VISIBLE_MESHES]?: SkinnedMesh[];
+    [SPARK_SKINNED_DEPTH_LAST_SCAN_TIME]?: number;
     prepareComposite?: (renderer: WebGPURenderer, scene: Scene, camera: Camera) => unknown;
     spark?: SparkRendererLike;
     webglRenderer?: WebGLRenderer;
@@ -23,6 +31,10 @@ type SkeletonState = {
     boneMatrices: Float32Array | null;
     previousBoneMatrices: Float32Array | null;
     boneTexture: Skeleton['boneTexture'];
+};
+
+type SkeletonWithPreviousMatrices = Skeleton & {
+    previousBoneMatrices?: Float32Array | null;
 };
 
 type SkinIndexAttribute = BufferAttribute | InterleavedBufferAttribute;
@@ -35,7 +47,7 @@ type SkinIndexAttributeSnapshot = {
 const webGLSkinIndexAttributeCache = new WeakMap<object, BufferAttribute>();
 
 const findSparkComposite = (scene: Scene): SparkWebGpuRenderer | null => {
-    const existing = scene.getObjectByName(SPARK_COMPOSITE_NAME);
+    const existing = findObjectByNameDepthFirst(scene, SPARK_COMPOSITE_NAME);
     return existing instanceof SparkWebGpuRenderer ? existing : null;
 };
 
@@ -69,16 +81,41 @@ const isEffectivelyVisible = (object: Object3D, root: Scene): boolean => {
     return false;
 };
 
-const collectSkinnedDepthMeshes = (scene: Scene): SkinnedMesh[] => {
+export const collectSkinnedDepthCandidates = (scene: Scene): SkinnedMesh[] => {
     const meshes: SkinnedMesh[] = [];
 
-    scene.traverse(object => {
-        if (isSkinnedMesh(object) && isEffectivelyVisible(object, scene) && writesDepth(object)) {
+    traverseObjectDepthFirst(scene, object => {
+        if (isSkinnedMesh(object) && writesDepth(object)) {
             meshes.push(object);
         }
     });
 
     return meshes;
+};
+
+export const getVisibleSkinnedDepthMeshes = (runtime: SparkCompositeRuntime, scene: Scene): SkinnedMesh[] => {
+    const now = globalThis.performance?.now() ?? Date.now();
+    const lastScanTime = runtime[SPARK_SKINNED_DEPTH_LAST_SCAN_TIME] ?? -Infinity;
+    if (!runtime[SPARK_SKINNED_DEPTH_CANDIDATES] || now - lastScanTime >= SPARK_SKINNED_DEPTH_SCAN_INTERVAL_MS) {
+        runtime[SPARK_SKINNED_DEPTH_CANDIDATES] = collectSkinnedDepthCandidates(scene);
+        runtime[SPARK_SKINNED_DEPTH_LAST_SCAN_TIME] = now;
+    }
+
+    const visibleMeshes = runtime[SPARK_SKINNED_DEPTH_VISIBLE_MESHES] ?? [];
+    visibleMeshes.length = 0;
+
+    for (const mesh of runtime[SPARK_SKINNED_DEPTH_CANDIDATES]) {
+        if (
+            mesh.parent !== null &&
+            isEffectivelyVisible(mesh, scene) &&
+            writesDepth(mesh)
+        ) {
+            visibleMeshes.push(mesh);
+        }
+    }
+
+    runtime[SPARK_SKINNED_DEPTH_VISIBLE_MESHES] = visibleMeshes;
+    return visibleMeshes;
 };
 
 const snapshotSkeletons = (meshes: SkinnedMesh[]): Map<Skeleton, SkeletonState> => {
@@ -87,9 +124,10 @@ const snapshotSkeletons = (meshes: SkinnedMesh[]): Map<Skeleton, SkeletonState> 
     for (const mesh of meshes) {
         const skeleton = mesh.skeleton;
         if (skeleton && !snapshots.has(skeleton)) {
+            const skeletonState = skeleton as SkeletonWithPreviousMatrices;
             snapshots.set(skeleton, {
                 boneMatrices: skeleton.boneMatrices,
-                previousBoneMatrices: skeleton.previousBoneMatrices,
+                previousBoneMatrices: skeletonState.previousBoneMatrices ?? null,
                 boneTexture: skeleton.boneTexture,
             });
         }
@@ -123,6 +161,7 @@ const compactSkeletonMatrices = (
 
 const restoreSkeletons = (snapshots: Map<Skeleton, SkeletonState>) => {
     for (const [skeleton, snapshot] of snapshots) {
+        const skeletonState = skeleton as SkeletonWithPreviousMatrices;
         const compactLength = skeleton.bones.length * 16;
         const currentBoneTexture = skeleton.boneTexture;
 
@@ -131,11 +170,13 @@ const restoreSkeletons = (snapshots: Map<Skeleton, SkeletonState>) => {
             snapshot.boneMatrices,
             compactLength,
         );
-        skeleton.previousBoneMatrices = compactSkeletonMatrices(
-            skeleton.previousBoneMatrices,
-            snapshot.previousBoneMatrices,
-            compactLength,
-        );
+        if (skeletonState.previousBoneMatrices || snapshot.previousBoneMatrices) {
+            skeletonState.previousBoneMatrices = compactSkeletonMatrices(
+                skeletonState.previousBoneMatrices,
+                snapshot.previousBoneMatrices,
+                compactLength,
+            );
+        }
 
         if (currentBoneTexture && currentBoneTexture !== snapshot.boneTexture) {
             currentBoneTexture.dispose();
@@ -305,7 +346,7 @@ const patchSparkSkinnedDepth = (composite: SparkWebGpuRenderer) => {
     runtime[SPARK_SKINNED_DEPTH_MATERIAL] = depthMaterial;
     runtime.prepareComposite = function prepareCompositeWithSkinnedDepth(renderer, scene, camera) {
         const spark = runtime.spark;
-        const skinnedDepthMeshes = collectSkinnedDepthMeshes(scene);
+        const skinnedDepthMeshes = getVisibleSkinnedDepthMeshes(runtime, scene);
 
         if (!spark || skinnedDepthMeshes.length === 0) {
             return originalPrepareComposite.call(this, renderer, scene, camera);

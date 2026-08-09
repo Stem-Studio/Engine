@@ -12,6 +12,7 @@ this.erth.asset
 this.erth.camera
 this.erth.object
 this.erth.viewport
+this.erth.runtime
 this.erth.scene
 this.erth.store
 this.erth.behaviors
@@ -27,6 +28,34 @@ this.erth.spatial
 ```
 
 `tween`, `fsm`, `behaviorTree`, and `spatial` load their underlying libraries the first time you call them. Await the creator once during `init()` or `onStart()`, then use the returned handle from `update()`.
+
+For heavy generated setup work, prefer cooperative batches instead of one long synchronous loop. `processInBatches()` accepts any iterable and does not pre-materialize it:
+
+```ts
+this.onStart = async function () {
+  await this.erth.runtime.processInBatches(items, async (item, index) => {
+    buildItem(item, index);
+  }, {
+    batchSize: 32,
+    frameBudgetMs: 4,
+  });
+};
+```
+
+For custom phasing, yield manually:
+
+```ts
+this.onStart = async function () {
+  for (let i = 0; i < items.length; i++) {
+    buildItem(items[i], i);
+    if ((i & 15) === 15) {
+      await this.erth.runtime.yieldToFrame(true);
+    }
+  }
+};
+```
+
+The runtime cannot interrupt a single blocked JavaScript callback or synchronous loop. If startup work must stay responsive, break it into batches and yield between batches. Use `yieldToFrame(true)` at manual phase boundaries when a real paint opportunity must happen before work continues; the default `yieldToFrame()` remains a cooperative scheduler hint. Lifecycle hooks such as `init()`, `onStart()`, `onAdded()`, and `onReset()` must `await` or `return` startup promises; fire-and-forget setup can report as started before the scene is actually ready.
 
 ## Assets
 

@@ -1,5 +1,10 @@
 # Scheduler and Editor Performance Settings
 
+> **Current deployment scope:** these instructions target local **Playground
+> mode**. Remote scene APIs are not deployed and must not be used as a load,
+> save, Play, Edit, or QA fallback. Mobile authoring is **landscape-only**;
+> portrait shows the rotate-device gate rather than an interactive workspace.
+
 Most scene-wide controls live in the **Project** tab. That tab is the map for
 project metadata, editor preferences, runtime performance, default scene
 lighting, cameras, and scene-level objects such as the default directional
@@ -52,10 +57,9 @@ The **Rendering & Performance** panel is the runtime tuning panel. It contains:
 
 | Section | Settings |
 |---|---|
-| Quality Presets | Target-device presets for rendering, physics, scheduler budget, view distance, culling, and LOD. |
-| Rendering | Dynamic batching, mesh instancing, batching-data reset, post-processing, WebGL fallback, and VFX renderer fallback. |
+| Quality Presets | Target-device policy records; only a subset of their rendering, physics, view-distance, culling, and LOD fields have live consumers. |
+| Rendering | Dynamic batching, mesh instancing, batching-data reset, post-processing, and retained renderer-compatibility fields. |
 | Physics | Physics sleeping and multi-threaded physics worker. |
-| Scheduler | Modern Game Scheduler and fixed-rate behavior/lambda updates. |
 | Behavior Performance | Off-screen optimization, distance optimization, consistent updates, priority, distance thresholds, and throttle factors. |
 | Budget Inspector | Runtime budget visibility for avatars, plots, textures, and hot rows. |
 | Lambda Explorer | Play-mode profiling for lambda instances, waves, entity counts, and timings. |
@@ -67,76 +71,84 @@ project.
 
 ---
 
-## Scheduler architecture
+## Runtime update loop
 
-The modern scheduler is implemented by `FrameOrchestrator`. It replaces a
-single sequential update loop with fixed pipeline stages:
+Play mode uses the unified `EngineRuntime` loop. Each rendered frame advances
+one authoritative fixed-step clock zero or more times, then runs variable
+presentation work once. Every due fixed step runs physics, collision
+processing, fixed behaviors, and fixed lambdas in that order. Variable behavior
+and lambda updates, animation, audio, AI, player events, and render callbacks
+remain part of the rendered-frame path.
 
-| Stage | What runs there |
-|---|---|
-| `INPUT` | Input state finalization. Always runs and is not budget gated. |
-| `FIXED_UPDATE` | Fixed-timestep behaviors, fixed lambdas, and deterministic physics work. |
-| `PRE_UPDATE` | Quality updates, spatial-grid rebuild, and budget setup before normal gameplay work. |
-| `UPDATE` | Behaviors, lambdas, animation, audio, AI world, player events, texture residency, and other frame systems. |
-| `POST_UPDATE` | Late events and sync points after main update work. |
-| `RENDER` | Optional scheduled render stage and deferred render callbacks. |
+Retired `FrameOrchestrator` scheduler metadata may still exist in old scenes and
+quality presets, but it is normalized off at launch. It does not create a
+second staged runtime.
 
-Systems register through adapters in
-`client/packages/editor-oss/src/scheduler/createSchedulerFromConfig.ts`. Within
-each stage, `DependencyGraph` orders systems by declared reads/writes and then
-priority. The lambda scheduler uses the same idea at the lambda level: lambdas
-that write fields another lambda reads are scheduled before their consumers.
+The active runtime still uses:
 
-The scheduler also owns:
-
-- A shared frame deadline from `FrameBudgetManager`.
-- A fixed-step accumulator with `maxFixedStepsPerFrame` to prevent spiral of
-  death.
-- Render-pressure detection using average render time and frame delta spikes.
-- Time slicing for supported update-stage systems.
-- Background-tab throttling that skips expensive stages while the tab is hidden.
-- A uniform spatial grid used by lambda/behavior throttling for distance checks.
-- Command-buffer flushes between fixed/update boundaries so queued scene changes
-  land at predictable points.
+- One bounded fixed-step accumulator for physics and fixed gameplay.
+- Behavior throttling for off-screen, distant, or lower-priority scripts.
+- Lambda scheduling for dependency waves, frame budgets, distance checks, and
+  profiling.
+- Budget and memory inspectors for runtime diagnostics.
 
 ---
 
 ## Quality presets
 
-Quality presets bundle rendering, physics, scene, and scheduler settings by
-target device class. Start from the closest device tab, inspect the preset
-details, then override individual controls only when needed.
+Quality presets bundle intended rendering, physics, behavior, network, and
+scene-budget targets by device class. The registry is broader than the current
+runtime integration: selecting a preset does not prove that every recorded
+field has a live consumer.
 
 ![Quality presets](./assets/scheduler-quality-presets.png)
 
-Preset details include scheduler values such as frame budget, fixed timestep,
-and maximum fixed steps. Those settings feed `createSchedulerFromConfig()` when
-Play mode starts.
+Current behavior:
 
-| Preset field | Runtime effect |
-|---|---|
-| Pixel ratio, shadows, antialiasing, post processing | Renderer cost and visual quality. |
-| Physics rate and substeps | Physics simulation cost and stability. |
-| View distance, LOD distances, culling aggressiveness | Scene traversal and rendering load. |
-| Scheduler budget, fixed timestep, max fixed steps | Logic budget and fixed-step behavior under load. |
+- Preset selection records the policy settings.
+- The rendering-quality module contains application paths for pixel ratio and
+  shadow mode when it is connected to the active renderer.
+- The pressure policy contains resolution/effect overrides, but documentation
+  must not assume the active frame loop is feeding that policy without runtime
+  verification.
+- The active quality policy drives the authoritative fixed-step physics rate
+  and maximum fixed steps per rendered frame.
+- Anti-aliasing type, texture-quality scale, cascade count, reflection,
+  volumetric-lighting, maximum-light, batching, view-distance, LOD-distance,
+  culling, and network fields are not all applied end to end today. Several are
+  stored configuration or are owned by separate scene systems. Solver quality,
+  CCD, and sleep policy now have explicit runtime consumers; the former
+  `maxActiveBodies`/body-cap field was removed from the quality schema and
+  built-in presets because neither active backend had a safe shared consumer.
+
+Treat a preset as a starting policy record. Verify the actual pixel ratio,
+shadow/effect state, renderer statistics, physics cadence, and frame time in
+Play mode before claiming a quality tier is active.
 
 ---
 
-## Scheduler controls
+## Authoritative fixed simulation
 
-![Scheduler controls](./assets/scheduler-controls.png)
+The retired staged scheduler controls remain hidden, but the runtime now owns
+one fixed-step simulation clock. It clamps frame spikes, bounds catch-up, and
+runs each due step in this order: physics, collision processing, fixed
+behaviors, then fixed lambdas. The active quality policy supplies the physics
+update rate and maximum fixed steps per rendered frame; older scheduler fields
+remain accepted as a saved-scene fallback.
 
-| Setting | Use it for |
-|---|---|
-| **Modern Game Scheduler (Beta)** | Enables the pipeline scheduler. Prefer it for new scenes; turn it off only when auditing an older scene that depends on legacy ordering. |
-| **Use Fixed Rate Updates (Beta)** | Registers fixed behavior and lambda adapters. Use for physics-dependent gameplay, deterministic controller logic, and code that implements `fixedUpdate()`. |
+`update(deltaTime)` still runs once per rendered frame. When fixed stages are
+active, a fixed-only script is not also invoked by the variable compatibility
+path. `FrameContext.interpolationAlpha` and `fixedOverstep` expose the
+remaining fractional step for render interpolation, while dropped step/time
+metrics make bounded catch-up visible in runtime telemetry.
 
-Fixed-rate updates do not mean every behavior should move into `fixedUpdate()`.
-Use normal `update(deltaTime)` for visual effects, UI, camera polish, and
-non-deterministic gameplay. Reserve `fixedUpdate()` for logic that benefits from
-a fixed timestep.
+Worker physics preserves the same logical order asynchronously: fixed steps
+are queued without merging, each step retains its authored substeps, and its
+collision/behavior/lambda stages run only after that step's worker
+acknowledgement. Rendering may present the most recently completed state while
+the worker is processing its bounded backlog.
 
-These toggles persist on the scene:
+Older scenes may still contain this metadata:
 
 ```jsonc
 {
@@ -149,31 +161,31 @@ These toggles persist on the scene:
 }
 ```
 
-The active quality profile supplies the lower-level scheduler fields:
+The active quality profile still carries lower-level scheduler fields such as
 `frameBudgetMs`, `fixedTimestepHz`, `maxFixedStepsPerFrame`,
-`enableTimeSlicing`, `spatialGridCellSize`, `renderPressureThreshold`, and
-`deltaTimePressureThreshold`.
+`spatialGridCellSize`, `renderPressureThreshold`, and
+`deltaTimePressureThreshold` for saved-scene and API compatibility. Launch
+normalizes `scheduler.enabled` to `false`.
 
 ---
 
-## Frame buffering, yielding, and catch-up
+## Physics stepping, yielding, and catch-up
 
-The scheduler has three separate mechanisms that are easy to confuse:
+The runtime has two catch-up mechanisms that are easy to confuse:
 
 | Mechanism | What it does |
 |---|---|
-| Fixed-step accumulator | Buffers elapsed time for `FIXED_UPDATE`, runs zero or more fixed steps, then caps work with `maxFixedStepsPerFrame`. Under render pressure it runs at most one fixed step and drops excess fixed debt instead of replaying a long backlog. |
+| Authoritative fixed-step accumulator | Buffers elapsed render time, clamps spikes, and runs zero or more complete physics → collision → fixed behavior → fixed lambda steps. Catch-up is bounded; excess whole steps and time are reported instead of replaying an unbounded backlog. Worker steps are queued without merging and complete their fixed gameplay work after the matching acknowledgement. |
 | Throttle catch-up | Behaviors that are skipped by throttling accumulate skipped `deltaTime`; the next update receives an effective delta that includes that skipped time. Lambda `processObjects()` does the same with the callback `dt` by multiplying by the throttle factor. |
-| Generator yielding | Advanced source-level systems can return a `Generator` and yield between chunks when registered as time-sliceable update systems. Source-authored lambdas can also override `applySliced()` / `updateSoASliced()`. |
 
 For normal editor-authored behavior and lambda code, do not rely on returning a
 generator from `update()` as a resume mechanism. Keep per-frame work bounded,
 use `processObjects()` for lambda iteration, split long jobs across frames with
 your own state machine, or move pure computation into a background worker.
 
-The fixed-step accumulator also publishes interpolation state in the frame
-context (`interpolationAlpha`, `fixedOverstep`) so render-facing systems can
-smooth visuals between fixed simulation steps.
+The frame context reports `interpolationAlpha` / `fixedOverstep` from the
+authoritative accumulator. Use those values only for render-facing smoothing;
+gameplay state changes belong in `fixedUpdate()`.
 
 ---
 
@@ -185,9 +197,12 @@ Rendering controls manage draw-call and renderer compatibility choices:
 |---|---|---|
 | Enable Dynamic Batching | `scene.userData.rendering.batching.enableDynamic` | Rebuilds batching state when toggled. |
 | Mesh Instancing Optimization | editor setting | Reduces repeated mesh draw overhead when suitable. |
+| Editor Preview Instancing Budget | `scene.userData.rendering.editorPreviewInstancingBudget` | Caps only behavior-generated `isRuntimeOnly` instanced meshes while editing; authored meshes and Play counts are restored unchanged. Defaults to 750,000 total submitted triangles and 250,000 per mesh. |
+| Editor Preview Geometry Budget | `scene.userData.rendering.editorPreviewGeometryBudget` | Reversibly simplifies eligible single-material imported model meshes while editing; original geometry is restored before Play. Defaults to 180,000 total preview triangles, 30,000 per mesh, and a 24,000-triangle source-size guard. Larger authored meshes are skipped until the worker decimator lands. |
+| Editor Shadow Budget | `scene.userData.rendering.editorShadowBudget` | Caps cascaded-shadow preview work while editing; authored CSM cascade counts are restored in Play. Defaults to two cascades when CSM is authored with more. |
 | Clear Batching Data | runtime action | Clears current batching stats/debug data. |
-| Force WebGL | `scene.userData.rendering.forceWebGL` | Compatibility fallback when WebGPU is unstable. |
-| Force WebGL for VFX | `scene.userData.rendering.forceWebGLForVFX` | Keeps VFX on WebGL while the main renderer may use WebGPU. |
+| Force WebGL | `scene.userData.rendering.forceWebGL` | Live compatibility path. The runtime prefers WebGPU, but can request Three.js's WebGL backend and automatically retries with it when WebGPU initialization fails. |
+| Force WebGL for VFX | `scene.userData.rendering.forceWebGLForVFX` | Requests the VFX compatibility path. Verify effects individually because renderer-specific post-processing may be reduced or unavailable. |
 
 Physics controls:
 
@@ -198,6 +213,74 @@ Physics controls:
 
 Post-processing and shadow sections expose renderer-specific quality controls.
 Use them after choosing a quality preset so you are tuning from a known baseline.
+
+### Editor preview instancing budget
+
+Procedural behavior previews can create substantially more instances than the
+editor needs to communicate layout. The engine therefore applies a temporary
+budget to visible instanced meshes marked `userData.isRuntimeOnly === true`.
+The cap changes only `InstancedMesh.count`, preserves the original instance
+buffers, and restores the full count before Play starts. Terrain allocators keep
+a separate logical instance count, so preview capping cannot corrupt chunk
+add/remove bookkeeping. This keeps authoring responsive without silently
+changing runtime fidelity.
+
+Scenes that need a different preview policy can set:
+
+```ts
+scene.userData.rendering.editorPreviewInstancingBudget = {
+  enabled: true,
+  maxTotalSubmittedTriangles: 1_000_000,
+  maxSubmittedTrianglesPerMesh: 250_000,
+  minInstancesPerMesh: 1,
+};
+```
+
+Set `enabled: false` for a scene whose editor preview must always show every
+procedural instance. This is an editor-only setting; runtime instancing uses
+the separate `instancingBudget` policy.
+
+### Editor shadow budget
+
+Cascaded shadow maps are valuable in Play but disproportionately expensive in
+an editor preview, where they can multiply the cost of every authored mesh.
+When a directional light uses the CSM behavior, editor preview defaults to two
+cascades while keeping the authored cascade count for Play. Configure or opt
+out per scene:
+
+```ts
+scene.userData.rendering.editorShadowBudget = {
+  enabled: true,
+  maxCascades: 2,
+};
+```
+
+Set `enabled: false` to inspect the full authored shadow cascade layout while
+editing. This policy never changes the saved CSM attributes or runtime shadow
+quality.
+
+### Editor preview geometry budget
+
+Imported model previews can contain far more vertex detail than the editor
+camera can resolve. The editor may temporarily simplify single-material model
+meshes that exceed the preview thresholds. The original `BufferGeometry` stays
+owned by the mesh and is restored before Play, scene save, or editor teardown.
+Meshes with material groups, multiple materials, morph targets, or an explicit
+opt-out are left untouched.
+
+```ts
+scene.userData.rendering.editorPreviewGeometryBudget = {
+  enabled: true,
+  maxTotalTriangles: 180_000,
+  maxTrianglesPerMesh: 30_000,
+  minTriangles: 8_000,
+  simplifyRatio: 0.45,
+  maxSourceTriangles: 24_000,
+};
+```
+
+This setting is editor-only. Runtime and Play always use the authored model
+geometry and asset LOD policy.
 
 ---
 
@@ -313,7 +396,7 @@ state changes during play.
 
 ## Playground vs server-backed revision control
 
-The playground/OSS storage path keeps projects local and latest-only for asset
+The playground/local storage path keeps projects local and latest-only for asset
 edits. Behavior, lambda, script import, and setting changes resolve to the
 current local version so iteration is simple.
 
@@ -330,12 +413,13 @@ interfaces behind that version-control model.
 
 ## Recommended workflow
 
-1. Pick the closest quality preset for the target device.
-2. Enable the modern scheduler for new scenes.
-3. Use fixed updates only for deterministic or physics-linked systems.
-4. Tune behavior throttling before hand-optimizing individual scripts.
-5. Use Lambda Explorer in Play mode when many objects share the same logic.
-6. Use Budget Inspector and overlays to confirm the bottleneck before lowering
+1. Pick the closest quality-policy record, then verify which settings the live
+   runtime applied.
+2. Use `fixedUpdate(fixedDeltaTime)` for physics-coupled deterministic gameplay
+   and `update(deltaTime)` for per-render animation, camera, UI, and VFX.
+3. Tune behavior throttling before hand-optimizing individual scripts.
+4. Use Lambda Explorer in Play mode when many objects share the same logic.
+5. Use Budget Inspector and overlays to confirm the bottleneck before lowering
    visual quality.
-7. Save behavior, lambda, and import assets through the editor or designer so
+6. Save behavior, lambda, and import assets through the editor or designer so
    revisions and dependencies stay pinned correctly.

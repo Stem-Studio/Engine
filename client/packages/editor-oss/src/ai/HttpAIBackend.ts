@@ -14,14 +14,12 @@ const BYOK_HEADER = "X-BYOK-Key";
 const BYOK_PROVIDER_HEADER = "X-BYOK-Provider";
 
 export interface HttpAIBackendOptions {
-    /** BYOK key store. Optional in integrated mode. */
+    /** BYOK key store. Optional for callers that do not support client keys. */
     keyStore?: BYOKKeyStore;
     /**
-     * Override base server resolver. Callers in integrated mode pass the
-     * existing `backendUrlFromPath` so this client targets the production
-     * server URL. Defaults to `window.location.origin + path`, which is the
-     * correct value for OSS dev where the editor and AI server share an
-     * origin (or for a same-origin deploy).
+     * Override base server resolver. Defaults to `window.location.origin +
+     * path`, which is the correct value when the editor and AI server share
+     * an origin.
      */
     resolveUrl?: (path: string) => string;
 }
@@ -35,9 +33,8 @@ const defaultResolveUrl = (path: string): string => {
 };
 
 /**
- * Default AIBackend implementation. Talks to the same Go backend that has
- * always served `/api/AI/*` — current production path. In OSS mode this same
- * implementation talks to a local ai-server on the same endpoints.
+ * Default AIBackend implementation. Talks to the local Go ai-server on the
+ * `/api/AI/*` endpoints.
  */
 export class HttpAIBackend implements AIBackend {
     private capabilitiesCache: AICapabilities | undefined;
@@ -86,7 +83,7 @@ export class HttpAIBackend implements AIBackend {
             return res.ok;
         } catch {
             // Storing client-side succeeded; server-side push may have failed
-            // because the configure-keys endpoint is rolled out only in OSS.
+            // because the configure-keys endpoint may be unavailable in older servers.
             // The X-BYOK-Key header on subsequent requests still carries it.
             return true;
         }
@@ -105,8 +102,7 @@ export class HttpAIBackend implements AIBackend {
             });
         } catch {
             // Local deletion is still authoritative for direct BYOK-header
-            // requests. The configure endpoint exists only in OSS, so keep
-            // clear idempotent when the server is unavailable or integrated.
+            // requests. Keep clear idempotent when the server is unavailable.
         }
     }
 

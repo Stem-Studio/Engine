@@ -3,17 +3,15 @@
 import React, {useState} from "react";
 import {useLocation, useNavigate} from "react-router";
 
-import {forkScene} from "@stem/network/api/scene/v2";
-import {useAuthorizationContext} from "@stem/editor-oss/context";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {ROUTES} from "@web-shared/routes";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {showToast} from "@stem/editor-oss/showToast";
 import closedEyeIcon from "../../../../../ui/tree/v2/icons/closed-eye.svg";
 import openEyeIcon from "../../../../../ui/tree/v2/icons/open-eye.svg";
 import {openEditorRoute} from "../../../../../v2/pages/editorHandoff";
-import {generateProjectLink, getGameUrl} from "../../../../../v2/pages/links";
+import {generatePlaygroundSceneLink, generateProjectLink, getGameUrl} from "../../../../../v2/pages/links";
 import {redirectToLogin} from "@stem/editor-oss/utils/authRedirect";
 import {PRODUCT_ANALYTICS_EVENTS, trackProductEvent} from "@stem/editor-oss/utils/productAnalytics";
 import {prepareEditCurrentGameCopilotEntry, prepareRemixCopilotEntry} from "../../AiCopilot/copilotWorkspaceEntry";
@@ -130,22 +128,18 @@ export const SceneListItem = React.memo(
 
         const onSceneClick = isNewGameItem
             ? handleCreateNewProject
-            : IS_OSS && item.ID
+            : item.ID
               ? () => {
-                    // In OSS the viewer owns every scene; tapping a card
-                    // should go straight into the editor instead of the
-                    // (integrated-only) detail page.
-                    openEditorRoute(generateProjectLink(item.ID));
+                    openEditorRoute(isPlaygroundMode()
+                        ? generatePlaygroundSceneLink(item.ID, item.Name, "edit")
+                        : generateProjectLink(item.ID));
                 }
               : () => {
                   console.debug(`[Discover] Opening game: name="${item.Name}", id="${item.ID}"`);
                   openDetail();
               };
 
-        // OSS has no auth and every local project is the user's, so treat
-        // every card as owned by the viewer — this is what shows Edit on
-        // the card and routes clicks straight into the editor.
-        const isOwnedByViewer = IS_OSS || (!!dbUser?.id && item.UserID === dbUser.id);
+        const isOwnedByViewer = true;
         // Owners can always remix their own games. Non-owners require an
         // explicit opt-in; missing legacy values are treated as locked.
         const canRemix = isOwnedByViewer || item.IsCloneable === true;
@@ -158,10 +152,7 @@ export const SceneListItem = React.memo(
         const isDashboardRoute = resolvedRouteKind === "dashboard";
         const isDiscoverRoute = resolvedRouteKind === "discover";
         const showEditButton = isOwnedByViewer && !isDiscoverRoute;
-        // OSS hides Remix everywhere: every project is local and
-        // directly editable, so the cloud-only "fork to own copy"
-        // affordance doesn't apply.
-        const showRemixButton = !IS_OSS && !isDashboardRoute;
+        const showRemixButton = false;
         const showEngagementStats = !isPlayground;
 
         const handleFork = async (e: React.MouseEvent) => {
@@ -178,6 +169,7 @@ export const SceneListItem = React.memo(
             }
             setIsForking(true);
             try {
+                const {forkScene} = await import("@stem/network/api/scene/actions");
                 const result = await forkScene(item.ID);
                 showToast({type: "success", title: "Starting a remix"});
                 if (result?.newSceneId) {
@@ -216,7 +208,9 @@ export const SceneListItem = React.memo(
                 redirectToLogin(navigate, `/play/${item.ID}`, "game_card_play");
                 return;
             }
-            const target = isDashboardRoute ? `/play/${item.ID}` : getGameUrl(item.ID, null);
+            const target = isPlayground && isDashboardRoute
+                ? generatePlaygroundSceneLink(item.ID, item.Name, "play")
+                : isDashboardRoute ? `/play/${item.ID}` : getGameUrl(item.ID, null);
             window.open(target, "_blank");
         };
 
@@ -229,15 +223,9 @@ export const SceneListItem = React.memo(
                 redirectToLogin(navigate, ROUTES.DASHBOARD, "game_card_edit");
                 return;
             }
-            // OSS opens projects straight into the advanced editor (the
-            // Copilot is available as a panel there). The cloud-only
-            // "edit via Copilot workspace" entry would otherwise force the
-            // simplified workspace layout — wrong for a local project the
-            // user explicitly chose to edit.
-            if (!IS_OSS) {
-                prepareEditCurrentGameCopilotEntry(item);
-            }
-            openEditorRoute(generateProjectLink(item.ID));
+            openEditorRoute(isPlayground
+                ? generatePlaygroundSceneLink(item.ID, item.Name, "edit")
+                : generateProjectLink(item.ID));
         };
 
         const remixCount = item.RemixCount ?? 0;
@@ -321,29 +309,6 @@ export const SceneListItem = React.memo(
                                     )}
                                 </CardMetaBlock>
                             </CardThumbBottomOverlay>
-                            {/* The "More options" button opens the /game/:id
-                                detail page (GameOverview). That page is
-                                integrated-only: it relies on the hosted
-                                publish workflow and shows "This game is not
-                                published" for local OSS scenes. OSS already
-                                routes card clicks straight into the editor, so
-                                hide the button entirely here. */}
-                            {!IS_OSS && (
-                                <CardInfoIconButton
-                                    title={item.Description || item.Name}
-                                    aria-label={`More options for ${item.Name}`}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        openDetail();
-                                    }}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                                        <circle cx="6" cy="12" r="1.6" />
-                                        <circle cx="12" cy="12" r="1.6" />
-                                        <circle cx="18" cy="12" r="1.6" />
-                                    </svg>
-                                </CardInfoIconButton>
-                            )}
                         </>
                     )}
                 </CompactMedia>

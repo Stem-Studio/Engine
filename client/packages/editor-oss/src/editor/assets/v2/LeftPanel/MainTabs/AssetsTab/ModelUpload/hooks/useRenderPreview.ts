@@ -1,12 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { Object3D, Mesh, Material } from 'three';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
-import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import * as WebGLTextureUtils from 'three/examples/jsm/utils/WebGLTextureUtils.js';
+import type { Material, Mesh, Object3D } from 'three';
 
 import { useOffscreenCanvas } from '@stem/editor-oss/hooks/useOffscreenCanvas';
 import { isGaussianSplatObject } from '@stem/editor-oss/model/gaussianSplats';
-import { ModelPreviewRenderer } from '../utils/ModelPreviewRenderer';
 import RenderWorker from '../utils/render.worker.ts?worker';
 
 type UseRenderPreviewProps = {
@@ -16,13 +12,24 @@ type UseRenderPreviewProps = {
     useOffscreen?: boolean;
 };
 
+type PreviewRendererKind = "webgl" | "webgpu";
+
+type PreviewRenderer = {
+    init: () => Promise<void> | void;
+    updateModel: (model: Object3D) => void;
+    setSize: (width: number, height: number) => void;
+    dispose: () => void;
+};
+
 export const useRenderPreview = ({
     previewModel,
     canvasRef,
     wrapperRef,
     useOffscreen = true,
 }: UseRenderPreviewProps) => {
-    const rendererRef = useRef<ModelPreviewRenderer | undefined>(undefined);
+    const rendererRef = useRef<PreviewRenderer | undefined>(undefined);
+    const rendererKindRef = useRef<PreviewRendererKind | undefined>(undefined);
+    const rendererRequestIdRef = useRef(0);
     const shouldUseOffscreen = useOffscreen && !isGaussianSplatObject(previewModel);
 
     const { worker, isOffscreen, isOffscreenRef } = useOffscreenCanvas({
@@ -32,29 +39,76 @@ export const useRenderPreview = ({
         enabled: shouldUseOffscreen,
     });
 
-    useLayoutEffect(() => {
-        const canvas = canvasRef.current;
-        const wrapper = wrapperRef.current;
-        if (!canvas || !wrapper) return;
+    const disposeRenderer = () => {
+        rendererRequestIdRef.current++;
+        if (rendererRef.current) {
+            rendererRef.current.dispose();
+            rendererRef.current = undefined;
+            rendererKindRef.current = undefined;
+        }
+    };
 
-        const width = wrapper.offsetWidth || 100;
-        const height = wrapper.offsetHeight || 100;
+    const ensureRenderer = async (
+        kind: PreviewRendererKind,
+        canvas: HTMLCanvasElement,
+        width: number,
+        height: number,
+    ): Promise<PreviewRenderer | undefined> => {
+        if (rendererRef.current && rendererKindRef.current === kind) {
+            rendererRef.current.setSize(width, height);
+            return rendererRef.current;
+        }
 
-        if (isOffscreenRef.current) return;
+        disposeRenderer();
+        const requestId = ++rendererRequestIdRef.current;
+        const { devicePixelRatio } = window;
 
-        if (rendererRef.current) return;
+        const Renderer = kind === "webgpu"
+            ? (await import('../utils/ModelPreviewRenderer')).ModelPreviewRenderer
+            : (await import('../utils/ModelPreviewWebGLRenderer')).ModelPreviewWebGLRenderer;
 
-        const renderer = new ModelPreviewRenderer(canvas, width, height, window.devicePixelRatio);
-        void renderer.init();
+        if (requestId !== rendererRequestIdRef.current || isOffscreenRef.current) {
+            return undefined;
+        }
+
+        const renderer = new Renderer(canvas, width, height, devicePixelRatio);
         rendererRef.current = renderer;
+        rendererKindRef.current = kind;
 
+        try {
+            await renderer.init();
+        } catch (error) {
+            renderer.dispose();
+            if (rendererRef.current === renderer) {
+                rendererRef.current = undefined;
+                rendererKindRef.current = undefined;
+            }
+            throw error;
+        }
+
+        if (requestId !== rendererRequestIdRef.current || isOffscreenRef.current) {
+            if (rendererRef.current === renderer) {
+                rendererRef.current = undefined;
+                rendererKindRef.current = undefined;
+            }
+            renderer.dispose();
+            return undefined;
+        }
+
+        return renderer;
+    };
+
+    useLayoutEffect(() => {
         return () => {
-             if (rendererRef.current) {
-                 rendererRef.current.dispose();
-                 rendererRef.current = undefined;
-             }
+            disposeRenderer();
         };
-    }, [canvasRef, wrapperRef, isOffscreen]);
+    }, []);
+
+    useEffect(() => {
+        if (isOffscreenRef.current) {
+            disposeRenderer();
+        }
+    }, [isOffscreen]);
 
     useEffect(() => {
         const wrapper = wrapperRef.current;
@@ -77,12 +131,17 @@ export const useRenderPreview = ({
         if (!previewModel) return;
 
         const updateWorker = async () => {
+             const [
+                 { GLTFExporter },
+                 WebGLTextureUtils,
+             ] = await Promise.all([
+                 import('three/addons/exporters/GLTFExporter.js'),
+                 import('three/addons/utils/WebGLTextureUtils.js'),
+             ]);
              const exporter = new GLTFExporter();
 
-             let tempRenderer: import('three').WebGLRenderer | undefined;
-
              try {
-                exporter.setTextureUtils(WebGLTextureUtils);
+                 exporter.setTextureUtils(WebGLTextureUtils);
              } catch (e) {
                  console.warn("Could not setup TextureUtils for export. Compressed textures may cause issues:", e);
              }
@@ -91,7 +150,6 @@ export const useRenderPreview = ({
                  exporter.parse(
                      model,
                      (gltf) => {
-                         tempRenderer?.dispose();
                          const buffer = gltf as ArrayBuffer;
                          if (isOffscreenRef.current && worker) {
                             worker.postMessage({
@@ -108,14 +166,13 @@ export const useRenderPreview = ({
                          if (retryCount === 0 && error.message.includes('setTextureUtils')) {
                              console.warn('Compressed textures detected and export failed. Retrying with stripped textures as fallback.');
 
-                             tempRenderer?.dispose();
-
-                             Promise.resolve().then(() => {
+                             Promise.resolve().then(async () => {
+                                const { clone: cloneModel } = await import('three/addons/utils/SkeletonUtils.js');
                                  const clone = cloneModel(model);
                                  clone.traverse((child) => {
                                      if ((child as Mesh).isMesh) {
                                          const mesh = child as Mesh;
-                                         if(mesh.material) {
+                                         if (mesh.material) {
                                              const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
                                              materials.forEach((m) => {
                                                  const mat = m as Material & {
@@ -142,8 +199,6 @@ export const useRenderPreview = ({
                                  const clone = model.clone();
                                  tryExport(clone, retryCount + 1);
                              });
-                         } else {
-                             tempRenderer?.dispose();
                          }
                      },
                      { binary: true },
@@ -155,8 +210,29 @@ export const useRenderPreview = ({
 
         if (isOffscreenRef.current && worker) {
             void updateWorker();
-        } else if (rendererRef.current) {
-             rendererRef.current.updateModel(previewModel);
+        } else {
+            const canvas = canvasRef.current;
+            const wrapper = wrapperRef.current;
+            if (!canvas || !wrapper) return;
+
+            let cancelled = false;
+            const kind: PreviewRendererKind = isGaussianSplatObject(previewModel) ? "webgpu" : "webgl";
+            const width = wrapper.offsetWidth || 100;
+            const height = wrapper.offsetHeight || 100;
+
+            ensureRenderer(kind, canvas, width, height)
+                .then(renderer => {
+                    if (!cancelled && renderer) {
+                        renderer.updateModel(previewModel);
+                    }
+                })
+                .catch(error => {
+                    console.error("Failed to initialize model preview renderer:", error);
+                });
+
+            return () => {
+                cancelled = true;
+            };
         }
 
     }, [previewModel, isOffscreen, worker]);

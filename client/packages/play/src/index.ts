@@ -1,17 +1,12 @@
 // Initialize custom logger early in application startup
 import {initializeLogger} from "@web-shared/utils/Logger";
 import "@web-shared/polyfills";
-// Side-effect import: registers FirebaseAuthProvider / Analytics /
-// Firestore-backed RemoteDocStore / RemoteProjectStore / AIBackend / copilot
-// in the editor-oss factories. Without this the AuthorizationContext
-// provider that EngineRuntime.init() mounts inside the Player tree throws
-// at first render — getAuthProvider() refuses to silently fall back to
-// NullAuthProvider in integrated mode. In OSS builds the same import is a
-// no-op via the vite alias to client/oss-stubs/auth-firebase.ts.
+// Side-effect import: keeps the historical bootstrap path alive and
+// registers open-source browser integrations.
 import "@web-shared/bootstrap/integrated";
 import EngineRuntime from "@web-shared/EngineRuntime";
 import {AppEntrypoint, setAppEntrypoint} from "@web-shared/entrypoint";
-import {DiscordController} from "@web-shared/userManagement/playerProfile/game-service-controllers/DiscordController";
+import {isInDiscordEnvironment} from "@web-shared/userManagement/playerProfile/discordEnvironment";
 import {getQueryString} from "@web-shared/utils/QueryStringUtils";
 import {createBackendAdapter} from "@stem/network";
 
@@ -45,7 +40,7 @@ const start = async () => {
         : rawPathProjectId;
 
     let sceneID = pathSceneId || getQueryString("sceneID");
-    if (DiscordController.isInDiscord()) {
+    if (isInDiscordEnvironment()) {
         try {
             const discordAppId = location.host.split(".")[0];
             const mappingResponse = await fetch(`/.proxy/resolveSceneId/${discordAppId}`);

@@ -18,6 +18,7 @@ export class MultiplayerWorker {
     private mpClient: MultiplayerClient;
     private handlers: Map<string, MessageHandler>;
     private queue: WorkerMessage[] = [];
+    private queueHead = 0;
     private isDrainScheduled: boolean = false;
     private readonly drainBatchSize: number;
 
@@ -48,14 +49,26 @@ export class MultiplayerWorker {
     private drainQueue(): void {
         this.isDrainScheduled = false;
         let processed = 0;
-        while (this.queue.length > 0 && processed < this.drainBatchSize) {
-            const data = this.queue.shift();
+        while (this.queueHead < this.queue.length && processed < this.drainBatchSize) {
+            const data = this.queue[this.queueHead++];
             if (data) {
                 this.dispatch(data);
                 processed++;
             }
         }
-        if (this.queue.length > 0) {
+
+        if (this.queueHead >= this.queue.length) {
+            this.queue.length = 0;
+            this.queueHead = 0;
+            return;
+        }
+
+        if (this.queueHead >= 1024 && this.queueHead * 2 >= this.queue.length) {
+            this.queue.splice(0, this.queueHead);
+            this.queueHead = 0;
+        }
+
+        if (this.queueHead < this.queue.length) {
             this.isDrainScheduled = true;
             setTimeout(() => this.drainQueue(), 0);
         }

@@ -87,6 +87,37 @@ describe("RuntimeBudgetCoordinator", () => {
         expect(snapshot.pressure).toBe("critical");
         expect(snapshot.reason).toBe("managed-texture-critical");
     });
+
+    it("keeps update defensively copied while frame updates reuse the stored snapshot", () => {
+        const mutableStats = {
+            textureBytes: 80 * MB,
+            textureCount: 4,
+            residentTextureBytes: 80 * MB,
+            residentTextureCount: 4,
+            materialCount: 2,
+            sharedMaterialCount: 0,
+        };
+        const manager = {
+            getStats: () => ({...mutableStats}),
+            getStatsForFrame: () => mutableStats,
+        };
+        const coordinator = new RuntimeBudgetCoordinator({
+            managedTextureTargetBytes: 100 * MB,
+            warningRatio: 0.8,
+        });
+
+        const publicSnapshot = coordinator.update({textureResidencyManager: manager});
+        publicSnapshot.textureStats!.textureBytes = 1;
+        expect(coordinator.getSnapshot().textureStats!.textureBytes).toBe(80 * MB);
+
+        const firstFrameSnapshot = coordinator.updateForFrame({textureResidencyManager: manager});
+        mutableStats.residentTextureBytes = 90 * MB;
+        const secondFrameSnapshot = coordinator.updateForFrame({textureResidencyManager: manager});
+
+        expect(secondFrameSnapshot).toBe(firstFrameSnapshot);
+        expect(secondFrameSnapshot.managedTextureBytes).toBe(90 * MB);
+        expect(secondFrameSnapshot.textureStats).toBe(mutableStats);
+    });
 });
 
 function update(coordinator: RuntimeBudgetCoordinator, residentMb: number): RuntimeBudgetSnapshot {

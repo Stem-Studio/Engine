@@ -19,7 +19,7 @@ const mockGetAsset = vi.fn();
 const mockSeedScriptDependencyEntry = vi.fn();
 const mockBuildNameAwareScriptImportContext = vi.fn();
 const mockGetScriptImportDependencyMap = vi.fn();
-const mockLoadScriptImportRevisionMap = vi.fn();
+const mockLoadReferencedScriptImportRevisionMap = vi.fn();
 const mockGetAssetResolutionContext = vi.fn();
 const mockRemoveAssetRevision = vi.fn();
 vi.mock("../asset-management/hooks/assets", () => ({
@@ -31,6 +31,7 @@ vi.mock("../asset-management/hooks/assets", () => ({
 
 const mockSetAssetRevision = vi.fn();
 vi.mock("../../asset-management/AssetResolutionContext", () => ({
+    emptyAssetResolutionContext: {},
     getAssetResolutionContext: (...args: unknown[]) => mockGetAssetResolutionContext(...args),
     removeAssetRevision: (...args: unknown[]) => mockRemoveAssetRevision(...args),
     setAssetRevision: (...args: unknown[]) => mockSetAssetRevision(...args),
@@ -40,10 +41,10 @@ vi.mock("../../script-runtime/scriptDependencyCache", () => ({
     seedScriptDependencyEntry: (...args: unknown[]) => mockSeedScriptDependencyEntry(...args),
 }));
 
-vi.mock("../../script-runtime/scriptImports", () => ({
+vi.mock("../../script-runtime/scriptImportCore", () => ({
     buildNameAwareScriptImportContext: (...args: unknown[]) => mockBuildNameAwareScriptImportContext(...args),
     getScriptImportDependencyMap: (...args: unknown[]) => mockGetScriptImportDependencyMap(...args),
-    loadScriptImportRevisionMap: (...args: unknown[]) => mockLoadScriptImportRevisionMap(...args),
+    loadReferencedScriptImportRevisionMap: (...args: unknown[]) => mockLoadReferencedScriptImportRevisionMap(...args),
 }));
 
 vi.mock("@stem/network/api/asset", () => ({
@@ -120,7 +121,7 @@ describe("updateBehaviorRegistries", () => {
         mockGetAssetResolutionContext.mockReturnValue(null);
         mockBuildNameAwareScriptImportContext.mockImplementation(async (_sceneId: string | undefined, context: unknown) => context ?? {});
         mockGetScriptImportDependencyMap.mockReturnValue({});
-        mockLoadScriptImportRevisionMap.mockResolvedValue({});
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue({});
         createMockApp();
     });
 
@@ -169,7 +170,7 @@ describe("updateSceneBehaviorRevision", () => {
         mockGetAssetResolutionContext.mockReturnValue(null);
         mockBuildNameAwareScriptImportContext.mockImplementation(async (_sceneId: string | undefined, context: unknown) => context ?? {});
         mockGetScriptImportDependencyMap.mockReturnValue({});
-        mockLoadScriptImportRevisionMap.mockResolvedValue({});
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue({});
     });
 
     it("updates registries, asset resolution context, and fires events", async () => {
@@ -186,6 +187,105 @@ describe("updateSceneBehaviorRevision", () => {
         expect(mockSetAssetRevision).toHaveBeenCalledWith(app.scene, "bhv-1", "rev-2");
         expect(editor.syncSceneBehaviorConfigs).toHaveBeenCalled();
         expect(app.call).toHaveBeenCalledWith("objectChanged", null, app.scene);
+    });
+
+    it("can defer scene sync while still registering and parsing the behavior", async () => {
+        const { editor, app } = createMockApp();
+
+        await updateSceneBehaviorRevision({
+            assetId: "bhv-1",
+            revisionId: "rev-2",
+            code: "code",
+            config: testConfig,
+            deferSceneSync: true,
+        });
+
+        expect(editor.behaviorConfigRegistry.registerConfig).toHaveBeenCalledWith("bhv-1", testConfig);
+        expect(mockSetAssetRevision).toHaveBeenCalledWith(app.scene, "bhv-1", "rev-2");
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalled();
+        expect(editor.syncSceneBehaviorConfigs).not.toHaveBeenCalled();
+        expect(app.call).not.toHaveBeenCalledWith("objectChanged", null, app.scene);
+    });
+
+    it("reuses a precomputed script import context and parses the behavior once", async () => {
+        const { editor } = createMockApp();
+        const importContext = {assetIdToRevisionId: {"script-1": "script-rev"}};
+        const importRevisionMap = {
+            "script-1:script-rev": {
+                assetId: "script-1",
+                revisionId: "script-rev",
+                code: "function helper() {}",
+            },
+        };
+        mockGetScriptImportDependencyMap.mockReturnValue({"script-1": "script-rev"});
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue(importRevisionMap);
+
+        await updateSceneBehaviorRevision({
+            assetId: "bhv-1",
+            revisionId: "rev-2",
+            code: "import {helper} from 'script-1';",
+            config: testConfig,
+            scriptImportContext: importContext,
+        });
+
+        expect(mockBuildNameAwareScriptImportContext).not.toHaveBeenCalled();
+        expect(mockGetScriptImportDependencyMap).toHaveBeenCalledWith("import {helper} from 'script-1';", importContext);
+        expect(mockLoadReferencedScriptImportRevisionMap).toHaveBeenCalledWith(
+            "import {helper} from 'script-1';",
+            importContext,
+            undefined,
+        );
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalledTimes(1);
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalledWith(
+            "bhv-1",
+            "import {helper} from 'script-1';",
+            importContext,
+            importRevisionMap,
+            {contextIsNameAware: true},
+        );
+    });
+
+    it("reuses and extends a shared script import revision map", async () => {
+        const { editor } = createMockApp();
+        const importContext = {assetIdToRevisionId: {"script-1": "script-rev"}};
+        const sharedImportRevisionMap = {
+            "script-0:script-rev": {
+                assetId: "script-0",
+                revisionId: "script-rev",
+                code: "function cached() {}",
+            },
+        };
+        const importRevisionMap = {
+            "script-1:script-rev": {
+                assetId: "script-1",
+                revisionId: "script-rev",
+                code: "function helper() {}",
+            },
+        };
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue(importRevisionMap);
+
+        await updateSceneBehaviorRevision({
+            assetId: "bhv-1",
+            revisionId: "rev-2",
+            code: "import {helper} from 'script-1';",
+            config: testConfig,
+            scriptImportContext: importContext,
+            scriptImportRevisionMap: sharedImportRevisionMap,
+        });
+
+        expect(mockLoadReferencedScriptImportRevisionMap).toHaveBeenCalledWith(
+            "import {helper} from 'script-1';",
+            importContext,
+            sharedImportRevisionMap,
+        );
+        expect(sharedImportRevisionMap).toMatchObject(importRevisionMap);
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalledWith(
+            "bhv-1",
+            "import {helper} from 'script-1';",
+            importContext,
+            importRevisionMap,
+            {contextIsNameAware: true},
+        );
     });
 
     it("reads existing config for attribute diff before overwriting", async () => {
@@ -222,7 +322,7 @@ describe("updateSceneBehaviorRevision", () => {
         const importRevisionMap = {"script-1": "script-rev"};
         mockGetAssetResolutionContext.mockReturnValue(sceneContext);
         mockGetScriptImportDependencyMap.mockReturnValue({"script-1": "script-rev"});
-        mockLoadScriptImportRevisionMap.mockResolvedValue(importRevisionMap);
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue(importRevisionMap);
         editor.behaviorConfigRegistry.getConfig.mockImplementation((id: string) => id === "bhv-1" ? testConfig : null);
         editor.behaviorScriptRegistry.getScript.mockImplementation((id: string) => id === "bhv-1" ? "old code" : null);
 
@@ -251,6 +351,7 @@ describe("updateSceneBehaviorRevision", () => {
             "import {helper} from 'script-1';",
             sceneContext,
             importRevisionMap,
+            {contextIsNameAware: true},
         );
     });
 });
@@ -263,7 +364,7 @@ describe("createBehavior", () => {
         mockGetAssetResolutionContext.mockReturnValue(null);
         mockBuildNameAwareScriptImportContext.mockImplementation(async (_sceneId: string | undefined, context: unknown) => context ?? {});
         mockGetScriptImportDependencyMap.mockReturnValue({});
-        mockLoadScriptImportRevisionMap.mockResolvedValue({});
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue({});
         createMockApp();
     });
 
@@ -304,6 +405,24 @@ describe("createBehavior", () => {
         expect(mockSetAssetRevision).toHaveBeenCalled();
     });
 
+    it("honors deferred scene sync for batch-created behaviors", async () => {
+        mockCreateAsset.mockResolvedValue({ id: "new-asset-id", headRevisionId: "rev-1" });
+        const { editor, app } = createMockApp();
+
+        await createBehavior({
+            assetSource: {} as unknown as AssetSource,
+            name: "Test",
+            code: "code",
+            config: { ...testConfig, id: "" },
+            deferSceneSync: true,
+        });
+
+        expect(mockSetAssetRevision).toHaveBeenCalledWith(app.scene, "new-asset-id", "rev-1");
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalled();
+        expect(editor.syncSceneBehaviorConfigs).not.toHaveBeenCalled();
+        expect(app.call).not.toHaveBeenCalledWith("objectChanged", null, app.scene);
+    });
+
     it("skips updateSceneBehaviorRevision when no assetSource is provided", async () => {
         mockCreateAsset.mockResolvedValue({ id: "new-asset-id", headRevisionId: "rev-1" });
         createMockApp();
@@ -323,7 +442,7 @@ describe("createBehaviorRevision", () => {
         mockGetAssetResolutionContext.mockReturnValue(null);
         mockBuildNameAwareScriptImportContext.mockImplementation(async (_sceneId: string | undefined, context: unknown) => context ?? {});
         mockGetScriptImportDependencyMap.mockReturnValue({});
-        mockLoadScriptImportRevisionMap.mockResolvedValue({});
+        mockLoadReferencedScriptImportRevisionMap.mockResolvedValue({});
         createMockApp();
     });
 
@@ -378,6 +497,25 @@ describe("createBehaviorRevision", () => {
         await vi.waitFor(() => {
             expect(mockSetAssetRevision).toHaveBeenCalled();
         });
+    });
+
+    it("honors deferred scene sync for batch behavior revisions", async () => {
+        mockCreateAssetRevision.mockResolvedValue({ id: "rev-2", assetId: "bhv-1" });
+        const { editor, app } = createMockApp();
+
+        await createBehaviorRevision({
+            assetId: "bhv-1",
+            parentRevisionId: "rev-1",
+            code: "code",
+            config: testConfig,
+            assetSource: {} as unknown as AssetSource,
+            deferSceneSync: true,
+        });
+
+        expect(mockSetAssetRevision).toHaveBeenCalledWith(app.scene, "bhv-1", "rev-2");
+        expect(editor.parseAndRegisterScriptBehavior).toHaveBeenCalled();
+        expect(editor.syncSceneBehaviorConfigs).not.toHaveBeenCalled();
+        expect(app.call).not.toHaveBeenCalledWith("objectChanged", null, app.scene);
     });
 
     it("skips updateSceneBehaviorRevision when no assetSource is provided", async () => {

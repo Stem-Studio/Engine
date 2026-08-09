@@ -2,8 +2,6 @@ import {showToast} from "@web-shared/showToast";
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
 
-import {IS_OSS} from "../../buildMode";
-
 export interface IGameMapping {
     id?: string;
     GameID: string;
@@ -67,22 +65,8 @@ export const checkSlugExists = async (slug: string): Promise<ISlugCheckResponse 
  * Get the mapping for a specific game
  * @param gameId
  */
-export const getGameMapping = async (gameId: string): Promise<IGameMapping | null> => {
-    if (IS_OSS) return null;
-    try {
-        const url = backendUrlFromPath(`/api/game-mapping/game?gameId=${encodeURIComponent(gameId)}`);
-        const response = await Ajax.get({url, needAuthorization: false});
-
-        if (response?.status === 200 && response.data.found) {
-            return response.data.mapping;
-        } else {
-            return null;
-        }
-    } catch (error) {
-        console.error("Error fetching game mapping:", error);
-        showToast({type: "error", title: "Error fetching game mapping"});
-        return null;
-    }
+export const getGameMapping = async (_gameId: string): Promise<IGameMapping | null> => {
+    return null;
 };
 
 /**

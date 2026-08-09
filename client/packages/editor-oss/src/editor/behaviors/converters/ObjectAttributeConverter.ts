@@ -6,6 +6,7 @@ import BehaviorAttributeType from "../BehaviorAttributeType";
 import AttributeConverter from "./AttributeConverter";
 import {BehaviorContext} from "../BehaviorContextProvider";
 import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
+import {findObjectDepthFirst, traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 /**
     Finds all objects in the scene and adds them to the options array
@@ -16,17 +17,7 @@ class ObjectAttributeConverter implements AttributeConverter {
      * @param object
      */
     private containsMesh(object: Object3D): boolean {
-        if ((object as Object3D & {isMesh?: boolean}).isMesh) {
-            return true;
-        }
-        if (object.children) {
-            for (const child of object.children) {
-                if (this.containsMesh(child)) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return findObjectDepthFirst(object, child => (child as Object3D & {isMesh?: boolean}).isMesh === true) !== null;
     }
 
     convertAttribute(attributeData: BehaviorAttributeData, behaviorContext: BehaviorContext): ObjectAttribute {
@@ -43,7 +34,7 @@ class ObjectAttributeConverter implements AttributeConverter {
         const filter = attributeData.filter as string | undefined;
         const seenUuids = new Set<string>();
 
-        editor.scene.traverse((child: Object3D) => {
+        traverseObjectDepthFirst(editor.scene, (child: Object3D) => {
             const childFlags = child as Object3D & {
                 isCamera?: boolean;
                 isLight?: boolean;

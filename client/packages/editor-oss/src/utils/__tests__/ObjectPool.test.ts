@@ -74,6 +74,32 @@ describe('ObjectPool', () => {
         expect(pool.getStats().total).toBe(3);
     });
 
+    it('should not retain overflow allocations beyond maxSize', () => {
+        const pool = makePool({ maxSize: 2 });
+        const a = pool.get();
+        const b = pool.get();
+        const overflow = pool.get();
+
+        expect(pool.getStats()).toEqual({ total: 2, available: 0, inUse: 2 });
+
+        pool.release(overflow);
+        expect(pool.getStats()).toEqual({ total: 2, available: 0, inUse: 2 });
+
+        pool.release(a);
+        pool.release(b);
+        expect(pool.getStats()).toEqual({ total: 2, available: 2, inUse: 0 });
+    });
+
+    it('should ignore duplicate releases', () => {
+        const pool = makePool({ maxSize: 2 });
+        const item = pool.get();
+
+        pool.release(item);
+        pool.release(item);
+
+        expect(pool.getStats()).toEqual({ total: 1, available: 1, inUse: 0 });
+    });
+
     it('should clear the pool', () => {
         const pool = makePool({ initialSize: 5 });
         pool.get();

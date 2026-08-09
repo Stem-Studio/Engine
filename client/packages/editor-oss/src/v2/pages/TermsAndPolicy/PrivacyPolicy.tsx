@@ -1,8 +1,3 @@
-// Written by scripts/export-oss.ts. StemStudio runs entirely on your
-// machine: no telemetry is reported, projects are stored in this
-// browser's IndexedDB or in a folder you picked, and AI provider keys
-// you configure are stored locally and only forwarded to the AI server
-// you point the editor at.
 import React from "react";
 
 export const PrivacyPolicy: React.FC = () => (

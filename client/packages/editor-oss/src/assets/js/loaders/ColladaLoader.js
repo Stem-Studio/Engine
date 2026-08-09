@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import { ColladaLoader as ThreeColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
+import { ColladaLoader as ThreeColladaLoader } from "three/addons/loaders/ColladaLoader.js";
 
 import BaseLoader from "./BaseLoader";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 
 /**
  * ColladaLoader
@@ -21,7 +22,7 @@ class ColladaLoader extends BaseLoader {
                 collada => {
                     var dae = collada.scene;
 
-                    dae.traverse(child => {
+                    traverseObjectDepthFirst(dae, child => {
                         if (child instanceof THREE.Mesh) {
                             child.material.flatShading = true;
                         }

@@ -23,6 +23,7 @@ export function useEditorSelection(namespace: string) {
         if (!app) return;
 
         app.on(`objectSelected.${namespace}`, increment);
+        app.on(`objectArraySelected.${namespace}`, increment);
         app.on(`objectChanged.${namespace}`, increment);
         app.on(`cadModeChanged.${namespace}`, increment);
         app.on(`cadToolChanged.${namespace}`, increment);
@@ -37,6 +38,7 @@ export function useEditorSelection(namespace: string) {
 
         return () => {
             app.on(`objectSelected.${namespace}`, null);
+            app.on(`objectArraySelected.${namespace}`, null);
             app.on(`objectChanged.${namespace}`, null);
             app.on(`cadModeChanged.${namespace}`, null);
             app.on(`cadToolChanged.${namespace}`, null);

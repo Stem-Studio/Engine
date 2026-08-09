@@ -4,6 +4,7 @@ import {ParticleEmitter, QuarksUtil} from "three.quarks";
 import EventBus from "../../../behaviors/event/EventBus";
 import {IMultiplayerState} from "../../../behaviors/state/IMultiplayerState";
 import global from "@stem/editor-oss/global";
+import {findObjectDepthFirst, traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {PhysicsUtil} from "../../../physics/PhysicsUtil";
 import {BehaviorBase} from "../../Behavior";
 import GameManager from "../../game/GameManager";
@@ -142,7 +143,7 @@ class VisualEffectBehavior extends BehaviorBase {
         if (this.attributes.triggerByParent && !skipCheck) {
             if (data?.target && data.target instanceof Object3D) {
                 // Check if the target is a parent of the visual effect. We can also check original parent here
-                if (!data.target.getObjectByProperty("uuid", this.originalParent?.uuid)) {
+                if (!this.triggerTargetContainsOriginalParent(data.target)) {
                     return;
                 }
             } else {
@@ -184,7 +185,7 @@ class VisualEffectBehavior extends BehaviorBase {
         if (this.attributes.triggerByParent && !skipCheck) {
             if (data?.target && data.target instanceof Object3D) {
                 // Check if the target is a parent of the visual effect. We can also check original parent here
-                if (!data.target.getObjectByProperty("uuid", this.originalParent?.uuid)) {
+                if (!this.triggerTargetContainsOriginalParent(data.target)) {
                     return;
                 }
             } else {
@@ -272,6 +273,11 @@ class VisualEffectBehavior extends BehaviorBase {
             clearTimeout(this.stopTimer);
             this.stopTimer = null;
         }
+    }
+
+    private triggerTargetContainsOriginalParent(target: Object3D): boolean {
+        const originalParentUuid = this.originalParent?.uuid;
+        return !!originalParentUuid && findObjectDepthFirst(target, object => object.uuid === originalParentUuid) !== null;
     }
 
     /**
@@ -367,11 +373,25 @@ class VisualEffectBehavior extends BehaviorBase {
     }
 
     private processParticleSystems = (object3d: Object3D) => {
-        object3d.traverse(obj => {
-            if (obj instanceof ParticleEmitter && global.app?.batchedRenderer) {
-                QuarksUtil.addToBatchRenderer(obj, global.app.batchedRenderer);
+        const emitters: ParticleEmitter[] = [];
+        traverseObjectDepthFirst(object3d, obj => {
+            if (obj instanceof ParticleEmitter) {
+                emitters.push(obj);
             }
         });
+        if (emitters.length === 0) {
+            return;
+        }
+
+        void global.app?.ensureBatchedRenderer()
+            .then(batchedRenderer => {
+                for (const emitter of emitters) {
+                    QuarksUtil.addToBatchRenderer(emitter, batchedRenderer);
+                }
+            })
+            .catch(error => {
+                console.warn("[VisualEffectBehavior] Failed to initialize VFX renderer:", error);
+            });
     };
 }
 

@@ -96,11 +96,10 @@ function consumePendingProjectAdvancedModePreference(): boolean | undefined {
 export function resolveAdvancedModePreferenceForProject(input: {
     sceneID: string;
     aiPromptMode?: boolean;
-    isOSS?: boolean;
     isPlayground?: boolean;
     /**
      * Whether the playground copilot has a usable provider key. Only consulted
-     * in the OSS playground: an AI-prompt project there only opens in the
+     * in local playground mode: an AI-prompt project there only opens in the
      * AI-focused layout if the copilot can actually run. `undefined` means
      * "unknown" and is treated as no constraint.
      */
@@ -121,22 +120,18 @@ export function resolveAdvancedModePreferenceForProject(input: {
     // a project created via the dashboard AI-prompt flow (`aiPromptMode`),
     // which opens in AI-focused mode so the copilot is the primary surface.
     //
-    // The integrated build always honours `aiPromptMode`. The OSS build only
-    // honours it inside the playground iframe: outside the playground there
-    // is no hosted copilot to default into, and flipping the workspace UI on
-    // a persisted scene flag made plain project loads non-deterministic.
+    // This repository only honours `aiPromptMode` inside the playground iframe:
+    // outside the playground there is no default copilot surface, and flipping
+    // the workspace UI on a persisted scene flag made plain project loads
+    // non-deterministic.
     //
-    // In the OSS playground there is one further gate: the AI-focused layout
-    // is only useful when the browser-direct copilot can actually run, so a
+    // In the playground there is one further gate: the AI-focused layout is
+    // only useful when the browser-direct copilot can actually run, so a
     // missing provider key falls back to advanced mode. The copilot panel is
     // still present in the advanced layout, so the visitor can add a key via
     // its "Keys" button and the copilot becomes usable in place.
-    if (input.aiPromptMode && (!input.isOSS || input.isPlayground)) {
-        const blockedByMissingKey =
-            input.isOSS === true &&
-            input.isPlayground === true &&
-            input.hasCopilotKeys === false;
-        if (!blockedByMissingKey) {
+    if (input.aiPromptMode && input.isPlayground === true) {
+        if (input.hasCopilotKeys !== false) {
             writeProjectAdvancedModePreference(input.sceneID, false);
             return {value: false, source: "aiPromptMode"};
         }

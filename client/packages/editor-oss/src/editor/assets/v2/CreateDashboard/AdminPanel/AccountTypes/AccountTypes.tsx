@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 
 import {AccountType, getUsersByAccountType, setUserAccountType} from "@stem/network/api/user";
-import {useAppGlobalContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {BasicComboboxNoPortal} from "../../../common/BasicCombobox/BasicComboboxNoPortal";
 import {StyledButton} from "../../../common/StyledButton";

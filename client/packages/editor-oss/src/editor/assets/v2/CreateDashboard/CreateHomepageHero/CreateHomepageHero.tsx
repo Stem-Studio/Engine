@@ -1,4 +1,4 @@
-import {useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
+import {lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import {HiOutlineCube, HiOutlineKey, HiOutlineSparkles} from "react-icons/hi2";
 import {useNavigate} from "react-router-dom";
 
@@ -23,9 +23,11 @@ import {getHomepageContent, HomepageSuggestion} from "@stem/network/api/homepage
 import {ROUTES} from "@web-shared/routes";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {PRODUCT_ANALYTICS_EVENTS, trackProductEvent} from "@stem/editor-oss/utils/productAnalytics";
-import {hasCopilotKeysSync, refreshCopilotKeysMarker} from "../../../../../copilot";
-import {AiKeysModal} from "../../AiCopilot/AiKeysModal";
+import {hasCopilotKeysSync} from "../../../../../copilot/playgroundCopilotKeyMarker";
+import {refreshCopilotKeysMarker} from "../../../../../copilot/playgroundCopilotKeys";
 import {savePickerPrompt} from "../CreateDashboardView/baseGamePickerStorage";
+
+const AiKeysModal = lazy(() => import("../../AiCopilot/AiKeysModal").then(module => ({default: module.AiKeysModal})));
 
 const DEFAULT_SUGGESTIONS: HomepageSuggestion[] = [
     {
@@ -331,7 +333,11 @@ export const CreateHomepageHero = ({onPromptSubmit, onScratchStart, isBusy = fal
                     Start from scratch
                 </ScratchButton>
             </PromptCard>
-            {isKeysOpen && <AiKeysModal onClose={handleKeysClose} />}
+            {isKeysOpen && (
+                <Suspense fallback={null}>
+                    <AiKeysModal onClose={handleKeysClose} />
+                </Suspense>
+            )}
         </CreateHomepageHeroWrapper>
     );
 };

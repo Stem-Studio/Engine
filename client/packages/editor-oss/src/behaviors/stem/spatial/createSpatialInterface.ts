@@ -3,10 +3,10 @@ import type {StemSpatial, OctreeHandle, SpatialIntersection, SpatialRayHit} from
 // Cached library promise so the dynamic import only fires once. The Octree
 // addon ships with `three` but is only meaningful when a behavior actually
 // builds an octree, so it lives in its own chunk and loads on demand.
-type OctreeModule = typeof import("three/examples/jsm/math/Octree.js");
+type OctreeModule = typeof import("three/addons/math/Octree.js");
 let _libPromise: Promise<OctreeModule> | null = null;
 const loadLib = (): Promise<OctreeModule> => {
-    if (!_libPromise) _libPromise = import("three/examples/jsm/math/Octree.js");
+    if (!_libPromise) _libPromise = import("three/addons/math/Octree.js");
     return _libPromise;
 };
 
@@ -32,7 +32,7 @@ const adaptRayHit = (
     };
 };
 
-const wrap = (octree: import("three/examples/jsm/math/Octree.js").Octree): OctreeHandle => {
+const wrap = (octree: import("three/addons/math/Octree.js").Octree): OctreeHandle => {
     const handle: OctreeHandle = {
         fromGroup(group) {
             octree.fromGraphNode(group);

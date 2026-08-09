@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import {traverseObjectDepthFirst} from '../../utils/SceneTraverser';
+
 export class PlayerBones {
     characterBoneOptions: string[] = [];
 
@@ -9,7 +11,7 @@ export class PlayerBones {
         this.characterBoneOptions = [];
         let hipsBone: THREE.Object3D | null = null;
 
-        this.player.traverse(object => {
+        traverseObjectDepthFirst(this.player, object => {
             if (object.type === 'Bone') {
                 const boneName = object.name.replace('mixamorig', '');
                 this.characterBoneOptions.push(boneName);

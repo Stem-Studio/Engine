@@ -1,5 +1,7 @@
 import {Group, type Object3D, type Scene} from "three";
 
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+
 /** Canonical runtime-only scene root for dynamic, non-serialized objects. */
 export const DYNAMIC_ROOT_NAME = "[Dynamic]";
 /** Nested helper root under the dynamic root used for editor-only helper objects. */
@@ -100,7 +102,7 @@ export function getOrCreateSceneHelpersRoot(scene: Scene): Group {
  * @returns Nothing.
  */
 export function syncSceneHelperSubtreeLayers(root: Object3D): void {
-    root.traverse(object => {
+    traverseObjectDepthFirst(root, object => {
         object.userData.isRuntimeOnly = true;
         object.userData.isSelectable = false;
         object.userData.isSceneHelper = true;

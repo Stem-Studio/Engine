@@ -27,6 +27,7 @@ export interface ApplicationPropsOptions {
     shadowMapType?: number;
     shadowRadius?: number;
     shadowBlurSamples?: number;
+    /** @deprecated Three.js no longer uses renderer.gammaFactor; retained as a no-op input for API compatibility. */
     gammaFactor?: number;
     hueRotate?: number;
     saturate?: number;
@@ -51,6 +52,7 @@ class ApplicationProps {
     shadowMapType: number;
     shadowRadius: number;
     shadowBlurSamples: number;
+    /** @deprecated Three.js no longer uses renderer.gammaFactor; retained as a no-op input for API compatibility. */
     gammaFactor: number;
     hueRotate: number;
     saturate: number;

@@ -4,6 +4,16 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
 import {collectExportAssetRefs, exportAssets} from "./export";
 import {getAsset, getAssetDerivatives, getAssetRevision} from "@stem/network/api/asset";
 
+function addDeepChain(root: Object3D, depth = 12_000): Object3D {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
+}
+
 vi.mock("@stem/network/api/asset", () => ({
     getAsset: vi.fn(),
     getAssetDerivatives: vi.fn(),
@@ -62,6 +72,22 @@ describe("collectExportAssetRefs", () => {
         const scene = new Scene();
         const result = collectExportAssetRefs(scene, {});
         expect(result).toEqual([]);
+    });
+
+    it("collects prefab edit refs from deep scenes without Three recursive traversal", () => {
+        const scene = new Scene();
+        const leaf = addDeepChain(scene);
+        leaf.userData.prefabId = "deep-prefab";
+        leaf.userData.prefabEditRevisionId = "deep-edit";
+        const traverse = vi.spyOn(scene, "traverse");
+
+        const result = collectExportAssetRefs(scene, {base: "base-rev"});
+
+        expect(traverse).not.toHaveBeenCalled();
+        expect(result).toEqual([
+            {assetId: "base", revisionId: "base-rev"},
+            {assetId: "deep-prefab", revisionId: "deep-edit"},
+        ]);
     });
 });
 
@@ -249,5 +275,37 @@ describe("exportAssets", () => {
         const result = await exportAssets([{assetId: "a1", revisionId: "r1"}]);
 
         expect(result.derivatives[0]!.contentEncoding).toBeUndefined();
+    });
+
+    it("exports long dependency chains without recursive graph traversal", async () => {
+        const chainLength = 128;
+        vi.mocked(getAssetRevision).mockImplementation(async (assetId: string, revisionId: string) => {
+            const index = Number(assetId.slice(1));
+            const nextIndex = index + 1;
+            return {
+                id: revisionId,
+                assetId,
+                dataUrl: `https://example.com/${assetId}-${revisionId}`,
+                dependencies: nextIndex < chainLength ? {[`a${nextIndex}`]: `r${nextIndex}`} : {},
+                metadata: {},
+                release: {revisionId},
+            } as any;
+        });
+        vi.mocked(getAsset).mockImplementation(async (assetId: string) => ({
+            id: assetId,
+            name: `Asset ${assetId}`,
+            type: "model",
+            format: "glb",
+            contentType: "model/gltf-binary",
+            description: "",
+            latestRelease: {revisionId: "unused"},
+        } as any));
+
+        const result = await exportAssets([{assetId: "a0", revisionId: "r0"}]);
+
+        expect(result.revisions).toHaveLength(chainLength);
+        expect(result.assets).toHaveLength(chainLength);
+        expect(vi.mocked(getAssetRevision)).toHaveBeenCalledTimes(chainLength);
+        expect(result.revisions.at(-1)).toMatchObject({assetId: `a${chainLength - 1}`, id: `r${chainLength - 1}`});
     });
 });

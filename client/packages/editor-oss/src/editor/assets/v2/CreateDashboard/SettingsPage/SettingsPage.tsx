@@ -19,9 +19,9 @@ import {
     LogoutBox,
     ValidationInput,
 } from "./SettingsPage.style";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 import {ROUTES} from "@web-shared/routes";
-import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
 import {showToast} from "@stem/editor-oss/showToast";
 import {Confirm} from "../../../../../ui";
 import Ajax from "@stem/editor-oss/utils/Ajax";
@@ -186,7 +186,7 @@ export const SettingsPage = () => {
                     </div>
                 </AccountBox>
                 <CreditsSummary />
-                {IS_OSS ? <BYOKKeysPanel /> : null}
+                <BYOKKeysPanel />
                 <LogoutBox className="box">
                     <Heading>{t("Logout")}</Heading>
                     <StyledButton

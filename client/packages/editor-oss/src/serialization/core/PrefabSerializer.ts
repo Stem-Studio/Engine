@@ -14,6 +14,11 @@ interface PrefabUuidNode {
     children?: PrefabUuidNode[];
 }
 
+const isPlainRecord = (value: unknown): value is Record<string, any> =>
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value);
+
 export class PrefabSerializer {
     toJSON(obj: Object3D): SerializedPrefab {
         const prefabId = getPrefabId(obj);
@@ -90,30 +95,7 @@ export class PrefabSerializer {
             userData: undefined, // Don't override the prefab's userData
         });
 
-        // Individual prefab instances may:
-        // - override behavior attributes of a prefab
-        //
-        // They may not add or remove existing behaviors or modify anything
-        // else.
-        //
-        // TODO: this behavior override is a bit fragile. We should validate the
-        // attributes, for example, rather than blindly applying them.
-        if (prefab.userData?.behaviors && userData?.behaviors) {
-            const jsonBehaviors = userData.behaviors;
-            const prefabBehaviors = (prefab.userData?.behaviors || []) as BehaviorData[];
-            for (const jsonBehavior of jsonBehaviors) {
-                const prefabBehavior = prefabBehaviors.find(
-                    b => b.prefabBehaviorUuid === jsonBehavior.prefabBehaviorUuid,
-                );
-                if (prefabBehavior) {
-                    prefabBehavior.attributesData = jsonBehavior.attributesData;
-                }
-            }
-
-            // Re-resolve the behavior asset references since we have overridden
-            // their values.
-            resolveBehaviorAttributeAssetRefs(prefab, context);
-        }
+        this.applyBehaviorOverrides(prefab, userData?.behaviors, context);
 
         // Lambda component overrides: individual prefab instances may override
         // componentData of lambda components on the prefab.
@@ -169,6 +151,58 @@ export class PrefabSerializer {
         }
 
         return prefab;
+    }
+
+    private applyBehaviorOverrides(
+        prefab: Object3D,
+        jsonBehaviors: unknown,
+        context: ReadonlyAssetResolutionContext,
+    ): void {
+        if (!Array.isArray(jsonBehaviors) || !Array.isArray(prefab.userData?.behaviors)) {
+            return;
+        }
+
+        const prefabBehaviors = prefab.userData.behaviors as BehaviorData[];
+        let didOverride = false;
+
+        for (const jsonBehavior of jsonBehaviors as BehaviorData[]) {
+            const prefabBehaviorUuid = jsonBehavior?.prefabBehaviorUuid;
+            if (!prefabBehaviorUuid) {
+                console.warn("Skipping prefab behavior override without prefabBehaviorUuid");
+                continue;
+            }
+
+            const prefabBehavior = prefabBehaviors.find(
+                b => b.prefabBehaviorUuid === prefabBehaviorUuid,
+            );
+            if (!prefabBehavior) {
+                console.warn(`Skipping prefab behavior override for unknown behavior "${prefabBehaviorUuid}"`);
+                continue;
+            }
+
+            if (jsonBehavior.id && prefabBehavior.id && jsonBehavior.id !== prefabBehavior.id) {
+                console.warn(
+                    `Skipping prefab behavior override "${prefabBehaviorUuid}" because behavior id changed from "${prefabBehavior.id}" to "${jsonBehavior.id}"`,
+                );
+                continue;
+            }
+
+            if (jsonBehavior.attributesData === undefined) {
+                continue;
+            }
+
+            if (!isPlainRecord(jsonBehavior.attributesData)) {
+                console.warn(`Skipping prefab behavior override "${prefabBehaviorUuid}" with invalid attributesData`);
+                continue;
+            }
+
+            prefabBehavior.attributesData = {...jsonBehavior.attributesData};
+            didOverride = true;
+        }
+
+        if (didOverride) {
+            resolveBehaviorAttributeAssetRefs(prefab, context);
+        }
     }
 
     /**

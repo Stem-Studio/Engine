@@ -11,12 +11,16 @@ import type {IEngineRuntimeWithQuality, IQualityChangeEventData} from "./types";
 // will migrate into editor-oss in follow-up sub-steps.
 import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import type {IPhysics} from "@stem/editor-oss/physics/common/types";
-import EffectRenderer from "@stem/editor-oss/render/EffectRenderer";
-// scheduler also lives in editor-oss after the scheduler/ migration.
-import type { RenderPressurePolicy } from "../../scheduler/FrameOrchestrator";
+import type EffectRenderer from "@stem/editor-oss/render/EffectRenderer";
 import { DetectDevice } from "@stem/editor-oss/utils/DetectDevice";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+import {runtimeFrameTelemetry} from "@stem/editor-oss/core/performance/RuntimeFrameTelemetry";
 
 type RenderingSettings = IQualitySettings["rendering"];
+
+export interface RenderPressurePolicy {
+    update(renderAvgMs: number, deltaTimeMs: number): void;
+}
 
 class RenderPressurePolicyImpl implements RenderPressurePolicy {
     private currentTier = 0;
@@ -126,6 +130,7 @@ export class QualitySystemIntegration {
     private renderPressureBaseline: RenderingSettings | null = null;
     private pendingRenderPressureTier: number | null = null;
     private renderPressureRafId: number | null = null;
+    private unsubscribeRenderPressure: (() => void) | null = null;
     private qualityChangeLogCount = 0;
 
     private constructor() {
@@ -148,7 +153,9 @@ export class QualitySystemIntegration {
      */
     public async initialize(engine: EngineRuntime): Promise<void> {
         if (this.initialized) {
-            console.warn("Quality system already initialized");
+            // Mode transitions call initialize() again so the same singleton
+            // can be used by edit and play. Initialization is idempotent;
+            // repeating it is expected and must not look like a startup error.
             return;
         }
         if (this.initializationPromise) {
@@ -204,6 +211,7 @@ export class QualitySystemIntegration {
         if (!this.initialized) return;
 
         this.qualityManager.setRuntimeRenderingOverride(null);
+        this.restoreBloomFromBaseline();
         this.restoreOutlineFromBaseline();
         this.renderPressureBaseline = null;
 
@@ -228,6 +236,8 @@ export class QualitySystemIntegration {
             this.renderPressureRafId = null;
         }
         this.pendingRenderPressureTier = null;
+        this.unsubscribeRenderPressure?.();
+        this.unsubscribeRenderPressure = null;
 
         // Dispose assessment controller
         if (this.assessmentController) {
@@ -268,7 +278,7 @@ export class QualitySystemIntegration {
     }
 
     /**
-     * Returns an alarm callback suitable for FrameOrchestrator config.
+     * Returns an alarm callback suitable for external runtime pressure monitors.
      * Forwards edge-detected pressure transitions to the assessment worker.
      */
     public getAlarmCallback(): ((type: string, negative: boolean) => void) | undefined {
@@ -420,6 +430,8 @@ export class QualitySystemIntegration {
     private setupEventListeners(): void {
         if (!this.engine) return;
 
+        this.connectRenderPressureTelemetry();
+
         // Listen for quality changes and propagate to all systems
         this.qualityManager.on("qualityChanged", (event: IQualityChangeEventData) => {
             this.logQualityChange(event);
@@ -442,6 +454,30 @@ export class QualitySystemIntegration {
         window.addEventListener("resize", this.resizeHandler);
     }
 
+    private connectRenderPressureTelemetry(): void {
+        // The render loop is the sole source of frame timing. Feed its
+        // allocation-light stream into the existing hysteresis policy instead
+        // of creating a second polling loop or quality authority.
+        this.unsubscribeRenderPressure?.();
+        this.unsubscribeRenderPressure = runtimeFrameTelemetry.subscribeToPressure(
+            (renderTimeEmaMs, frameTimeMs) => {
+                // Startup frequently contains one-off shader compilation and
+                // scene construction stalls. Applying a pixel-ratio override
+                // in that window calls renderer.setSize() at the worst
+                // possible time and turns the transient stall into another
+                // long GPU frame. Wait for the first-render handshake and
+                // runtime systems to finish before adaptive pressure reacts.
+                const startupAwareEngine = this.engine as (EngineRuntime & {
+                    isRuntimeStartupActive?: () => boolean;
+                }) | null;
+                if (startupAwareEngine?.isRuntimeStartupActive?.()) {
+                    return;
+                }
+                this.renderPressurePolicy.update(renderTimeEmaMs, frameTimeMs);
+            },
+        );
+    }
+
     private propagateQualityChange(event: IQualityChangeEventData): void {
         const settings = event.newSettings;
 
@@ -456,36 +492,11 @@ export class QualitySystemIntegration {
             }
         }
 
-        // Propagate scheduler config to FrameOrchestrator and LambdaScheduler
+        // The frame orchestrator runtime path has been retired; keep scheduler
+        // settings accepted for compatibility and apply only the independent
+        // LambdaScheduler budget knobs.
         if (settings.scheduler && event.reason !== "performance") {
             const fixedHz = settings.physics?.updateRate ?? settings.scheduler.fixedTimestepHz;
-            const renderTargetFPS = DetectDevice.isMobile() ? 30 : 60;
-
-            const engineWithOrchestrator = this.engine as unknown as {
-                frameOrchestrator?: {
-                    updateConfig: (config: {
-                        frameBudgetMs: number;
-                        targetFPS: number;
-                        fixedTimestepMs: number;
-                        maxFixedStepsPerFrame: number;
-                        enableTimeSlicing: boolean;
-                        renderPressureThreshold: number;
-                        deltaTimePressureThreshold: number;
-                    }) => void;
-                };
-            };
-            const orchestrator = engineWithOrchestrator.frameOrchestrator;
-            if (orchestrator && typeof orchestrator.updateConfig === "function") {
-                orchestrator.updateConfig({
-                    frameBudgetMs: settings.scheduler.frameBudgetMs,
-                    targetFPS: renderTargetFPS,
-                    fixedTimestepMs: 1000 / fixedHz,
-                    maxFixedStepsPerFrame: settings.scheduler.maxFixedStepsPerFrame,
-                    enableTimeSlicing: settings.scheduler.enableTimeSlicing,
-                    renderPressureThreshold: settings.scheduler.renderPressureThreshold,
-                    deltaTimePressureThreshold: settings.scheduler.deltaTimePressureThreshold,
-                });
-            }
 
             const scheduler = this.engine?.game?.lambdaManager?.scheduler;
             if (scheduler && typeof scheduler.updateConfig === "function") {
@@ -494,11 +505,10 @@ export class QualitySystemIntegration {
                     targetFPS: fixedHz,
                 });
             }
+        }
 
-            console.log(
-                `Quality change: scheduler ${settings.scheduler.enabled ? "enabled" : "disabled"} ` +
-                `(budget=${settings.scheduler.frameBudgetMs}ms, fixed=${fixedHz}Hz)`,
-            );
+        if (event.reason !== "performance") {
+            this.engine?.configureSimulationQuality?.(settings);
         }
     }
 
@@ -602,19 +612,12 @@ export class QualitySystemIntegration {
             console.log(`[Quality] Applied device profile for ${category} device`);
         }
 
-        // Respect scene-level scheduler override (persisted in scene.userData)
-        const sceneScheduler = sceneUserData?.scheduler as {
-            behaviorUpdateMode?: string;
-            enabled?: boolean;
-        } | undefined;
-        const fixedRateScheduler = sceneScheduler?.behaviorUpdateMode === "fixed";
-        const schedulerOverride = fixedRateScheduler ? true : sceneScheduler?.enabled;
-        if (typeof schedulerOverride === "boolean") {
-            await this.qualityManager.setSettings(
-                { scheduler: { enabled: schedulerOverride } } as any,
-                { persist: false },
-            );
-        }
+        // Older scenes may still carry scheduler metadata. Keep accepting the
+        // shape, but force the retired staged scheduler runtime path off.
+        await this.qualityManager.setSettings(
+            { scheduler: { enabled: false } } as any,
+            { persist: false },
+        );
 
         return this.qualityManager.getCurrentSettings();
     }
@@ -636,6 +639,7 @@ export class QualitySystemIntegration {
     private applyRenderPressureTier(tier: number): void {
         if (tier <= 0) {
             this.qualityManager.setRuntimeRenderingOverride(null);
+            this.restoreBloomFromBaseline();
             this.restoreOutlineFromBaseline();
             this.renderPressureBaseline = null;
             return;
@@ -652,6 +656,9 @@ export class QualitySystemIntegration {
         // Tier 1+: disable bloom
         if (tier >= 1 && baseline.bloom) {
             renderingOverride.bloom = false;
+            this.setBloomEnabled(false);
+        } else {
+            this.restoreBloomFromBaseline();
         }
 
         // Tier 2+: disable outline via scene postProcessing
@@ -699,6 +706,35 @@ export class QualitySystemIntegration {
     }
 
     private outlineBaselineEnabled: boolean | null = null;
+
+    private bloomBaselineEnabled: boolean | null = null;
+
+    private getRuntimePostProcessingScene(): {userData?: {postProcessing?: Record<string, any>}} | null {
+        return (this.engine?.game?.scene || (this.engine as any)?.scene || null) as {
+            userData?: {postProcessing?: Record<string, any>}
+        } | null;
+    }
+
+    private setBloomEnabled(enabled: boolean): void {
+        const scene = this.getRuntimePostProcessingScene();
+        const bloom = scene?.userData?.postProcessing?.bloom;
+        if (!bloom || typeof bloom !== "object") return;
+        if (this.bloomBaselineEnabled === null) {
+            this.bloomBaselineEnabled = bloom.enabled !== false;
+        }
+        if (bloom.enabled === enabled) return;
+        bloom.enabled = enabled;
+        const effectRenderer = this.getEffectRendererFromDispatcher();
+        if (effectRenderer && scene?.userData?.postProcessing) {
+            effectRenderer.updatePostProcessingFromScene(scene.userData.postProcessing);
+        }
+    }
+
+    private restoreBloomFromBaseline(): void {
+        if (this.bloomBaselineEnabled === null) return;
+        this.setBloomEnabled(this.bloomBaselineEnabled);
+        this.bloomBaselineEnabled = null;
+    }
 
     private setOutlineEnabled(enabled: boolean): void {
         const scene = this.engine?.game?.scene;
@@ -821,31 +857,13 @@ export class QualitySystemIntegration {
     }
 
     /**
-     * No-op kept for backward compatibility with EngineRuntime.ts callers.
-     * @param _targetFPS
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    public enableAutoQuality(_targetFPS: number = 30): void {
-        // No-op: auto quality has been removed.
-    }
-
-    /**
-     * No-op kept for backward compatibility with EngineRuntime.ts callers.
-     * @param _deltaTime
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    public update(_deltaTime: number): void {
-        // No-op: runtime quality updates have been removed.
-    }
-
-    /**
      * Warn if scene exceeds device-recommended light count.
      * @param scene
      */
     public validateSceneLights(scene: THREE.Scene): void {
         const maxLights = this.renderingModule.getMaxLights();
         let lightCount = 0;
-        scene.traverse((obj) => {
+        traverseObjectDepthFirst(scene, (obj) => {
             if (obj instanceof THREE.Light && !(obj instanceof THREE.AmbientLight)) {
                 lightCount++;
             }

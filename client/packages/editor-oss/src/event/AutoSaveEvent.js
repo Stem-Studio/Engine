@@ -64,7 +64,7 @@ class AutoSaveEvent extends BaseEvent {
             scene: app.scene,
         });
 
-        // Single authoritative path: the active ProjectStore (in playground/OSS
+        // Single authoritative path: the active ProjectStore (in playground/local
         // that is the File System folder). The scene is large and scene-scoped,
         // so it must NOT also be mirrored into localStorage (5MB cap) — that was
         // pure redundancy that blew the quota. Recovery already lives in the

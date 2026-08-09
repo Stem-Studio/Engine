@@ -19,6 +19,10 @@ type GifEvents = {
     error: THREE.Event<string, GifData> & {message: string};
 };
 
+type GifAnimationClock = {
+    getElapsedTime(): number;
+};
+
 /**
  * In charge to handle the load operation of the gif's data.
  */
@@ -27,7 +31,6 @@ class GifData extends THREE.EventDispatcher<GifEvents> {
     private _frames: ParsedFrame[];
     private _failed: boolean;
     private _isLoading: boolean;
-    private _promise: Promise<void> | null;
 
     constructor(public readonly url: string) {
         super();
@@ -35,7 +38,6 @@ class GifData extends THREE.EventDispatcher<GifEvents> {
         this._frames = [];
         this._failed = false;
         this._isLoading = false;
-        this._promise = null;
 
         this.load();
     }
@@ -52,7 +54,7 @@ class GifData extends THREE.EventDispatcher<GifEvents> {
         this._isLoading = true;
         this._failed = false;
 
-        this._promise = fetch(this.url)
+        void fetch(this.url)
             .then(resp => resp.arrayBuffer())
             .then(buff => {
                 this._gif = parseGIF(buff);
@@ -131,13 +133,15 @@ export function THREE_GetGifTexture(url: string): Promise<GifTexture> {
     });
 }
 
-class GifTexture extends THREE.CanvasTexture {
+export class GifTexture extends THREE.CanvasTexture {
     private tempCanvas: HTMLCanvasElement;
     private ctx: CanvasRenderingContext2D | null;
     private tmpCtx: CanvasRenderingContext2D | null;
     private frameIndex: number;
     private frameImageData: ImageData | null;
     private _lastFrameTime: number;
+    private readonly renderLoopBound: (clock: GifAnimationClock) => void;
+    private isRunning: boolean;
     public uuid: string;
 
     /**
@@ -153,8 +157,10 @@ class GifTexture extends THREE.CanvasTexture {
         super(c);
         this._lastFrameTime = 0;
         this.frameImageData = null;
+        this.isRunning = false;
 
         this.uuid = THREE.MathUtils.generateUUID();
+        this.renderLoopBound = this.renderLoop.bind(this);
 
         this.tempCanvas = document.createElement("canvas");
         this.tmpCtx = this.tempCanvas.getContext("2d");
@@ -188,11 +194,19 @@ class GifTexture extends THREE.CanvasTexture {
 
     public start() {
         this.play = true;
-        global.app?.on(`animate.GifTexture${this.uuid}`, this.renderLoop.bind(this));
+        if (this.isRunning) {
+            return;
+        }
+        this.isRunning = true;
+        global.app?.on(`animate.GifTexture${this.uuid}`, this.renderLoopBound);
     }
 
     public stop() {
         this.play = false;
+        if (!this.isRunning) {
+            return;
+        }
+        this.isRunning = false;
         global.app?.on(`animate.GifTexture${this.uuid}`, null);
     }
 
@@ -201,7 +215,8 @@ class GifTexture extends THREE.CanvasTexture {
      * It will render the frame and call itself back...
      * @param clock
      */
-    private renderLoop(clock: THREE.Clock) {
+    private renderLoop(clock: GifAnimationClock) {
+        if (!this.play) return;
         const frame = this.gif.frameAt(this.frameIndex);
         if (!frame) return;
         const delay = frame.delay;

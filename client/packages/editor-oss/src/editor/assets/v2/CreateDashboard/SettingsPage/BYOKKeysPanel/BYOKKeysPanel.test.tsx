@@ -3,10 +3,12 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 const mocks = vi.hoisted(() => ({
     capabilities: vi.fn(),
+    clearCopilotChatKeyHandoff: vi.fn(),
     clearProviderKey: vi.fn(),
     hasPassphrase: vi.fn(),
     isUnlocked: vi.fn(),
     keyStoreAll: vi.fn(),
+    prepareCopilotChatKeyHandoff: vi.fn(),
     refreshCopilotKeysMarker: vi.fn(),
     setProviderKey: vi.fn(),
 }));
@@ -24,7 +26,9 @@ vi.mock("../../../../../../ai", () => ({
     }),
 }));
 
-vi.mock("../../../../../../copilot", () => ({
+vi.mock("../../../../../../copilot/playgroundCopilotKeys", () => ({
+    clearCopilotChatKeyHandoff: mocks.clearCopilotChatKeyHandoff,
+    prepareCopilotChatKeyHandoff: mocks.prepareCopilotChatKeyHandoff,
     refreshCopilotKeysMarker: mocks.refreshCopilotKeysMarker,
 }));
 

@@ -16,20 +16,21 @@ import {
     SectionTitle,
 } from "./CreateDashboardView.style";
 import {extractKeywords, getPromptMatchedTemplates} from "./templateMatching";
-import {getSceneBatch, getStartersStats, updateStarterStats} from "@stem/network/api/scene";
-import {cloneScene} from "@stem/network/api/scene/v2";
+import {getSceneBatch} from "@stem/network/api/scene/batch";
+import {getStartersStats, updateStarterStats} from "@stem/network/api/scene/starters";
 import {useTemplateIds} from "@stem/network/api/templates/hooks";
 import {ROUTES} from "@web-shared/routes";
-import {useAppGlobalContext, useAuthorizationContext, useHomepageContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context/AppGlobalContext";
+import {useAuthorizationContext} from "@stem/editor-oss/context/AuthorizationContext";
+import {useHomepageContext} from "@stem/editor-oss/context/HomepageContext";
 import {writePendingProjectAdvancedModePreference} from "@stem/editor-oss/context/advancedModeStorage";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
-import {getOSSPersistenceMode} from "@stem/editor-oss/persistence";
+import {getOSSPersistenceMode} from "@stem/editor-oss/persistence/mode";
 import {showToast} from "@stem/editor-oss/showToast";
 import {isStripeCreditsPurchasingEnabled} from "@stem/editor-oss/utils/featureFlags";
 import {PRODUCT_ANALYTICS_EVENTS, trackProductEvent} from "@stem/editor-oss/utils/productAnalytics";
 import {openEditorRoute} from "../../../../../v2/pages/editorHandoff";
 import {generateProjectLink} from "../../../../../v2/pages/links";
-import {prepareCopilotChatKeyHandoff} from "../../../../../copilot";
+import {prepareCopilotChatKeyHandoff} from "../../../../../copilot/playgroundCopilotKeys";
 import {
     prepareBlankCopilotWorkspaceEntry,
     prepareCreateFromPromptCopilotEntry,
@@ -365,6 +366,7 @@ export const CreateDashboardView = ({projects, view = "create"}: Props) => {
             // startBlankProject for why we write the preference directly in
             // addition to calling setAdvancedMode.
             setAdvancedMode(false);
+            const {cloneScene} = await import("@stem/network/api/scene/actions");
             const result = await cloneScene(gameId);
             if (!result?.newSceneId) {
                 throw new Error("Remix did not return a new project.");
@@ -423,7 +425,7 @@ export const CreateDashboardView = ({projects, view = "create"}: Props) => {
                         <EmptyProjects>
                             {search
                                 ? i18n.t("No matching projects found.")
-                                : (IS_OSS && getOSSPersistenceMode() === "filesystem")
+                                : getOSSPersistenceMode() === "filesystem"
                                   ? i18n.t(
                                         "No saved projects in this folder yet. Create one from the Create tab and click Save Project, or import a stemscript folder.",
                                     )

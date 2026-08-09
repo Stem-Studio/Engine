@@ -2,6 +2,7 @@ import { Material, Mesh, Object3D, Scene, Texture } from 'three';
 
 import global from "../global";
 import { createClickableItems, showToast } from '@stem/editor-oss/showToast';
+import {traverseObjectDepthFirst} from "./SceneTraverser";
 
 export interface TextureSizeThresholds {
     /** Warning threshold in pixels (width * height) */
@@ -195,7 +196,7 @@ export function checkSceneTextures(
     const checkedTextures = new Set<string>();
     let totalTexturesChecked = 0;
 
-    scene.traverse((object: Object3D) => {
+    traverseObjectDepthFirst(scene, (object: Object3D) => {
         // Check if object is a Mesh with material
         if ((object as Mesh).material !== undefined) {
             const mesh = object as Mesh;

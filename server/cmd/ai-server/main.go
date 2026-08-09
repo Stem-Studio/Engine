@@ -1,10 +1,6 @@
-// Binary ai-server runs only the AI-related controllers from the main
-// StemStudio server. It is built from the same Go module and shares server
-// context, middleware, and helpers with the combined `stemstudio` binary at
-// server/main.go.
-//
-// This binary is the OSS-publishable surface. The combined binary remains the
-// production artifact and continues to serve every route at the same paths.
+// Binary ai-server runs only the AI-related controllers from the StemStudio
+// server. It is built from the same Go module and shares server context,
+// middleware, and helpers with the rest of the server package.
 package main
 
 import (
@@ -27,9 +23,8 @@ import (
 )
 
 func main() {
-	// Replace the default Firebase-based token validator with the OSS
-	// single-user shortcut. The combined `cmd/server` and `cmd/storage-server`
-	// binaries leave the default in place and keep Firebase verification.
+	// Replace the default Firebase-based token validator with the local
+	// single-user shortcut.
 	server.SetAuthMiddleware(ossAuthMiddleware)
 
 	if err := runAIServer(os.Args[1:]); err != nil {

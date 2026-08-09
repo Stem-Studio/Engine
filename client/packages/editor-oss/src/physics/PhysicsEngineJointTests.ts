@@ -1,11 +1,9 @@
 import { BodyShapeType } from './common/types';
-import { JointPhysics, PhysicsEngine, RigidBodyType, supportsJoints } from './PhysicsEngine';
+import { PhysicsEngine, RigidBodyType } from './PhysicsEngine';
 
 /**
- * Shared harness for the optional `JointPhysics` capability. Runs
- * against any `PhysicsEngine` implementation; engines that do not
- * implement `JointPhysics` (as detected by the `supportsJoints` type
- * guard) skip every test body.
+ * Shared harness for the mandatory engine-facing joint API.
+ * Both supported backends must implement this contract.
  *
  * @example
  * describe('MyPhysicsImplementation', () => {
@@ -30,8 +28,7 @@ export const makeJointTests = (
         physics.dispose();
     });
 
-    const jointPhysicsOrSkip = (): (PhysicsEngine & JointPhysics) | null =>
-        supportsJoints(physics) ? physics : null;
+    const jointPhysicsOrSkip = (): PhysicsEngine => physics;
 
     /** Adds a unit box body at the given position. */
     const addBox = (uuid: string, type: RigidBodyType, pos: { x: number; y: number; z: number }, mass = 1) => {

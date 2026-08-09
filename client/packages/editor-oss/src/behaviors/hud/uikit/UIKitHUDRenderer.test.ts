@@ -159,7 +159,7 @@ describe("UIKitHUDRenderer", () => {
             removeEventListener: vi.fn(),
         };
 
-        // Mock requestAnimationFrame/cancelAnimationFrame
+        // Keep RAF mocked to verify the renderer does not start its own loop.
         (globalThis as any).requestAnimationFrame = vi.fn().mockReturnValue(1);
         (globalThis as any).cancelAnimationFrame = vi.fn();
 
@@ -179,6 +179,7 @@ describe("UIKitHUDRenderer", () => {
     it("constructs and binds events", () => {
         const renderer = new UIKitHUDRenderer(scene, game);
         expect(renderer).toBeDefined();
+        expect(globalThis.requestAnimationFrame).not.toHaveBeenCalled();
     });
 
     it("show() with emptyHUD returns early", () => {
@@ -201,7 +202,7 @@ describe("UIKitHUDRenderer", () => {
         const renderer = new UIKitHUDRenderer(scene, game);
         renderer.dispose();
         expect(mockFullscreenDispose).toHaveBeenCalled();
-        expect(globalThis.cancelAnimationFrame).toHaveBeenCalled();
+        expect(globalThis.cancelAnimationFrame).not.toHaveBeenCalled();
     });
 
     it("dispose() can be called multiple times safely", () => {
@@ -214,5 +215,31 @@ describe("UIKitHUDRenderer", () => {
         const renderer = new UIKitHUDRenderer(scene, game);
         renderer.update(0.016);
         expect(mockUIKitPointerEventsUpdate).toHaveBeenCalledWith(0.016);
+    });
+
+    it("reattaches the fullscreen root when it is parented to a non-camera", () => {
+        const renderer = new UIKitHUDRenderer(scene, game);
+        const addToUICamera = vi.fn(() => {
+            mockFullscreenParent = game.uiCamera;
+            return game.uiCamera;
+        });
+        game.uiCamera.add = addToUICamera;
+        mockFullscreenParent = new THREE.Scene();
+
+        renderer.update(0.016);
+
+        expect(addToUICamera).toHaveBeenCalled();
+        expect(mockFullscreenUpdate).toHaveBeenCalledWith(0.016);
+    });
+
+    it("suppresses transient fullscreen camera errors during update", () => {
+        const renderer = new UIKitHUDRenderer(scene, game);
+        mockFullscreenParent = game.uiCamera;
+        mockFullscreenUpdate.mockImplementationOnce(() => {
+            throw new Error("fullscreen can only be added to a camera");
+        });
+
+        expect(() => renderer.update(0.016)).not.toThrow();
+        expect(mockUIKitPointerEventsUpdate).not.toHaveBeenCalled();
     });
 });

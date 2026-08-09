@@ -1,7 +1,7 @@
 import {useMemo} from "react";
 import {AnimationClip, Box3, Object3D, Vector3} from "three";
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter.js";
-import * as WebGLTextureUtils from "three/examples/jsm/utils/WebGLTextureUtils.js";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
+import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 import {toast} from "toastywave";
 
 import {AssetDerivativeType, AssetType, forkAsset, getAsset, SUPPORTED_MODEL_CONTENT_TYPES} from "@stem/network/api/asset";
@@ -26,6 +26,7 @@ import Converter from "@stem/editor-oss/utils/Converter";
 import MeshUtils from "@stem/editor-oss/utils/MeshUtils";
 import {ModelUtils} from "@stem/editor-oss/utils/ModelUtils";
 import {cloneObject} from "@stem/editor-oss/utils/ObjectUtils";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
 import {generateUniqueName, getObjectNamesInScene} from "../../../v2/pages/services";
 import {
     useCreateAssetDerivativeWithData,
@@ -360,7 +361,7 @@ export const useUpdateModelInstances = () => {
         modelInstance.castShadow = target.castShadow;
         modelInstance.receiveShadow = target.receiveShadow;
         modelInstance.userData = {
-            ...JSON.parse(JSON.stringify(target.userData)),
+            ...cloneJsonCompatible(target.userData),
             ...modelInstance.userData,
         };
 

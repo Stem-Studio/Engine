@@ -1,32 +1,23 @@
-import {setSceneSaveHandler} from "@stem/network/api/scene";
+import {setSceneSaveHandler} from "@stem/network/api/scene/saveHandler";
 
-import {IS_OSS} from "../mode/buildMode";
 import {IndexedDBProjectStore} from "./IndexedDBProjectStore";
-import {ossSaveScene} from "./ossSceneSave";
+import {setOSSPersistenceMode as writeOSSPersistenceMode} from "./mode";
 import type {ProjectStore} from "./ProjectStore";
 
-const STORAGE_MODE_KEY = "stemstudio.persistence.mode";
-
-export type OSSPersistenceMode = "indexeddb" | "filesystem";
+export {getOSSPersistenceMode} from "./mode";
+export type {OSSPersistenceMode} from "./mode";
 
 let singleton: ProjectStore | undefined;
+let ossSaveScenePromise: Promise<typeof import("./ossSceneSave").ossSaveScene> | undefined;
 
-/**
- * Returns the chosen persistence mode for OSS builds. Read from
- * `localStorage`; falls back to `indexeddb` (the safest, universally
- * supported option). The first-time bootstrap modal writes this value once
- * the user picks.
- */
-export function getOSSPersistenceMode(): OSSPersistenceMode {
-    if (typeof localStorage === "undefined") return "indexeddb";
-    const stored = localStorage.getItem(STORAGE_MODE_KEY);
-    return stored === "filesystem" ? "filesystem" : "indexeddb";
+async function lazyOssSaveScene(createThumbnail: boolean, shouldShowToast: boolean): Promise<void> {
+    ossSaveScenePromise ??= import("./ossSceneSave").then(module => module.ossSaveScene);
+    const ossSaveScene = await ossSaveScenePromise;
+    return ossSaveScene(createThumbnail, shouldShowToast);
 }
 
-export function setOSSPersistenceMode(mode: OSSPersistenceMode): void {
-    if (typeof localStorage !== "undefined") {
-        localStorage.setItem(STORAGE_MODE_KEY, mode);
-    }
+export function setOSSPersistenceMode(mode: import("./mode").OSSPersistenceMode): void {
+    writeOSSPersistenceMode(mode);
     // Clear singleton so the next access picks up the new mode.
     singleton = undefined;
 }
@@ -34,42 +25,36 @@ export function setOSSPersistenceMode(mode: OSSPersistenceMode): void {
 /**
  * Returns the process-wide ProjectStore singleton.
  *
- * Resolution:
- *   - If a caller has previously registered a store via `setProjectStore`
- *     (e.g. integrated bootstrap installs a `RemoteProjectStore`, or the OSS
- *     bootstrap modal installs a `FileSystemProjectStore`), that's returned.
- *   - Otherwise the function falls back to an `IndexedDBProjectStore` in OSS
- *     builds and throws in integrated builds where forgetting to wire the
- *     remote adapter is a programmer error.
+ * If a caller has previously registered a store via `setProjectStore`, that
+ * store is returned. Otherwise the function falls back to the local
+ * `IndexedDBProjectStore`; the bootstrap modal may replace it with a
+ * `FileSystemProjectStore` when the user picks folder mode.
  */
 export function getProjectStore(): ProjectStore {
     if (singleton) return singleton;
-    if (!IS_OSS) {
-        throw new Error(
-            "getProjectStore() in integrated mode requires initIntegratedProjectStore() to register a backend first.",
-        );
-    }
-    // OSS default — the bootstrap modal will replace this with a
-    // FileSystemProjectStore if the user picked the folder mode.
     setProjectStore(new IndexedDBProjectStore());
     return singleton!;
+}
+
+/** Read-only identity check for an in-flight save; never creates a fallback store. */
+export function isCurrentProjectStore(store: ProjectStore): boolean {
+    return singleton === store;
 }
 
 /**
  * Inject a ProjectStore (test stubs or the FileSystemProjectStore once the
  * bootstrap modal has resolved a directory handle).
  *
- * Side effect: when the registered store is a local-only OSS backend
- * (`indexeddb` / `filesystem`), the `network/scene::saveScene` save handler
- * is installed to route every save through the store. Registering the
- * integrated `RemoteProjectStore` (kind `"remote"`) clears the handler so
- * `saveScene` falls back to the cloud Scene API flow.
+ * Side effect: local stores (`indexeddb` / `filesystem`) install the
+ * `network/scene::saveScene` handler so every save routes through the
+ * selected local store. Custom remote stores can still clear the handler by
+ * using kind `"remote"`.
  */
 export function setProjectStore(store: ProjectStore | undefined): void {
     singleton = store;
     if (!store || store.kind === "remote") {
         setSceneSaveHandler(null);
     } else {
-        setSceneSaveHandler(ossSaveScene);
+        setSceneSaveHandler(lazyOssSaveScene);
     }
 }

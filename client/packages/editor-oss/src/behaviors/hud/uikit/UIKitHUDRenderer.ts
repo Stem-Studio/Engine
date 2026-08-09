@@ -22,6 +22,25 @@ import EventBus from "../../event/EventBus";
 import GameManager from "../../game/GameManager";
 import UIKitPointerEvents from "../../uikit/UIKitPointerEvents";
 
+function isCameraLike(value: unknown): value is THREE.Camera {
+    if (!value || typeof value !== "object") {
+        return false;
+    }
+    const camera = value as THREE.Camera & {
+        isPerspectiveCamera?: boolean;
+        isOrthographicCamera?: boolean;
+    };
+    return camera.isPerspectiveCamera === true || camera.isOrthographicCamera === true;
+}
+
+function isFullscreenCameraError(error: unknown): boolean {
+    const message =
+        error && typeof error === "object" && "message" in error
+            ? String((error as {message?: unknown}).message)
+            : String(error);
+    return message.includes("fullscreen can only be added to a camera");
+}
+
 enum HUDState {
     START_MENU = "START_MENU",
     PLAYING = "PLAYING",
@@ -54,7 +73,6 @@ export class UIKitHUDRenderer {
     private keydownHandler?: (e: KeyboardEvent) => void;
     private gameOverTimeout?: ReturnType<typeof setTimeout>;
     private soundsLoadToken = 0;
-    private animFrameId?: number;
 
     constructor(scene: THREE.Scene, game: GameManager) {
         this.scene = scene;
@@ -82,13 +100,24 @@ export class UIKitHUDRenderer {
 
         // Bind application events
         this.bindEvents();
-
-        // Drive UIKit layout/pointer updates every frame via independent rAF loop
-        this.startUpdateLoop();
     }
 
     private resolveHUDCamera(): THREE.Camera | undefined {
-        return this.game.uiCamera ?? this.game.camera ?? this.app.camera;
+        return [this.game.uiCamera, this.game.camera, this.app.camera].find(isCameraLike);
+    }
+
+    private ensureFullscreenCamera(): boolean {
+        if (isCameraLike(this.fullscreen.parent)) {
+            return true;
+        }
+
+        const hudCamera = this.resolveHUDCamera();
+        if (!isCameraLike(hudCamera)) {
+            return false;
+        }
+
+        hudCamera.add(this.fullscreen);
+        return true;
     }
 
     show(emptyHUD = false) {
@@ -328,43 +357,29 @@ export class UIKitHUDRenderer {
         }
     }
 
-    private updateFrameCount = 0;
-
-    private startUpdateLoop() {
-        let lastTime = performance.now();
-        const loop = () => {
-            this.animFrameId = requestAnimationFrame(loop);
-            const now = performance.now();
-            const delta = (now - lastTime) / 1000;
-            lastTime = now;
-            this.update(delta);
-        };
-        this.animFrameId = requestAnimationFrame(loop);
-    }
-
     update(delta: number) {
-        this.updateFrameCount++;
-
         // Fullscreen.update() throws if its parent is not a camera.
         // Lazily attach to the HUD camera if it wasn't available at construction time.
-        if (!this.fullscreen.parent) {
-            const hudCamera = this.resolveHUDCamera();
-            if (!hudCamera) return;
-            hudCamera.add(this.fullscreen);
+        if (!this.ensureFullscreenCamera()) {
+            return;
         }
 
         // Drive UIKit's internal layout/animation/dirty-flag system. Without
         // this, layout only updates on event boundaries and containers visibly
         // jump between passes. Matches what `UIKitHUDPreview` does.
-        this.fullscreen.update(delta);
+        try {
+            this.fullscreen.update(delta);
+        } catch (error) {
+            if (isFullscreenCameraError(error)) {
+                this.ensureFullscreenCamera();
+                return;
+            }
+            throw error;
+        }
         UIKitPointerEvents.update(delta);
     }
 
     dispose() {
-        if (this.animFrameId !== undefined) {
-            cancelAnimationFrame(this.animFrameId);
-            this.animFrameId = undefined;
-        }
         this.unbindEvents();
         this.disposeCurrentScreen();
 

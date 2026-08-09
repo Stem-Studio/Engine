@@ -1,21 +1,15 @@
-import {Document, Texture, WebIO} from "@gltf-transform/core";
-import type {JSONDocument, Transform} from "@gltf-transform/core";
-import {ALL_EXTENSIONS, EXTMeshoptCompression} from "@gltf-transform/extensions";
-import {dedup, flatten, join, prune, resample, simplify, unpartition, meshopt} from "@gltf-transform/functions";
-import * as Comlink from "comlink";
-import {MeshoptEncoder, MeshoptDecoder, MeshoptSimplifier} from "meshoptimizer";
+import type {Document, JSONDocument, Texture, Transform, WebIO} from "@gltf-transform/core";
 import {AmbientLight, Box3, Object3D, PerspectiveCamera, Scene, Vector3} from "three";
-import {GLTFExporter} from "three/examples/jsm/exporters/GLTFExporter.js";
-import {WebGPURenderer} from "three/webgpu";
+import type {WebGPURenderer} from "three/webgpu";
 
 import Ajax from "./Ajax";
 import type {ModelUtilsWorkerAPI} from "./ModelUtilsWorker";
-import ModelUtilsWorker from "./ModelUtilsWorker.ts?worker";
 import {backendUrlFromPath} from "./UrlUtils";
-import {EARTHAnimationGraphTransformExtension} from "../animation/extensions/EARTHAnimationGraphTransformExtension";
 import { getObjectBoundingBox, isGaussianSplatObject } from "@stem/editor-oss/model/gaussianSplats";
-import { disposeSparkComposite, ensureSparkComposite } from "../render/SparkCompositeBridge";
 import {showToast} from "@stem/editor-oss/showToast";
+
+type SparkCompositeBridgeModule = typeof import("../render/SparkCompositeBridge");
+type SparkComposite = ReturnType<SparkCompositeBridgeModule["ensureSparkComposite"]>;
 
 // Maximum texture size supported by KTX2/Basis encoder.
 // The encoder has a fixed 10MB output buffer which can overflow with larger textures.
@@ -23,8 +17,50 @@ const MAX_TEXTURE_SIZE_FOR_COMPRESSION = 4096;
 
 // Shared WebIO instance to avoid recreating it per-call (expensive).
 let _sharedWebIO: WebIO | null = null;
+let _gltfTransformModulesPromise: ReturnType<typeof loadGltfTransformModulesInternal> | null = null;
+
+const loadGltfTransformModulesInternal = async () => {
+    const [core, extensions, functions, meshoptimizer, animationExtension] = await Promise.all([
+        import("@gltf-transform/core"),
+        import("@gltf-transform/extensions"),
+        import("@gltf-transform/functions"),
+        import("meshoptimizer"),
+        import("../animation/extensions/EARTHAnimationGraphTransformExtension"),
+    ]);
+
+    return {
+        WebIO: core.WebIO,
+        ALL_EXTENSIONS: extensions.ALL_EXTENSIONS,
+        EXTMeshoptCompression: extensions.EXTMeshoptCompression,
+        dedup: functions.dedup,
+        flatten: functions.flatten,
+        join: functions.join,
+        meshopt: functions.meshopt,
+        prune: functions.prune,
+        resample: functions.resample,
+        simplify: functions.simplify,
+        unpartition: functions.unpartition,
+        MeshoptDecoder: meshoptimizer.MeshoptDecoder,
+        MeshoptEncoder: meshoptimizer.MeshoptEncoder,
+        MeshoptSimplifier: meshoptimizer.MeshoptSimplifier,
+        EARTHAnimationGraphTransformExtension: animationExtension.EARTHAnimationGraphTransformExtension,
+    };
+};
+
+const loadGltfTransformModules = () => {
+    _gltfTransformModulesPromise ??= loadGltfTransformModulesInternal();
+    return _gltfTransformModulesPromise;
+};
+
 const getSharedWebIO = async (): Promise<WebIO> => {
     if (!_sharedWebIO) {
+        const {
+            ALL_EXTENSIONS,
+            EARTHAnimationGraphTransformExtension,
+            MeshoptDecoder,
+            MeshoptEncoder,
+            WebIO,
+        } = await loadGltfTransformModules();
         await MeshoptEncoder.ready;
         await MeshoptDecoder.ready;
 
@@ -61,6 +97,16 @@ interface OptimizeGlbFileOptions {
     useMeshopt?: boolean;
 }
 
+export type ModelStats = {
+    vertexCount: number;
+    triangleCount: number;
+};
+
+export type OptimizedGlbWithStats = {
+    glbData: ArrayBuffer;
+    stats: ModelStats;
+};
+
 // Options for legacy compressModel helper
 type CompressModelOptions = {
     /** If true, skip applying EXT_meshopt compression and meshopt transform */
@@ -82,7 +128,20 @@ async function compressModel(
     onError?: () => void,
 ): Promise<ArrayBuffer | JSONDocument> {
     let compressedData = data;
+    let doc: Document | null = null;
     try {
+        const {
+            dedup,
+            EXTMeshoptCompression,
+            flatten,
+            join,
+            meshopt,
+            MeshoptDecoder,
+            MeshoptEncoder,
+            prune,
+            resample,
+            unpartition,
+        } = await loadGltfTransformModules();
         // Only options object is supported
         const isJSON = Boolean(options?.isJSON);
         const useMeshopt = !options?.disableMeshopt;
@@ -94,8 +153,6 @@ async function compressModel(
             deps["meshopt.encoder"] = MeshoptEncoder;
         }
         io.registerDependencies(deps);
-
-        let doc: Document;
 
         if (isJSON) {
             doc = await io.readJSON(data as JSONDocument);
@@ -140,15 +197,13 @@ async function compressModel(
             compressedData = bin.buffer;
         }
 
-        for (const material of doc.getRoot().listMaterials()) {
-            material.dispose();
-        }
-        for (const mesh of doc.getRoot().listMeshes()) {
-            mesh.dispose();
-        }
     } catch (error) {
         console.error(error);
         onError?.();
+    } finally {
+        if (doc) {
+            disposeModelDocument(doc);
+        }
     }
 
     return compressedData;
@@ -165,13 +220,16 @@ async function compressModel(
  * @returns
  */
 const compressTextures = async (glbData: ArrayBuffer, options: OptimizeGlbFileOptions): Promise<ArrayBuffer> => {
+    const [Comlink, workerModule] = await Promise.all([
+        import("comlink"),
+        import("./ModelUtilsWorker.ts?worker"),
+    ]);
+    const ModelUtilsWorker = workerModule.default;
     const worker = new ModelUtilsWorker();
     const proxy = Comlink.wrap<ModelUtilsWorkerAPI>(worker);
     try {
-        // Copy the ArrayBuffer because it will be transferred to the worker.
-        const copiedBuffer = glbData.slice(0);
         const result = await proxy.processCompressTextures(
-            Comlink.transfer({glbData: copiedBuffer, options}, [copiedBuffer]),
+            Comlink.transfer({glbData, options}, [glbData]),
         );
         return result;
     } finally {
@@ -198,6 +256,9 @@ const resizeTextures = (scale: number, maxTextureSize?: number): Transform => {
                 normalTextures.add(normalTexture);
             }
         }
+
+        let canvas: OffscreenCanvas | null = null;
+        let context: OffscreenCanvasRenderingContext2D | null = null;
 
         // Resize textures
         for (const texture of doc.getRoot().listTextures()) {
@@ -239,24 +300,28 @@ const resizeTextures = (scale: number, maxTextureSize?: number): Transform => {
             }
 
             // Create an image bitmap from the image data.
-            let bitmap;
+            let bitmap: ImageBitmap;
             try {
-                const data = new Uint8Array(image.buffer.byteLength);
-                data.set(image);
-                const blob = new Blob([data], {type: texture.getMimeType()});
+                const blob = new Blob([image], {type: texture.getMimeType()});
                 bitmap = await createImageBitmap(blob);
             } catch (err) {
                 console.warn(`resizeTextures: Failed to create image bitmap (mime type: ${texture.getMimeType()}`, err);
                 continue;
             }
 
-            // Create a canvas and draw the image to it to resize it.
-            let canvas;
+            // Draw into a reusable canvas to avoid repeated canvas/context allocation.
             try {
-                canvas = new OffscreenCanvas(width, height);
-                const context = canvas.getContext("2d");
+                if (!canvas) {
+                    canvas = new OffscreenCanvas(width, height);
+                    context = canvas.getContext("2d");
+                } else if (canvas.width !== width || canvas.height !== height) {
+                    canvas.width = width;
+                    canvas.height = height;
+                }
+
                 if (!context) {
                     console.warn("resizeTextures: Failed to create canvas context");
+                    canvas = null;
                     continue;
                 }
 
@@ -270,10 +335,17 @@ const resizeTextures = (scale: number, maxTextureSize?: number): Transform => {
             } catch (err) {
                 console.warn("resizeTextures: Failed to draw to canvas", err);
                 continue;
+            } finally {
+                bitmap.close();
             }
 
             // Get the resized image data from the canvas.
             try {
+                if (!canvas) {
+                    console.warn("resizeTextures: Missing canvas after draw");
+                    continue;
+                }
+
                 const resizedBlob = await canvas.convertToBlob({type: texture.getMimeType()});
                 const resizedBuffer = await resizedBlob.arrayBuffer();
                 texture.setImage(new Uint8Array(resizedBuffer));
@@ -297,6 +369,55 @@ const removeMorphTargets = (): Transform => {
     };
 };
 
+const getDocumentModelStats = (doc: Document): ModelStats => {
+    let vertexCount = 0;
+    let triangleCount = 0;
+
+    for (const mesh of doc.getRoot().listMeshes()) {
+        for (const prim of mesh.listPrimitives()) {
+            const position = prim.getAttribute("POSITION");
+            if (position) {
+                vertexCount += position.getCount();
+            }
+
+            const indices = prim.getIndices();
+            if (indices) {
+                triangleCount += indices.getCount() / 3;
+            } else if (position) {
+                triangleCount += position.getCount() / 3;
+            }
+        }
+    }
+
+    return {vertexCount, triangleCount};
+};
+
+const disposeModelDocument = (doc: Document): void => {
+    const root = doc.getRoot();
+
+    // Dispose graph resources that retain large typed arrays or image bytes after write.
+    // Dependents first, raw buffers last.
+    for (const material of root.listMaterials()) {
+        material.dispose();
+    }
+
+    for (const mesh of root.listMeshes()) {
+        mesh.dispose();
+    }
+
+    for (const texture of root.listTextures()) {
+        texture.dispose();
+    }
+
+    for (const accessor of root.listAccessors()) {
+        accessor.dispose();
+    }
+
+    for (const buffer of root.listBuffers()) {
+        buffer.dispose();
+    }
+};
+
 /**
  * Optimize a GLB file (binary GLTF).
  *
@@ -304,59 +425,73 @@ const removeMorphTargets = (): Transform => {
  * @param options - @see {@link OptimizeGlbFileOptions}
  * @returns A promise that resolves to the optimized GLB file data.
  */
-export const optimizeGlbFile = async (glbData: ArrayBuffer, options: OptimizeGlbFileOptions): Promise<ArrayBuffer> => {
+const optimizeGlbFileInternal = async (
+    glbData: ArrayBuffer,
+    options: OptimizeGlbFileOptions,
+    includeStats: boolean,
+): Promise<{glbData: ArrayBuffer; stats?: ModelStats}> => {
+    const {
+        EXTMeshoptCompression,
+        MeshoptEncoder,
+        MeshoptSimplifier,
+        meshopt,
+        simplify,
+    } = await loadGltfTransformModules();
     await MeshoptSimplifier.ready;
 
     const io = await getSharedWebIO();
 
     const doc = await io.readBinary(new Uint8Array(glbData));
-    if (options.useMeshopt ?? true) {
-        doc.createExtension(EXTMeshoptCompression)
-            .setRequired(true)
-            .setEncoderOptions({method: EXTMeshoptCompression.EncoderMethod.FILTER});
-    }
+    let optimizedGlbData: ArrayBuffer;
+    let stats: ModelStats | undefined;
 
-    if (options.removeMorphTargets ?? true) {
-        await doc.transform(removeMorphTargets());
-    }
+    try {
+        if (options.useMeshopt ?? true) {
+            doc.createExtension(EXTMeshoptCompression)
+                .setRequired(true)
+                .setEncoderOptions({method: EXTMeshoptCompression.EncoderMethod.FILTER});
+        }
 
-    if (options.simplifyRatio) {
-        await doc.transform(
-            simplify({
-                simplifier: MeshoptSimplifier,
-                ratio: options.simplifyRatio,
-                error: options.simplifyError || 0.001,
-            }),
-        );
-    }
+        if (options.removeMorphTargets ?? true) {
+            await doc.transform(removeMorphTargets());
+        }
 
-    // Determine maximum texture size:
-    // - Use user-specified maxTextureSize if provided
-    // - If compression is enabled, cap at MAX_TEXTURE_SIZE_FOR_COMPRESSION to avoid encoder buffer overflow
-    let maxTextureSize = options.maxTextureSize ? Math.max(options.maxTextureSize, 1) : undefined;
-    if (options.compressTextures) {
-        maxTextureSize = maxTextureSize
-            ? Math.min(maxTextureSize, MAX_TEXTURE_SIZE_FOR_COMPRESSION)
-            : MAX_TEXTURE_SIZE_FOR_COMPRESSION;
-    }
+        if (options.simplifyRatio) {
+            await doc.transform(
+                simplify({
+                    simplifier: MeshoptSimplifier,
+                    ratio: options.simplifyRatio,
+                    error: options.simplifyError || 0.001,
+                }),
+            );
+        }
 
-    if (maxTextureSize || options.textureScale) {
-        const textureScale = options.textureScale || 1.0;
-        await doc.transform(resizeTextures(textureScale, maxTextureSize));
-    }
+        // Determine maximum texture size:
+        // - Use user-specified maxTextureSize if provided
+        // - If compression is enabled, cap at MAX_TEXTURE_SIZE_FOR_COMPRESSION to avoid encoder buffer overflow
+        let maxTextureSize = options.maxTextureSize ? Math.max(options.maxTextureSize, 1) : undefined;
+        if (options.compressTextures) {
+            maxTextureSize = maxTextureSize
+                ? Math.min(maxTextureSize, MAX_TEXTURE_SIZE_FOR_COMPRESSION)
+                : MAX_TEXTURE_SIZE_FOR_COMPRESSION;
+        }
 
-    if (options.useMeshopt ?? true) {
-        await doc.transform(meshopt({encoder: MeshoptEncoder, level: "high"}));
-    }
+        if (maxTextureSize || options.textureScale) {
+            const textureScale = options.textureScale || 1.0;
+            await doc.transform(resizeTextures(textureScale, maxTextureSize));
+        }
 
-    let optimizedGlbData: ArrayBuffer = (await io.writeBinary(doc)).buffer;
+        if (options.useMeshopt ?? true) {
+            await doc.transform(meshopt({encoder: MeshoptEncoder, level: "high"}));
+        }
 
-    for (const material of doc.getRoot().listMaterials()) {
-        material.dispose();
-    }
+        if (includeStats) {
+            stats = getDocumentModelStats(doc);
+        }
 
-    for (const mesh of doc.getRoot().listMeshes()) {
-        mesh.dispose();
+        optimizedGlbData = (await io.writeBinary(doc)).buffer;
+    } finally {
+        disposeModelDocument(doc);
     }
 
     // Texture compression needs to be done in a web worker to avoid blocking
@@ -365,7 +500,23 @@ export const optimizeGlbFile = async (glbData: ArrayBuffer, options: OptimizeGlb
         optimizedGlbData = await compressTextures(optimizedGlbData, options);
     }
 
-    return optimizedGlbData;
+    return {glbData: optimizedGlbData, stats};
+};
+
+export const optimizeGlbFile = async (glbData: ArrayBuffer, options: OptimizeGlbFileOptions): Promise<ArrayBuffer> => {
+    const result = await optimizeGlbFileInternal(glbData, options, false);
+    return result.glbData;
+};
+
+export const optimizeGlbFileWithStats = async (
+    glbData: ArrayBuffer,
+    options: OptimizeGlbFileOptions,
+): Promise<OptimizedGlbWithStats> => {
+    const result = await optimizeGlbFileInternal(glbData, options, true);
+    return {
+        glbData: result.glbData,
+        stats: result.stats ?? {vertexCount: 0, triangleCount: 0},
+    };
 };
 
 /**
@@ -381,10 +532,22 @@ const simplifyModel = async (
     onError?: () => void,
 ): Promise<ArrayBuffer | JSONDocument> => {
     let simplifiedData = data;
+    let doc: Document | null = null;
     try {
+        const {
+            ALL_EXTENSIONS,
+            dedup,
+            EARTHAnimationGraphTransformExtension,
+            flatten,
+            join,
+            MeshoptSimplifier,
+            prune,
+            simplify,
+            unpartition,
+            WebIO,
+        } = await loadGltfTransformModules();
+        await MeshoptSimplifier.ready;
         const io = new WebIO().registerExtensions([...ALL_EXTENSIONS, EARTHAnimationGraphTransformExtension]);
-
-        let doc: Document;
 
         if (isJSON) {
             doc = await io.readJSON(data as JSONDocument);
@@ -409,15 +572,13 @@ const simplifyModel = async (
             simplifiedData = bin.buffer;
         }
 
-        for (const material of doc.getRoot().listMaterials()) {
-            material.dispose();
-        }
-        for (const mesh of doc.getRoot().listMeshes()) {
-            mesh.dispose();
-        }
     } catch (error) {
         console.error(error);
         onError?.();
+    } finally {
+        if (doc) {
+            disposeModelDocument(doc);
+        }
     }
 
     return simplifiedData;
@@ -492,16 +653,19 @@ const renderThumbnailFrame = (renderer: WebGPURenderer, scene: Scene, camera: Pe
 };
 
 const createThumbnailFromModel = async (model: Object3D, width = 512, height = 512): Promise<string> => {
+    const {WebGPURenderer} = await import("three/webgpu");
     // Setup scene
     const scene = new Scene();
     scene.name = "ModelThumbnailScene";
     scene.background = null;
     const oldParent = model.parent;
     let renderer: WebGPURenderer | undefined;
-    let sparkComposite: ReturnType<typeof ensureSparkComposite> | undefined;
+    let sparkCompositeBridge: SparkCompositeBridgeModule | undefined;
+    let sparkComposite: SparkComposite | undefined;
 
     try {
         scene.add(model);
+        const isGaussianSplat = isGaussianSplatObject(model);
 
         // Lighting
         const light = new AmbientLight(0xffffff, 2.0);
@@ -513,9 +677,12 @@ const createThumbnailFromModel = async (model: Object3D, width = 512, height = 5
         renderer.setSize(width, height);
         await renderer.init();
         renderer.setClearColor(0x000000, 0);
-        sparkComposite = ensureSparkComposite(scene, renderer);
 
-        const isGaussianSplat = isGaussianSplatObject(model);
+        if (isGaussianSplat) {
+            sparkCompositeBridge = await import("../render/SparkCompositeBridge");
+            sparkComposite = sparkCompositeBridge.ensureSparkComposite(scene, renderer);
+        }
+
         const frameCount = isGaussianSplat ? THUMBNAIL_GAUSSIAN_SPLAT_WARMUP_FRAMES : 1;
 
         for (let frame = 0; frame < frameCount; frame++) {
@@ -530,7 +697,7 @@ const createThumbnailFromModel = async (model: Object3D, width = 512, height = 5
 
         return renderer.domElement.toDataURL("image/png");
     } finally {
-        disposeSparkComposite(sparkComposite);
+        sparkCompositeBridge?.disposeSparkComposite(sparkComposite);
         renderer?.dispose();
         scene.remove(model);
 
@@ -560,8 +727,8 @@ const uploadThumbnail = async (file: File): Promise<string> => {
 };
 
 const saveAsGLB = (model: any, callback: (result: ArrayBuffer) => void) => {
-    try {
-        var exporter = new GLTFExporter();
+    void import("three/addons/exporters/GLTFExporter.js").then(({GLTFExporter}) => {
+        const exporter = new GLTFExporter();
         exporter.parse(
             model.children.length > 0 ? model.children : model,
             function (result) {
@@ -577,42 +744,21 @@ const saveAsGLB = (model: any, callback: (result: ArrayBuffer) => void) => {
                 animations: model._obj?.animations || model.animations,
             },
         );
-    } catch (error) {
+    }).catch(error => {
         showToast({type: "error", title: "Failed to save model"});
         console.error(error);
-    }
+    });
 };
 
-export const getModelStats = async (buffer: ArrayBuffer) => {
-    await MeshoptDecoder.ready;
-    const io = new WebIO()
-        .registerExtensions([...ALL_EXTENSIONS, EARTHAnimationGraphTransformExtension])
-        .registerDependencies({
-            "meshopt.decoder": MeshoptDecoder,
-        });
+export const getModelStats = async (buffer: ArrayBuffer): Promise<ModelStats> => {
+    const io = await getSharedWebIO();
     const doc = await io.readBinary(new Uint8Array(buffer));
 
-    let vertexCount = 0;
-    let triangleCount = 0;
-
-    for (const mesh of doc.getRoot().listMeshes()) {
-        for (const prim of mesh.listPrimitives()) {
-            const position = prim.getAttribute("POSITION");
-            if (position) {
-                vertexCount += position.getCount();
-            }
-            const indices = prim.getIndices();
-            if (indices) {
-                triangleCount += indices.getCount() / 3;
-            } else {
-                // Non-indexed?
-                if (position) {
-                    triangleCount += position.getCount() / 3;
-                }
-            }
-        }
+    try {
+        return getDocumentModelStats(doc);
+    } finally {
+        disposeModelDocument(doc);
     }
-    return {vertexCount, triangleCount};
 };
 
 interface AtlasTexturesOptions {
@@ -632,7 +778,18 @@ export const atlasTextures = async (
     glbData: ArrayBuffer,
     options: AtlasTexturesOptions = {},
 ): Promise<{glbData: ArrayBuffer; atlasBlob?: Blob; atlasConfig?: import("@stem/editor-oss/atlas/types").AtlasConfig}> => {
-    const {generateAtlasFromBlobs} = await import("@stem/editor-oss/atlas/AtlasGenerator");
+    const [
+        {generateAtlasFromBlobs},
+        {
+            ALL_EXTENSIONS,
+            EARTHAnimationGraphTransformExtension,
+            MeshoptDecoder,
+            WebIO,
+        },
+    ] = await Promise.all([
+        import("@stem/editor-oss/atlas/AtlasGenerator"),
+        loadGltfTransformModules(),
+    ]);
 
     await MeshoptDecoder.ready;
     const io = new WebIO()

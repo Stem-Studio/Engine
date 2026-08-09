@@ -11,7 +11,6 @@ import {AttributesSection} from "../AttributesSection/AttributesSection";
 import {Property, Input, Label, ExpandButton, SectionTitle, DetailsData} from "../BehaviorCreator.style";
 import {ResizableSettingsPanel} from "../ResizableSettingsPanel/ResizableSettingsPanel";
 import {IAttribute} from "../types";
-//import {AiPromptComponent} from "../AiPromptComponent/AiPromptComponent";
 
 export type BehaviorCreatorConfigEditorProps = {
     behaviorId?: string;
@@ -59,14 +58,9 @@ export const BehaviorCreatorConfigEditor = ({
     onConfigChange,
     onApplyRevisionToScene,
     onOpenRevisionInEditor,
-    //onCodeChange,
-    //code,
-    //isAiPromptDisabled = false,
 }: BehaviorCreatorConfigEditorProps) => {
     const [detailsExpanded, setDetailsExpanded] = useState(true);
     const [attributesExpanded, setAttributesExpanded] = useState(true);
-    //const [aiAssistantExpanded, setAiAssistantExpanded] = useState(true);
-    //const [isAiLoading, setIsAiLoading] = useState(false);
 
     const attributes = useMemo(
         () => (config ? Object.entries(config.attributes).map(([key, value]) => ({...value, key})) : []),
@@ -204,24 +198,6 @@ export const BehaviorCreatorConfigEditor = ({
                         showDiffOption
                     />
                 )}
-                {/*}
-                <SectionTitle onClick={() => setAiAssistantExpanded(prev => !prev)}>
-                    <span className="title">AI Assistant</span>
-                    <ExpandButton className="reset-css" $expanded={aiAssistantExpanded}>
-                        <img src={arrowDown} alt="show more" />
-                    </ExpandButton>
-                </SectionTitle>
-                {aiAssistantExpanded && (
-                    <AiPromptComponent
-                        onSubmit={() => {}}
-                        onResponse={() => {}}
-                        scriptSource={code || ""}
-                        setScriptSource={value => behaviorId && revisionId && onCodeChange(behaviorId, revisionId, value)}
-                        isAiLoading={isAiLoading}
-                        setIsAiLoading={setIsAiLoading}
-                        disabled={isAiPromptDisabled}
-                    />
-                )}*/}
             </div>
         </ResizableSettingsPanel>
     );

@@ -17,6 +17,7 @@ import {
 } from "@stem/network/api/inventory";
 import {EVENTS, flushInventoryEvents} from "@stem/network/api/inventory/inventoryEvents";
 import {INVENTORY_TYPES, INVENTORY_UI_CONTAINERS} from "@stem/editor-oss/types/editor";
+import {findObjectByUuidDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import {ResourcesUtils} from "@stem/editor-oss/utils/ResourcesUtils";
 import {IconComponent} from "../../../common/HUDIcon";
 import {isInputActive} from "../../../utils/isInputActive";
@@ -207,7 +208,7 @@ export const InventoryRenderer = ({inventory, game, close}: IInventoryRendererPr
                         uiImage: ResourcesUtils.nameToResourceImage(name),
                     };
                 } else {
-                    const obj = game?.scene?.getObjectByProperty("uuid", uuid);
+                    const obj = game?.scene ? findObjectByUuidDepthFirst(game.scene, uuid) : null;
 
                     if (!obj) return;
 
@@ -245,14 +246,19 @@ export const InventoryRenderer = ({inventory, game, close}: IInventoryRendererPr
     }, [fullInventoryData]);
 
     const handleItemClick = (uuid: string) => {
+        const scene = game?.scene;
+        if (!scene) {
+            return;
+        }
+
         fullInventoryDataRef.current.forEach((el: any) => {
-            const item = game?.scene?.getObjectByProperty("uuid", el.uuid);
+            const item = findObjectByUuidDepthFirst(scene, el.uuid);
             if (item) {
                 item.userData.uiInventorySelected = false;
             }
         });
 
-        const selectedObject = game!.scene!.getObjectByProperty("uuid", uuid);
+        const selectedObject = findObjectByUuidDepthFirst(scene, uuid);
         if (selectedObject) {
             selectedObject.userData.uiInventorySelected = true;
             selectedObject.visible = true;

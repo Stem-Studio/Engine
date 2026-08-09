@@ -306,8 +306,8 @@ export const apiRequestConfigs: ApiRequestConfig[] =
             paramSchemas: {
                 type: {
                     type: 'string',
-                    enum: ['ammo', 'rapier', 'jolt', 'physx'],
-                    description: "Scene-level physics engine. 'ammo' is the default and most mature. Rapier has NO vehicle support. Takes effect at next scene load."
+                    enum: ['ammo', 'rapier'],
+                    description: "Scene-level physics engine. 'ammo' is the default and most mature. Takes effect at next scene load."
                 },
                 gravity: {
                     type: 'number',

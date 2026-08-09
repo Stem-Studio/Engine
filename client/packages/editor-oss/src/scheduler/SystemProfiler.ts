@@ -25,7 +25,7 @@ export class SystemProfiler {
     private enabled: boolean = false;
     private metrics: Map<string, SystemMetrics> = new Map();
     private currentFrame: Map<string, number> = new Map();
-    private idleQueue = new IdleWorkQueue();
+    private idleQueue: IdleWorkQueue | null = null;
     private lastSummary: { totalTimeMs: number; topSystems: SystemMetrics[] } | null = null;
 
     enable(): void { this.enabled = true; }
@@ -71,24 +71,76 @@ export class SystemProfiler {
     }
 
     getTopSystems(n: number = 5): SystemMetrics[] {
-        return [...this.getMetrics()]
-            .sort((a, b) => b.avgExecutionTimeMs - a.avgExecutionTimeMs)
-            .slice(0, n);
+        const limit = this.normalizeTopLimit(n);
+        if (limit <= 0) {
+            return [];
+        }
+        return this.collectSummary(limit).topSystems;
     }
 
     getSummary(): { totalTimeMs: number; topSystems: SystemMetrics[] } {
-        const all = this.getMetrics();
-        const totalTimeMs = all.reduce((sum, m) => sum + m.executionTimeMs, 0);
-        const topSystems = this.getTopSystems(5);
-        return { totalTimeMs, topSystems };
+        return this.collectSummary(5);
+    }
+
+    private collectSummary(limit: number): { totalTimeMs: number; topSystems: SystemMetrics[] } {
+        let totalTimeMs = 0;
+        const topSystems: SystemMetrics[] = [];
+
+        for (const metric of this.metrics.values()) {
+            totalTimeMs += metric.executionTimeMs;
+            this.insertTopSystem(topSystems, metric, limit);
+        }
+
+        return {totalTimeMs, topSystems};
+    }
+
+    private insertTopSystem(topSystems: SystemMetrics[], metric: SystemMetrics, limit: number): void {
+        if (limit <= 0) {
+            return;
+        }
+
+        if (
+            topSystems.length === limit &&
+            metric.avgExecutionTimeMs <= topSystems[topSystems.length - 1]!.avgExecutionTimeMs
+        ) {
+            return;
+        }
+
+        let insertAt = topSystems.length;
+        while (
+            insertAt > 0 &&
+            metric.avgExecutionTimeMs > topSystems[insertAt - 1]!.avgExecutionTimeMs
+        ) {
+            insertAt--;
+        }
+
+        if (insertAt >= limit) {
+            return;
+        }
+
+        topSystems.splice(insertAt, 0, metric);
+        if (topSystems.length > limit) {
+            topSystems.pop();
+        }
+    }
+
+    private normalizeTopLimit(n: number): number {
+        return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
     }
 
     /** Schedule summary computation during idle time. Retrieve via getLastSummary(). */
     deferredSummary(): void {
         if (!this.enabled) return;
-        this.idleQueue.schedule(() => {
+        this.getIdleQueue().schedule(() => {
             this.lastSummary = this.getSummary();
         });
+    }
+
+    private getIdleQueue(): IdleWorkQueue {
+        if (!this.idleQueue) {
+            this.idleQueue = new IdleWorkQueue();
+        }
+        return this.idleQueue;
     }
 
     /** Returns the most recently computed idle-deferred summary, or null if none yet. */
@@ -103,7 +155,8 @@ export class SystemProfiler {
     }
 
     dispose(): void {
-        this.idleQueue.dispose();
+        this.idleQueue?.dispose();
+        this.idleQueue = null;
         this.reset();
         this.enabled = false;
     }

@@ -3,8 +3,21 @@ import { Camera } from 'three';
 import { AssetLoader } from '@stem/editor-oss/asset-management/AssetLoader';
 import { AssetResolutionContext, setAssetResolutionContext } from '@stem/editor-oss/asset-management/AssetResolutionContext';
 import { mapAssetIds, resolveBehaviorAttributeAssetRefs, resolveLambdaComponentDataAssetRefs } from '@stem/editor-oss/asset-management/dependencies';
-import Converter from '../serialization/Converter';
 import { SceneLoadProfiler } from '../utils/SceneLoadProfiler';
+
+type SceneConverter = {
+    fromJson: (
+        data: any,
+        options: {
+            server: string;
+            camera: Camera;
+            domWidth: number;
+            domHeight: number;
+            assetResolutionContext?: AssetResolutionContext;
+            assetLoader?: AssetLoader;
+        },
+    ) => Promise<any>;
+};
 
 export type LoadSceneParams = {
     server: string;
@@ -25,6 +38,8 @@ export type LoadSceneParams = {
               }
             | undefined;
     };
+    /** Optional shared Converter instance. Direct callers can omit this. */
+    converter?: SceneConverter;
 };
 
 export const loadScene = async ({
@@ -33,6 +48,7 @@ export const loadScene = async ({
     domWidth,
     domHeight,
     assetLoader,
+    converter: suppliedConverter,
     sceneData,
 }: LoadSceneParams) => {
     const { data, metadata } = sceneData;
@@ -48,7 +64,9 @@ export const loadScene = async ({
 
     // Deserialize the scene
     SceneLoadProfiler.begin('converterParse');
-    const converter = new Converter();
+    const converter =
+        suppliedConverter ??
+        new ((await import("../serialization/Converter")).default as unknown as new () => SceneConverter)();
     const result = await converter.fromJson(data, {
         server,
         camera,

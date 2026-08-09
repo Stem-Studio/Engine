@@ -27,9 +27,7 @@ type ConfigureKeysResponse struct {
 }
 
 // sessionKeyStore holds BYOK keys received from the editor for the current
-// process lifetime. Cleared on server restart. **Used in OSS mode only** —
-// the integrated build returns 403 for this endpoint because operator-
-// managed env keys are the source of truth in multi-tenant deployments.
+// process lifetime. Cleared on server restart.
 type sessionKeyStore struct {
 	mu   sync.RWMutex
 	keys map[string]string
@@ -83,19 +81,8 @@ func init() {
 }
 
 // ConfigureKeysHandler accepts a BYOK provider key for the current server
-// session. Restricted to OSS mode — integrated mode operates with operator-
-// managed env keys and rejects this endpoint with 403 to prevent one user
-// from overriding another user's keys in a multi-tenant deployment.
+// session. Env-supplied keys still take precedence over keys configured here.
 func ConfigureKeysHandler(w http.ResponseWriter, r *http.Request) {
-	buildMode := strings.ToLower(os.Getenv("BUILD_MODE"))
-	if buildMode != "oss" {
-		writeJSON(w, http.StatusForbidden, ConfigureKeysResponse{
-			Source:  "rejected",
-			Message: "BYOK key configuration is OSS-only. Set provider keys via the server environment instead.",
-		})
-		return
-	}
-
 	var req ConfigureKeysRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ConfigureKeysResponse{

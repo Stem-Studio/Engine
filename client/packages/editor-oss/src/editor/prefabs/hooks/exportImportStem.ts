@@ -8,7 +8,7 @@ import {getAssetResolutionContext, resolveAssetRevisionId} from "@stem/editor-os
 import {useAssetSource} from "@stem/editor-oss/context/AssetSourceContext";
 import global from "@stem/editor-oss/global";
 import {getPrefabId} from "@stem/editor-oss/prefab/util";
-import {remapScriptImportSpecifiers} from "../../../script-runtime/scriptImports";
+import {remapScriptImportSpecifiers} from "../../../script-runtime/scriptImportCore";
 import {showToast} from "@stem/editor-oss/showToast";
 import {useCreateAssetWithData, useGetAsset} from "../../asset-management/hooks/assets";
 import {

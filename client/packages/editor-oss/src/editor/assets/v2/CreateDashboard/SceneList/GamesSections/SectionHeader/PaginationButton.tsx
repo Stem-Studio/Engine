@@ -1,5 +1,3 @@
-import React from "react";
-
 import {PaginationWrapper, StyledPaginationButton} from "./SectionHeader.style";
 import arrowIcon from "../../../icons/arrow-down.svg";
 

@@ -14,7 +14,6 @@ export class UIKitMiniMap {
     private camera?: THREE.PerspectiveCamera;
     private mapRenderer?: THREE.WebGLRenderer;
     private renderTarget?: THREE.WebGLRenderTarget;
-    private animFrameId?: number;
 
     constructor(style: IMiniMapInterface) {
         this.container = new Container({
@@ -76,9 +75,6 @@ export class UIKitMiniMap {
     }
 
     dispose() {
-        if (this.animFrameId) {
-            cancelAnimationFrame(this.animFrameId);
-        }
         this.renderTarget?.dispose();
         this.container.dispose();
     }

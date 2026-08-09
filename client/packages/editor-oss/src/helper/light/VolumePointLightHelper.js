@@ -5,14 +5,13 @@
  */
 
 
-import * as THREE from "three";
-
-class VolumePointLightHelper extends THREE.LineSegments {
+import {EdgesGeometry, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, SphereGeometry} from "three";
+class VolumePointLightHelper extends LineSegments {
     constructor(light, sphereSize, color) {
-        const helperGeometry = new THREE.EdgesGeometry(
-            new THREE.SphereGeometry( sphereSize, 4, 2 ),
+        const helperGeometry = new EdgesGeometry(
+            new SphereGeometry( sphereSize, 4, 2 ),
         );
-        const helperMaterial = new THREE.LineBasicMaterial({
+        const helperMaterial = new LineBasicMaterial({
             fog: false,
             toneMapped: false,
         });
@@ -25,13 +24,13 @@ class VolumePointLightHelper extends THREE.LineSegments {
         this.matrix = this.light.matrixWorld;
         this.matrixAutoUpdate = false;
 
-        var geometry = new THREE.SphereGeometry(2, 4, 2);
-        var material = new THREE.MeshBasicMaterial({
+        var geometry = new SphereGeometry(2, 4, 2);
+        var material = new MeshBasicMaterial({
             color: 0xff0000,
             visible: false,
         });
 
-        this.picker = new THREE.Mesh(geometry, material);
+        this.picker = new Mesh(geometry, material);
         this.picker.name = "picker";
         this.add(this.picker);
 

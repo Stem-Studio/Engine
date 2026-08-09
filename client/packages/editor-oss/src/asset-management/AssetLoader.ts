@@ -1,11 +1,16 @@
-import {Texture, TextureLoader} from 'three';
-import {KTX2Loader} from 'three/examples/jsm/loaders/KTX2Loader.js';
+import type {Texture} from 'three';
+import {TextureLoader} from 'three';
 
 import {AssetRef, assetRefKey} from './AssetRef';
 import {SignedUrlCache} from './SignedUrlCache';
 import {AssetDerivative, AssetDerivativeType, AssetRevision, getAsset, getAssetDerivatives, getAssetRevision} from '@stem/network/api/asset';
 import {QualityManager} from '../core/quality/QualityManager';
-import {getBestLodForPlatform} from '../model/load-util';
+import {
+    isGpuResourceManaged,
+    releaseGpuResourcesForOwner,
+    retainGpuResources,
+} from '../core/resources/GpuResourceOwnership';
+import {getBestLodForPlatform} from '../model/lod';
 import {DetectDevice} from '../utils/DetectDevice';
 
 // Buffer time before URL expiration to trigger refresh (5 minutes)
@@ -18,6 +23,7 @@ type KTX2CompatibleRenderer = {
         getMaxAnisotropy?: () => number;
     };
 };
+type KTX2LoaderInstance = InstanceType<typeof import('three/addons/loaders/KTX2Loader.js').KTX2Loader>;
 
 export interface AssetLoaderOptions {
     /** Override automatic LOD level detection */
@@ -102,8 +108,10 @@ export class AssetLoader {
     // Signed URLs to use *after* a urlCache miss
     private nextUrls: Map<string, { url: string; expiresAt: string }> = new Map();
     private textureCache: Map<string, Texture> = new Map();
+    private readonly textureCacheOwner = {};
     private textureLoader: TextureLoader = new TextureLoader();
-    private ktx2Loader: KTX2Loader | null = null;
+    private ktx2Loader: KTX2LoaderInstance | null = null;
+    private ktx2LoaderPromise: Promise<KTX2LoaderInstance> | null = null;
     private ktx2LoaderRenderer: KTX2CompatibleRenderer | null = null;
     private options: AssetLoaderOptions;
 
@@ -761,7 +769,7 @@ export class AssetLoader {
      * 
      * @returns A KTX2Loader instance
      */
-    private getKTX2Loader(): KTX2Loader {
+    private async getKTX2Loader(): Promise<KTX2LoaderInstance> {
         const renderer = this.options.getRenderer?.();
         if (!renderer) {
             throw new Error(
@@ -774,14 +782,26 @@ export class AssetLoader {
         if (this.ktx2Loader && this.ktx2LoaderRenderer !== renderer) {
             this.ktx2Loader.dispose();
             this.ktx2Loader = null;
+            this.ktx2LoaderPromise = null;
         }
 
         // Create loader if needed
         if (!this.ktx2Loader) {
-            this.ktx2Loader = new KTX2Loader()
-                .setTranscoderPath('/assets/js/basis/')
-                .detectSupport(renderer as any);
-            this.ktx2LoaderRenderer = renderer;
+            if (!this.ktx2LoaderPromise) {
+                this.ktx2LoaderPromise = import('three/addons/loaders/KTX2Loader.js')
+                    .then(({KTX2Loader}) => {
+                        const loader = new KTX2Loader()
+                            .setTranscoderPath('/assets/js/basis/')
+                            .detectSupport(renderer as any);
+                        this.ktx2Loader = loader;
+                        this.ktx2LoaderRenderer = renderer;
+                        return loader;
+                    })
+                    .finally(() => {
+                        this.ktx2LoaderPromise = null;
+                    });
+            }
+            return this.ktx2LoaderPromise;
         }
 
         return this.ktx2Loader;
@@ -811,7 +831,7 @@ export class AssetLoader {
         let texture: Texture;
 
         if (format === 'ktx2') {
-            const ktx2Loader = this.getKTX2Loader();
+            const ktx2Loader = await this.getKTX2Loader();
             texture = await ktx2Loader.loadAsync(url);
         } else {
             texture = await new Promise<Texture>((resolve, reject) => {
@@ -833,6 +853,7 @@ export class AssetLoader {
         // cycles progressively replace live textures with disposed
         // references and meshes render untextured/blank.
         this.textureCache.set(key, texture);
+        retainGpuResources(this.textureCacheOwner, [texture]);
         const onDispose = () => {
             texture.removeEventListener("dispose", onDispose);
             if (this.textureCache.get(key) === texture) {
@@ -861,8 +882,11 @@ export class AssetLoader {
         // mutates the cache, so iterating it live would skip entries.
         const cachedTextures = Array.from(this.textureCache.values());
         this.textureCache.clear();
+        const released = releaseGpuResourcesForOwner(this.textureCacheOwner);
         for (const texture of cachedTextures) {
-            texture.dispose();
+            if (!released.disposed.has(texture) && !isGpuResourceManaged(texture)) {
+                texture.dispose();
+            }
         }
 
         console.debug('[AssetLoader] Cache cleared');

@@ -1,4 +1,4 @@
-import { Vector3Like } from 'three/webgpu';
+import type {Vector3Like} from "three";
 
 // ============================================================================
 // Physics Types
@@ -75,6 +75,8 @@ export interface PhysicsSettings {
     friction?: number;
     /** Bounciness coefficient (0-1). Default: 0 */
     restitution?: number;
+    /** Enable continuous collision detection for fast-moving dynamic bodies. Default: false */
+    ccd?: boolean;
     /** Rolling friction coefficient. Default: 0 */
     rollingFriction?: number;
     /** Spinning friction coefficient. Default: 0 */

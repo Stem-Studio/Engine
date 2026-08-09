@@ -1,8 +1,6 @@
-import {Object3D, Vector3} from "three";
-import {QuaternionLike, Vector3Like} from "three/webgpu";
+import {Object3D, Vector3, type QuaternionLike, type Vector3Like} from "three";
 
-import {BoxData, CapsuleData, CollisionBehavior, CollisionFlag, CollisionRegistration, CollisionShape, CommonData, ConcaveHullData, ConvexHullData, IPhysics, IPlayerOptions, ModelData, SphereData, TerrainData, VehicleInput, VehicleOptions, VehicleSpec} from "./common/types";
-import {PhysicsUtil} from "./PhysicsUtil";
+import {BoxData, CapsuleData, CollisionBehavior, CollisionFlag, CollisionRegistration, CollisionShape, CommonData, ConcaveHullData, ConvexHullData, IPhysics, IPlayerOptions, PhysicsDebugRenderData, SphereData, TerrainData, VehicleInput, VehicleOptions, VehicleSpec} from "./common/types";
 
 export default
 abstract class PhysicsBase implements IPhysics {
@@ -23,12 +21,13 @@ abstract class PhysicsBase implements IPhysics {
     abstract start(): Promise<void>;
     abstract terminate(): void;
     abstract simulate(deltaTime: number): void;
+    setSolverIterations(_solverIterations: number): void { /* optional backend capability */ }
     abstract pause(): void;
     abstract resume(): void;
     abstract initDebug(): Object3D | null;
+    getDebugRenderData(): PhysicsDebugRenderData | null { return null; }
     abstract ping(): Promise<void>;
     abstract addBody(object: Object3D, shapeUuuid: string, data: CommonData): void;
-    abstract addModel(object: Object3D, data: ModelData): void;
     abstract addTerrain(object: Object3D, data: TerrainData): void;
     abstract remove(uuid: string): void;
     abstract removePrefab(uuid: string): void;
@@ -70,7 +69,9 @@ abstract class PhysicsBase implements IPhysics {
     abstract removeJoint(uuidA: string, uuidB: string): void;
 
     add(object: Object3D) {
-        void PhysicsUtil.addObjectShapeToPhysics(object, this);
+        void import("./PhysicsUtil").then(({PhysicsUtil}) => {
+            void PhysicsUtil.addObjectShapeToPhysics(object, this);
+        });
     }
 
     private addObjectImpl(object: Object3D, data: BoxData | CapsuleData |SphereData | ConcaveHullData | ConvexHullData) {
@@ -122,6 +123,18 @@ abstract class PhysicsBase implements IPhysics {
     removeObject(uuid: string) {
         this.dynamicObjects.delete(uuid);
         this.kinematicObjects.delete(uuid);
+    }
+
+    /**
+     * Release the Three.js object references owned by the adapter/proxy.
+     * Implementations call this from terminate() after their backend-specific
+     * world has been disposed. Keeping this in the shared base prevents a
+     * stopped Play session from retaining the authored scene through physics
+     * bookkeeping maps.
+     */
+    protected clearTrackedObjects(): void {
+        this.dynamicObjects.clear();
+        this.kinematicObjects.clear();
     }
 
     isMultiplayer(): boolean {

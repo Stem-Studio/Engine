@@ -1,6 +1,5 @@
 import Ajax from "@web-shared/utils/Ajax";
 import {backendUrlFromPath} from "@web-shared/utils/UrlUtils";
-import {IS_OSS} from "../../../buildMode";
 
 /**
  * Uploads an image file and updates the scene's Thumbnail metadata.
@@ -64,27 +63,10 @@ export async function migrateSceneThumbnailIfNeeded(
  * @param sceneName
  * @param thumbnailUrl
  */
-export async function updateSceneThumbnail(sceneId: string, sceneName: string, thumbnailUrl: string): Promise<void> {
-    // OSS has no `/api/Scene/Edit` endpoint (scene metadata lives in the local
-    // ProjectStore, not a hosted Mongo). Posting here 404s and spams the
-    // console on every `scene thumbnail` command during a stemscript import.
-    // Callers reflect the thumbnail into `editor.sceneConfig.sceneThumbnail`
-    // locally, which persists through the OSS save path. Mirrors the
-    // `setSceneAiPromptMode` OSS guard below.
-    if (IS_OSS) return;
-
-    const editResponse = await Ajax.post({
-        url: backendUrlFromPath(`/api/Scene/Edit`),
-        data: {
-            ID: sceneId,
-            Name: sceneName,
-            Thumbnail: thumbnailUrl,
-        },
-        msgBodyType: "multipart",
-    });
-    if (editResponse?.data?.Code !== 200) {
-        throw new Error(editResponse?.data?.Msg || "Failed to update thumbnail");
-    }
+export async function updateSceneThumbnail(_sceneId: string, _sceneName: string, _thumbnailUrl: string): Promise<void> {
+    // Scene metadata lives in the local ProjectStore. Callers reflect the
+    // thumbnail into `editor.sceneConfig.sceneThumbnail`, which persists through
+    // the local save path.
 }
 
 /**
@@ -97,22 +79,10 @@ export async function updateSceneThumbnail(sceneId: string, sceneName: string, t
  * /api/Scene/Edit requires Name — pass the scene's current name through.
  */
 export async function setSceneAiPromptMode(
-    sceneId: string,
-    sceneName: string,
-    enabled: boolean,
+    _sceneId: string,
+    _sceneName: string,
+    _enabled: boolean,
 ): Promise<void> {
-    if (IS_OSS) return;
-
-    const response = await Ajax.post({
-        url: backendUrlFromPath(`/api/Scene/Edit`),
-        data: {
-            ID: sceneId,
-            Name: sceneName,
-            AiPromptMode: String(enabled),
-        },
-        msgBodyType: "multipart",
-    });
-    if (response?.data?.Code !== 200) {
-        throw new Error(response?.data?.Msg || "Failed to update AI prompt mode");
-    }
+    // AI prompt mode is stored with the local project body, not a remote scene
+    // metadata endpoint.
 }

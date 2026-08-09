@@ -2,9 +2,6 @@ import { MathUtils, Object3D, Scene } from "three";
 
 import { getNPCList, NPCBackendData } from "@stem/network/api/npc";
 import { AssetResolutionContext, getAssetResolutionContext } from "@stem/editor-oss/asset-management/AssetResolutionContext";
-import Ajax from "@stem/editor-oss/utils/Ajax";
-import { backendUrlFromPath } from "@stem/editor-oss/utils/UrlUtils";
-import { IS_OSS } from "@stem/editor-oss/mode/buildMode";
 import type { AssetSource } from "../asset-management/AssetSource";
 
 // Legacy asset data format from old API endpoints
@@ -73,17 +70,8 @@ export class BehaviorContextProvider {
      * @param assetType
      */
     private async fetchLegacyAssets(assetType: string): Promise<LegacyAssetData[]> {
-        if (IS_OSS) return [];
-        try {
-            const response = await Ajax.get({ url: backendUrlFromPath(`/api/${assetType}/List`) });
-            if (response?.data?.Code === 200) {
-                return response.data.Data || [];
-            }
-            return [];
-        } catch (error) {
-            console.warn(`[BehaviorContextProvider] Failed to fetch ${assetType} from legacy API:`, error);
-            return [];
-        }
+        void assetType;
+        return [];
     }
 
     /**
@@ -141,11 +129,9 @@ export class BehaviorContextProvider {
 
     private getSceneObjects(scene: Scene): string[] {
         const res: string[] = [];
-        scene.traverse(object => {
-            if (object.parent === scene) {
-                res.push(object.name);
-            }
-        });
+        for (const object of scene.children) {
+            res.push(object.name);
+        }
         return res;
     }
 

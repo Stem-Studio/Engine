@@ -29,7 +29,7 @@ export class LambdaQueryRegistry {
         return bit;
     }
 
-    setArchetype(target: Object3D, typeIds: Set<string>): void {
+    setArchetype(target: Object3D, typeIds: Iterable<string>): void {
         let mask = this.archetypes.get(target);
         if (!mask) {
             mask = new BitSet();

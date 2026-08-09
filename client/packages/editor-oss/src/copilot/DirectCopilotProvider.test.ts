@@ -202,6 +202,7 @@ const withFakeAssetApp = async (run: (assetSource: any) => Promise<void>) => {
             sceneID: "scene-1",
             scene,
             assetSource,
+            loadBackendImportSources: vi.fn(async () => {}),
             lambdaConfigRegistry: {
                 getConfig: vi.fn((id: string) => lambdaConfigs.get(id) ?? null),
                 registerConfig: vi.fn((id: string, config: any) => lambdaConfigs.set(id, config)),
@@ -788,7 +789,7 @@ describe("DirectCopilotProvider", () => {
                 format: "json",
                 contentType: "application/json",
             }));
-            expect(executor.executeCommand).toHaveBeenCalledWith("create_group", expect.objectContaining({
+            expect(executor.executeCommand, response).toHaveBeenCalledWith("create_group", expect.objectContaining({
                 name: "ArtifactScene",
             }));
             expect(response).toContain("Materialized 3/3 reusable artifact");

@@ -28,8 +28,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
-    echo "[deploy] building OSS bundle…"
-    BUILD_MODE=oss bun run build
+    echo "[deploy] building production bundle…"
+    bun run build
 fi
 
 if [[ ! -d build/public ]]; then

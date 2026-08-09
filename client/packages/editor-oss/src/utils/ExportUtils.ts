@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import {STLExporter} from "three/examples/jsm/exporters/STLExporter.js";
+import {STLExporter} from "three/addons/exporters/STLExporter.js";
 
 import {ElementsUtils} from "./ElementsUtils";
 import StringUtils from "./StringUtils";
@@ -11,6 +11,7 @@ import {DEFAULT_TERRAIN_TEXTURES} from "../behaviors/packs/terrain/EndlessTerrai
 import global from "../global";
 import Converter from "../serialization/Converter";
 import {showToast} from "@stem/editor-oss/showToast";
+import {traverseObjectDepthFirst, updateObjectMatrixWorldDepthFirst} from "./SceneTraverser";
 
 interface ExportOptions {
     /**
@@ -232,10 +233,6 @@ export const exportSceneToJson = async (
         if (scene.userData?.snapping) {
             sceneSettingsUserData.snapping = scene.userData.snapping;
         }
-        if (typeof scene.userData?.useSceneTraverser === "boolean") {
-            sceneSettingsUserData.useSceneTraverser = scene.userData.useSceneTraverser;
-        }
-
         output.push({
             sceneSettings: {
                 ShowStats: !!editor.showStats,
@@ -269,10 +266,10 @@ export const exportSceneToJson = async (
         const jsonString = JSON.stringify(output);
 
         StringUtils.saveString(jsonString, `${name}.json`);
-        showToast({type: "success", title: "Game exported successfully!"});
+        showToast({type: "success", title: "Scene source exported as JSON."});
     } catch (error) {
-        console.error("Failed to export scene:", error);
-        const errorMessage = error instanceof Error ? error.message : "Failed to export game";
+        console.error("Failed to export scene source:", error);
+        const errorMessage = error instanceof Error ? error.message : "Failed to export scene source";
         showToast({type: "error", title: errorMessage});
     } finally {
         // Restore original scene assets
@@ -311,15 +308,12 @@ export const exportSceneToSTL = async () => {
     try {
         const name = await ElementsUtils.querySceneName({onCancel: () => editor.component?.handleLoading(false)});
 
-        console.log("Exporting editor.scene to STL:", scene);
-        console.log("app.scene vs editor.scene:", app.scene === editor.scene);
-        console.log("Scene children count:", scene.children.length);
-
         // Collect only user-created mesh objects (exclude helpers, grids, sky, batched meshes)
         const exportGroup = new THREE.Group();
+        updateObjectMatrixWorldDepthFirst(scene, true);
 
         let meshCount = 0;
-        scene.traverse((object: any) => {
+        traverseObjectDepthFirst(scene, (object: any) => {
             // Only export regular Mesh objects that are user-created
             if (
                 object.type === "Mesh" &&
@@ -331,9 +325,6 @@ export const exportSceneToSTL = async () => {
                 object.constructor.name === "Mesh"
             ) {
                 // Exclude BatchedMesh
-
-                console.log("Adding mesh to export:", object.name, object);
-
                 // Clone the mesh and apply world transform
                 const meshClone = new THREE.Mesh(object.geometry.clone(), object.material);
                 meshClone.applyMatrix4(object.matrixWorld);
@@ -341,12 +332,8 @@ export const exportSceneToSTL = async () => {
 
                 exportGroup.add(meshClone);
                 meshCount++;
-            } else {
-                console.log("Skipping object:", object.type, object.name, object.constructor.name);
             }
         });
-
-        console.log("Total mesh objects to export:", meshCount);
 
         if (meshCount === 0) {
             console.warn("No exportable meshes found in scene");
@@ -360,9 +347,6 @@ export const exportSceneToSTL = async () => {
 
         // Export the group as ASCII STL
         const stlData = exporter.parse(exportGroup, {binary: false});
-
-        console.log("STL data length:", stlData.length);
-        console.log("STL preview (first 500 chars):", stlData.substring(0, 500));
 
         // Create blob and download
         const blob = new Blob([stlData], {type: "text/plain"});

@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import {FBXLoader} from "three/examples/jsm/loaders/FBXLoader.js";
-import {clone as cloneWithSkeleton} from "three/examples/jsm/utils/SkeletonUtils.js";
+import {FBXLoader} from "three/addons/loaders/FBXLoader.js";
+import {clone as cloneWithSkeleton} from "three/addons/utils/SkeletonUtils.js";
 
 /**
  * Runtime humanoid rigging for static avatar GLBs.

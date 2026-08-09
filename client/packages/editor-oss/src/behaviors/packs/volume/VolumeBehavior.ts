@@ -3,6 +3,8 @@ import {toast} from "toastywave";
 
 import EventBus, {IN_GAME_EVENTS} from "../../../behaviors/event/EventBus";
 import {PhysicsUtil} from "../../../physics/PhysicsUtil";
+import {CollisionType, type PhysicsConfig} from "../../../physics/common/physicsConfig";
+import {getPhysics} from "../../../physics/common/getPhysics";
 import {showToast} from "@stem/editor-oss/showToast";
 import {COLLISION_TYPE} from "@stem/editor-oss/types/editor";
 import {BehaviorBase} from "../../Behavior";
@@ -28,6 +30,8 @@ class VolumeBehavior extends BehaviorBase {
     private collisionPauseTime: number = 1500;
     private physicsRemoved: boolean = false;
     private lastCollisionTime: number = 0;
+    private autoAppliedBlockingPhysics = false;
+    private originalPhysicsConfig?: PhysicsConfig;
     private volumeData = {
         target: {} as Object3D,
     };
@@ -41,24 +45,68 @@ class VolumeBehavior extends BehaviorBase {
     onStart(): void {
         this.volumeData.target = this.target;
         this.physicsEnabled = PhysicsUtil.isPhysicsEnabled(this.target);
-        if (this.attributes.volumeOptions.volumeType !== VOLUME_TYPES.BLOCKING) {
-            this.addCollisionListener();
+
+        if (this.getVolumeType() === VOLUME_TYPES.BLOCKING) {
+            this.ensureBlockingPhysics();
+            return;
         }
 
-        // TODO: implement this
-        // if (behavior.volumeType === VOLUME_TYPES.BLOCKING && !physics.enabled) {
-        //     physics.enabled = true;
-        //     physics.ctype = "Kinematic";
-        //     physics.mass = 0;
-        // }
+        this.addCollisionListener();
     }
 
-    onStop(): void {}
+    onStop(): void {
+        this.removeCollisionListener();
+        this.restoreAutoBlockingPhysics();
+    }
+
+    private getVolumeType(): VOLUME_TYPES {
+        return this.attributes.volumeOptions?.volumeType ?? VOLUME_TYPES.BLOCKING;
+    }
+
+    private ensureBlockingPhysics(): void {
+        if (this.physicsEnabled) {
+            return;
+        }
+
+        this.originalPhysicsConfig = PhysicsUtil.getPhysicsConfig(this.target);
+        const physicsConfig = getPhysics(this.originalPhysicsConfig || null, this.target);
+        physicsConfig.enabled = true;
+        physicsConfig.ctype = CollisionType.Kinematic;
+        physicsConfig.mass = 0;
+
+        PhysicsUtil.setPhysicsConfig(this.target, physicsConfig);
+        PhysicsUtil.updateShapeOffsetAndScale(this.target);
+        this.game?.engine.addPhysicsObject(this.target);
+        this.physicsEnabled = true;
+        this.physicsRemoved = false;
+        this.autoAppliedBlockingPhysics = true;
+    }
+
+    private restoreAutoBlockingPhysics(): void {
+        if (!this.autoAppliedBlockingPhysics) {
+            return;
+        }
+
+        this.removePhysicsObject();
+
+        if (this.originalPhysicsConfig) {
+            PhysicsUtil.setPhysicsConfig(this.target, this.originalPhysicsConfig);
+        } else {
+            delete this.target.userData.physics;
+        }
+
+        this.physicsEnabled = PhysicsUtil.isPhysicsEnabled(this.target);
+        this.physicsRemoved = false;
+        this.autoAppliedBlockingPhysics = false;
+        this.originalPhysicsConfig = undefined;
+    }
 
     onReset() {
         if (this.removed) {
             this.addPhysicsObject();
-            this.addCollisionListener();
+            if (this.getVolumeType() !== VOLUME_TYPES.BLOCKING) {
+                this.addCollisionListener();
+            }
             this.removed = false;
         }
     }
@@ -70,7 +118,7 @@ class VolumeBehavior extends BehaviorBase {
     private onCollision() {
         if (!this.game || !this.game.player || !this.game.scene || this.isPaused) return;
 
-        const volumeType = this.attributes.volumeOptions.volumeType;
+        const volumeType = this.getVolumeType();
 
         const now = performance.now();
         if (now - this.lastCollisionTime < this.collisionPauseTime) return;

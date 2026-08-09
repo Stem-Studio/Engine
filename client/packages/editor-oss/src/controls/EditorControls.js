@@ -16,6 +16,8 @@ class EditorControls extends BaseControls {
     constructor(camera, domElement) {
         super(camera, domElement);
         this.controls = new EditorControlsImpl(camera, domElement);
+        this.handleChange = () => this.call("update", this);
+        this.controls.addEventListener("change", this.handleChange);
     }
 
     enable() {
@@ -33,6 +35,7 @@ class EditorControls extends BaseControls {
     }
 
     dispose() {
+        this.controls.removeEventListener("change", this.handleChange);
         this.controls.dispose();
         this.camera = null;
         this.domElement = null;

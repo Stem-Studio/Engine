@@ -1,5 +1,5 @@
 import { StemAI, StemAIGen, Generate3dModelParams } from './StemAI';
-import { GENERATOR_TYPES } from '@stem/editor-oss/utils/ModelGeneratorProvider';
+import { GENERATOR_TYPES } from '@stem/editor-oss/utils/modelGeneratorTypes';
 import GameManager from '../../game/GameManager';
 
 const mapGenerator = (generator: string | undefined): GENERATOR_TYPES | undefined => {
@@ -18,7 +18,7 @@ const mapGenerator = (generator: string | undefined): GENERATOR_TYPES | undefine
 const createAIGenInterface = (game: GameManager): StemAIGen => {
     return {
         async generate3dModel(params: Generate3dModelParams) {
-            const aiController = game.aiWorldController;
+            const aiController = await game.ensureAiWorldController();
             if (!aiController) {
                 throw new Error("AI World Controller not available");
             }

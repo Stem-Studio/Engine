@@ -90,7 +90,7 @@ structure-of-arrays fast path).
 |---|---|
 | `init(game)` | One-time setup. Store the `GameManager` reference. |
 | `update(deltaTime)` | Per-frame logic. **Override this.** |
-| `fixedUpdate(dt)` | Fixed-timestep variant for physics. |
+| `fixedUpdate(dt)` | Once per authoritative fixed simulation step, after physics, collision processing, and fixed behaviors. Fixed instances are never deadline-throttled. |
 | `onObjectAdded(target, componentData)` | An object registered with this lambda. |
 | `onObjectRemoved(target)` | An object deregistered. |
 | `dispose()` | Cleanup. |
@@ -112,12 +112,10 @@ math still catches up after skipped frames — use `dt`, not the outer
 checks the live frame deadline, applies culling/throttle multipliers, and stops
 before the frame is exhausted.
 
-Source-authored lambdas can go deeper by overriding `applySliced()` or
-`SoALambdaBase.updateSoASliced()` and yielding between chunks. Plain
-editor-authored lambda `update()` functions are not resumed by the scheduler if
-they return a generator. For long editor-authored work, split the job across
-frames with explicit state, or send pure computation to a worker and apply the
-result on the main thread.
+Plain editor-authored lambda `update()` functions are not resumed by the
+scheduler if they return a generator. For long editor-authored work, split the
+job across frames with explicit state, or send pure computation to a worker and
+apply the result on the main thread.
 
 ### Example: the rotation lambda (the whole thing)
 
@@ -542,8 +540,8 @@ component schema, helper imports, and any generated files needed to keep the
 visual model and code model synchronized. Edit the generated code directly only
 when you are deliberately taking over maintenance.
 
-In the OSS playground, lambda edits are latest-only: the local adapter keeps a
-single effective version for each lambda asset. In a server-backed install,
+In local playground mode, lambda edits are latest-only: the local adapter keeps a
+single effective version for each lambda asset. In a self-hosted server-backed install,
 each save creates an immutable asset revision; the history icon on lambda cards
 opens revision history, lets you diff, switch, or roll back, and the selected
 revision is pinned in the scene's asset resolution context.
@@ -589,6 +587,6 @@ bun run test          # Vitest — NOT `bun test`
 ```
 
 The scheduler drives lambdas every frame; if you change wave-building,
-component registration, or `processObjects`, run the OSS play smokes too
+component registration, or `processObjects`, run the local play smokes too
 (`node scripts/playwright/oss-smoke.mjs` with `bun run dev` on :5173) since
 they exercise the live update loop.

@@ -2,8 +2,8 @@ import {
     ImageBitmapLoader,
     Texture,
 } from "three";
-import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
-import { TextureNode } from 'three/webgpu';
+import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
+import {texture as textureNode} from "three/tsl";
 
 import { resolveAssetUrl } from "./AssetDownloadUtils";
 
@@ -49,8 +49,9 @@ declare module "three" {
 // HACK: monkey-patch TextureNode to allow setting null/undefined value after creation. It is not expected
 // behavior, because node builder has to remove the node from the shader graph it there is no texture assigned.
 // TODO: create a PR to three.js to support this use case natively and create a small test case
-const originalDescriptor = Object.getOwnPropertyDescriptor( TextureNode.prototype, 'value' );
-Object.defineProperty( TextureNode.prototype, 'value', {
+const activeTextureNodePrototype = Object.getPrototypeOf(textureNode(new Texture()));
+const originalDescriptor = Object.getOwnPropertyDescriptor(activeTextureNodePrototype, "value");
+Object.defineProperty(activeTextureNodePrototype, "value", {
     get: originalDescriptor!.get,
     set: function ( value ) {
 

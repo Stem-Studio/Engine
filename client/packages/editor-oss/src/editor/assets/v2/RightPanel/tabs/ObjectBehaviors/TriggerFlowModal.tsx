@@ -4,6 +4,7 @@ import ReactFlow, { Background, Node, Edge, Position, ReactFlowProvider } from "
 import styled from "styled-components";
 
 import global from "@stem/editor-oss/global";
+import {findObjectByUuidDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 import { NEW_EDITOR_LAYER_Z_INDEX } from "../../../AnimationCombiner/ModelAnimationCombiner.style";
 import {useEscapeDismiss} from "../../../common/hooks/useEscapeDismiss";
 import closeIcon from "../../../icons/close-panel.svg";
@@ -44,7 +45,7 @@ const CONDITION_LABELS: Record<string, string> = {
 const getObjectName = (uuid: string): string => {
     const scene = global.app?.editor?.scene;
     if (!scene || !uuid) return "Unknown";
-    const obj = scene.getObjectByProperty("uuid", uuid);
+    const obj = findObjectByUuidDepthFirst(scene, uuid);
     return obj?.name || "Unknown";
 };
 

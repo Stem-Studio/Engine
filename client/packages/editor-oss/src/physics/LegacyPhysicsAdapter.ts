@@ -1,15 +1,16 @@
-import { Object3D, Vector3 } from 'three';
-import { QuaternionLike, Vector3Like } from 'three/webgpu';
+import {Object3D, Quaternion, Vector3, type QuaternionLike, type Vector3Like} from "three";
 
 import { COLLISION_TYPE } from '@stem/editor-oss/types/editor';
-import { CommonData, CollisionShape, IPlayerOptions, CollisionRegistration, CollisionFlag, IDispatcher, CollisionBehavior, VehicleInput, VehicleOptions, VehicleSpec } from './common/types';
+import { CommonData, CollisionShape, IPlayerOptions, CollisionRegistration, CollisionFlag, IDispatcher, CollisionBehavior, VehicleInput, VehicleOptions, VehicleSpec, TerrainData, PhysicsDebugRenderData } from './common/types';
+import {terrainDataToHeightfieldShape} from './common/heightfield';
 import PhysicsBase from './PhysicsBase';
-import { CollisionEvent, PhysicsEngine, RigidBodyType, supportsJoints, supportsVehicles } from './PhysicsEngine';
+import { CollisionEvent, PhysicsEngine, RigidBodyOptions, RigidBodyType } from './PhysicsEngine';
 
 const DEFAULT_PLAYER_GRAVITY = -10.0;
 const DEFAULT_PLAYER_JUMP_HEIGHT = 1.0;
 const DEFAULT_PLAYER_MAX_SLOPE = 60; // degrees
 const DEFAULT_PLAYER_STEP_HEIGHT = 0.5;
+const UNIT_SCALE: Vector3Like = { x: 1, y: 1, z: 1 };
 
 /** Converts player speed (units/s) × massRatio into impulse magnitude (~1.5% of speed). */
 const PUSH_SPEED_TO_IMPULSE = 0.015;
@@ -25,6 +26,18 @@ const PUSH_DAMPING_FACTOR = 0.5;
 const PUSH_DIRECTION_EPSILON = 0.000001;
 /** Minimum friction before applying off-center spin impulse. */
 const PUSH_FRICTION_THRESHOLD = 0.01;
+
+/** Maximum horizontal reach of the character kick. */
+const KICK_RADIUS = 2.5;
+/** Keep the kick directional while still forgiving at close range. */
+const KICK_CONE_DOT = Math.cos(Math.PI * 0.39);
+/** Ignore bodies well above or below the character's foot reach. */
+const KICK_VERTICAL_REACH = 1.75;
+/** Preserve a useful impulse at the edge of the reach volume. */
+const KICK_EDGE_FALLOFF = 0.25;
+/** Small lift makes a kick readable without turning it into a jump pad. */
+const KICK_VERTICAL_SCALE = 0.12;
+const KICK_DISTANCE_EPSILON_SQ = 0.000001;
 
 const RIGID_BODY_TYPE_MAP = {
     [CollisionFlag.DYNAMIC]: RigidBodyType.Dynamic,
@@ -63,8 +76,7 @@ interface ContactPair {
  * `addOtsShiftVector`, `setCurrentAnimation`) — all adjacent to the raw
  * physics primitives. It also carries a number of rough edges:
  *
- * - Deprecated methods still in the contract (`addModel`, `addTerrain`,
- *   `setScale`).
+ * - Deprecated methods still in the contract (`addTerrain`, `setScale`).
  * - Three.js `Object3D` references leak through the API, coupling physics
  *   to the scene graph instead of pure data.
  * - Internal caches exposed as public methods (`getDynamicBodyObject`,
@@ -86,7 +98,7 @@ interface ContactPair {
  * above the primitive layer: player state (gravity, jump, vertical
  * velocity, push impulses), substepping and the time accumulator,
  * collision-listener routing, and dispatcher fan-out. Engine
- * implementations (Ammo, Rapier, Jolt, PhysX) stay focused on primitives;
+ * implementations (Ammo and Rapier) stay focused on primitives;
  * behavior that is genuinely cross-engine lives here.
  *
  * Call sites: `PhysicsEngineFactory.createLegacyPhysicsAdapter` is the
@@ -98,14 +110,23 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
     private maxSubSteps = 4;
 
     private readonly playerSpeedAdjustment = { x: 0, y: 0, z: 0 };
+    private readonly pushDirection = new Vector3();
+    private readonly kickOrigin = new Vector3();
+    private readonly kickForward = new Vector3();
+    private readonly kickToTarget = new Vector3();
+    private readonly kickImpulseVector = new Vector3();
+    private readonly kickRotation = new Quaternion();
+    private readonly collisionHandler = (event: CollisionEvent): void => {
+        this.handleCollision(event);
+    };
 
     private readonly players = new Map<string, Player>();
 
     private readonly collisionListeners = new Map<string, CollisionRegistration[]>();
     private readonly collidableUuids = new Set<string>();
 
-    /** A map of all current contact pairs (key is `uuid1-uuid2`) */
-    private readonly contactPairs = new Map<string, ContactPair>();
+    /** Active contacts indexed by their canonical first and second UUID. */
+    private readonly contactPairs = new Map<string, Map<string, ContactPair>>();
 
     private readonly vehicleVisualData = new Map<string, VehicleVisualData>();
 
@@ -115,6 +136,10 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
 
     getGravity(): number {
         return this.engine.getGravity();
+    }
+
+    setSolverIterations(solverIterations: number): void {
+        this.engine.setSolverIterations?.(solverIterations);
     }
 
     start(): Promise<void> {
@@ -129,15 +154,15 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         this.collidableUuids.clear();
         this.contactPairs.clear();
         this.vehicleVisualData.clear();
+        this.clearTrackedObjects();
     }
 
     simulate(deltaTime: number): void {
-        const onCollision = this.handleCollision.bind(this);
         this.timeAccumulator += deltaTime;
         this.engine.stepDuration = this.subStepDuration;
 
         for (let i = 0; i < this.maxSubSteps && this.timeAccumulator >= this.subStepDuration; i++) {
-            this.engine.simulate(onCollision);
+            this.engine.simulate(this.collisionHandler);
 
             for (const uuid of this.players.keys()) {
                 this.simulatePlayerPostStep(uuid);
@@ -158,10 +183,20 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
 
             const position = this.engine.getRigidBodyPosition(uuid) || { x: 0, y: 0, z: 0 };
             const roation = this.engine.getRigidBodyRotation(uuid) || { x: 0, y: 0, z: 0, w: 1 };
-            const scale = { x: 1, y: 1, z: 1 }; // TODO: handle scale
             const linVel = this.engine.getRigidBodyLinearVelocity(uuid);
-            const motionState = linVel ? { linearVelocity: linVel, onGround: false } : undefined;
-            this.dispatcher.onBodyUpdate(uuid, position, roation, scale, deltaTime, motionState);
+            // Keep adapter tests and older injected engine doubles tolerant of
+            // the optional angular getter while Ammo/Rapier both provide it.
+            const angularVel = typeof this.engine.getRigidBodyAngularVelocity === "function"
+                ? this.engine.getRigidBodyAngularVelocity(uuid)
+                : null;
+            const motionState = linVel
+                ? {
+                    linearVelocity: linVel,
+                    angularVelocity: angularVel ?? undefined,
+                    onGround: false,
+                }
+                : undefined;
+            this.dispatcher.onBodyUpdate(uuid, position, roation, UNIT_SCALE, deltaTime, motionState);
         }
 
         for (const uuid of this.engine.characterControllerUuids()) {
@@ -170,11 +205,10 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
             const roation = this.engine.getCharacterControllerRotation(uuid) || { x: 0, y: 0, z: 0, w: 1 };
             const linearVelocity = this.engine.getCharacterControllerLinearVelocity(uuid) || { x: 0, y: 0, z: 0 };
             const onGround = this.engine.isCharacterControllerOnGround(uuid) || false;
-            const scale = { x: 1, y: 1, z: 1 }; // TODO: handle scale
-            this.dispatcher.onBodyUpdate(uuid, position, roation, scale, deltaTime, { linearVelocity, onGround: onGround && !player?.isJumping });
+            this.dispatcher.onBodyUpdate(uuid, position, roation, UNIT_SCALE, deltaTime, { linearVelocity, onGround: onGround && !player?.isJumping });
         }
 
-        if (supportsVehicles(this.engine)) {
+        {
             const vehiclePhysics = this.engine;
             for (const vehicleUuid of vehiclePhysics.vehicleUuids()) {
                 const visualData = this.vehicleVisualData.get(vehicleUuid);
@@ -183,7 +217,7 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
                 const chassisPos = vehiclePhysics.getVehicleChassisPosition(vehicleUuid);
                 const chassisRot = vehiclePhysics.getVehicleChassisRotation(vehicleUuid);
                 if (chassisPos && chassisRot) {
-                    this.dispatcher.onBodyUpdate(visualData.chassisVisualUuid, chassisPos, chassisRot, { x: 1, y: 1, z: 1 }, deltaTime);
+                    this.dispatcher.onBodyUpdate(visualData.chassisVisualUuid, chassisPos, chassisRot, UNIT_SCALE, deltaTime);
                 }
 
                 const wheelCount = vehiclePhysics.getVehicleWheelCount(vehicleUuid);
@@ -192,7 +226,7 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
                     if (!wheelUuid) continue;
                     const wt = vehiclePhysics.getVehicleWheelTransform(vehicleUuid, i);
                     if (wt) {
-                        this.dispatcher.onBodyUpdate(wheelUuid, wt.position, wt.rotation, { x: 1, y: 1, z: 1 }, deltaTime);
+                        this.dispatcher.onBodyUpdate(wheelUuid, wt.position, wt.rotation, UNIT_SCALE, deltaTime);
                     }
                 }
             }
@@ -211,6 +245,10 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         return (this.engine as any).initDebug?.() ?? null;
     }
 
+    getDebugRenderData(): PhysicsDebugRenderData | null {
+        return this.engine.getDebugRenderData?.() ?? null;
+    }
+
     ping(): Promise<void> {
         return Promise.resolve();
     }
@@ -224,12 +262,27 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
             angularDamping: data.damping?.angular,
             position: data.position,
             quaternion: data.quaternion,
+            ccd: data.ccd === true,
+            allowSleep: data.allowSleep !== false,
         };
 
         const collisionFlag = this.getCollisionFlag(data.mass, data.collision_flag || CollisionFlag.DYNAMIC);
         const rigidBodyType = RIGID_BODY_TYPE_MAP[collisionFlag]!;
 
+        // A backend may reject an unsupported concave body at the primitive
+        // boundary.  Do not mark it as a local dynamic/kinematic object or
+        // issue follow-up transform calls when that happens.  This keeps the
+        // legacy adapter's bookkeeping consistent for direct callers as well
+        // as for the normal PhysicsUtil path.
+        if (this.engine.hasRigidBody(data.uuid)) {
+            console.warn("LegacyPhysicsAdapter.addBody: rigid body already exists", data.uuid);
+            return;
+        }
+
         this.engine.addRigidBody(data.uuid, shapeUuuid, rigidBodyType, options);
+        if (!this.engine.hasRigidBody(data.uuid)) {
+            return;
+        }
         this.engine.setRigidBodyPosition(data.uuid, data.position);
         this.engine.setRigidBodyRotation(data.uuid, data.quaternion);
 
@@ -245,17 +298,56 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         super.addObject(data.uuid, data.mass, collisionFlag, object);
     }
 
-    addModel(/* object: Object3D, data: ModelData */): void {
-        throw new Error('Method not implemented.');
-    }
+    addTerrain(object: Object3D | null, data: TerrainData): void {
+        if (this.engine.hasRigidBody(data.uuid)) {
+            console.warn("LegacyPhysicsAdapter.addTerrain: rigid body already exists", data.uuid);
+            return;
+        }
 
-    addTerrain(/* object: Object3D, data: TerrainData */): void {
-        throw new Error('Method not implemented.');
+        const shape = terrainDataToHeightfieldShape(data);
+        this.engine.addShape(data.uuid, shape);
+        if (!this.engine.hasShape(data.uuid)) {
+            return;
+        }
+
+        const position = {
+            x: data.position.x + shape.offset.x,
+            y: data.position.y + shape.offset.y,
+            z: data.position.z + shape.offset.z,
+        };
+        const options: RigidBodyOptions = {
+            mass: 0,
+            friction: data.friction,
+            restitution: data.restitution,
+            position,
+            quaternion: data.quaternion,
+        };
+
+        this.engine.addRigidBody(data.uuid, data.uuid, RigidBodyType.Static, options);
+        if (!this.engine.hasRigidBody(data.uuid)) {
+            this.engine.removeShape(data.uuid);
+            return;
+        }
+
+        const scale = data.scale ?? {x: 1, y: 1, z: 1};
+        if (scale.x !== 1 || scale.y !== 1 || scale.z !== 1) {
+            this.engine.setRigidBodyScale(data.uuid, scale);
+        }
+        if (object) {
+            super.addObject(data.uuid, 0, CollisionFlag.STATIC, object);
+        }
     }
 
     remove(uuid: string): void {
-        // TODO: what about character controllers?
-        this.engine.removeRigidBody(uuid);
+        // Remove requests are allowed to race backend creation/teardown. A
+        // rejected shape (for example a dynamic concave hull) or an event
+        // that arrived after the worker already disposed the body leaves no
+        // primitive to remove. Avoid forwarding that normal idempotent
+        // cleanup path to the backend, where it would produce one warning per
+        // object and drown out actionable physics diagnostics.
+        if (this.engine.hasRigidBody(uuid)) {
+            this.engine.removeRigidBody(uuid);
+        }
         super.removeObject(uuid);
     }
 
@@ -285,6 +377,80 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
 
     applyCentralImpulse(uuid: string, impulse: Vector3): void {
         this.engine.applyImpulseToRigidBody(uuid, impulse);
+    }
+
+    /**
+     * Applies a directional kick to nearby dynamic rigid bodies.
+     *
+     * The legacy API only carries the character UUID and impulse magnitude;
+     * the adapter resolves the character-controller (or rigid-body) pose and
+     * performs the small broad-phase query over primitive body UUIDs. Keeping
+     * this here means Ammo and Rapier receive identical gameplay semantics and
+     * worker callers do not depend on Three.js object references.
+     */
+    kickNearbyObjects(uuid: string, kickImpulse: number): void {
+        const magnitude = Number(kickImpulse);
+        if (!Number.isFinite(magnitude) || magnitude <= 0) {
+            return;
+        }
+
+        const origin = this.engine.getCharacterControllerPosition(uuid) ?? this.engine.getRigidBodyPosition(uuid);
+        if (!origin || !Number.isFinite(origin.x) || !Number.isFinite(origin.y) || !Number.isFinite(origin.z)) {
+            return;
+        }
+
+        const rotation = this.engine.getCharacterControllerRotation(uuid) ?? this.engine.getRigidBodyRotation(uuid);
+        if (!rotation) {
+            return;
+        }
+
+        this.kickOrigin.set(origin.x, origin.y, origin.z);
+        this.kickRotation.set(rotation.x, rotation.y, rotation.z, rotation.w);
+        this.kickForward.set(0, 0, 1).applyQuaternion(this.kickRotation);
+        this.kickForward.y = 0;
+        if (this.kickForward.lengthSq() < KICK_DISTANCE_EPSILON_SQ) {
+            return;
+        }
+        this.kickForward.normalize();
+
+        const radiusSq = KICK_RADIUS * KICK_RADIUS;
+        for (const targetUuid of this.engine.rigidBodyUuids()) {
+            if (targetUuid === uuid || this.engine.getRigidBodyType(targetUuid) !== RigidBodyType.Dynamic) {
+                continue;
+            }
+
+            const target = this.engine.getRigidBodyPosition(targetUuid);
+            if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)) {
+                continue;
+            }
+
+            const verticalDelta = target.y - this.kickOrigin.y;
+            if (Math.abs(verticalDelta) > KICK_VERTICAL_REACH) {
+                continue;
+            }
+
+            this.kickToTarget.set(target.x - this.kickOrigin.x, 0, target.z - this.kickOrigin.z);
+            const distanceSq = this.kickToTarget.lengthSq();
+            if (distanceSq > radiusSq) {
+                continue;
+            }
+
+            // A body occupying the character's origin is still a valid kick
+            // target; use facing direction instead of an undefined radial one.
+            const distance = Math.sqrt(distanceSq);
+            const facingDot = distanceSq > KICK_DISTANCE_EPSILON_SQ
+                ? this.kickToTarget.dot(this.kickForward) / distance
+                : 1;
+            if (facingDot < KICK_CONE_DOT) {
+                continue;
+            }
+
+            const distanceFalloff = distance >= KICK_RADIUS ? 0 : 1 - distance / KICK_RADIUS;
+            const scaledMagnitude = magnitude * (KICK_EDGE_FALLOFF + (1 - KICK_EDGE_FALLOFF) * distanceFalloff);
+            this.kickImpulseVector.copy(this.kickForward).multiplyScalar(scaledMagnitude);
+            this.kickImpulseVector.y = scaledMagnitude * KICK_VERTICAL_SCALE;
+            this.engine.applyImpulseToRigidBody(targetUuid, this.kickImpulseVector);
+        }
     }
 
     setOrigin(uuid: string, position: Vector3Like): void {
@@ -334,6 +500,10 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
     addPlayerObject(uuid: string, useController: boolean, options?: IPlayerOptions): Promise<Object3D | null> {
         const shapeUuid = this.engine.getRigidBodyShapeUuid(uuid);
         if (!shapeUuid) {
+            // A failed player setup must not leave a prior player entry alive.
+            // Keep the existing rejection for callers that supplied an unknown
+            // rigid body, but do not attempt any controller or body operations.
+            this.players.delete(uuid);
             console.warn("addPlayerObject: failed to find player shape", uuid);
             return Promise.reject(new Error("Failed to find player shape"));
         }
@@ -345,6 +515,15 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         // TODO: handle collider scale
 
         this.engine.addCharacterController(uuid, shapeUuid);
+        // Character-controller creation is intentionally a no-op for unsupported
+        // shapes (for example, concave hulls).  Only configure and replace the
+        // rigid body after the backend confirms that the controller exists.
+        // This preserves the original rigid body and avoids stale player state
+        // when a controller is rejected.
+        if (!this.engine.hasCharacterController(uuid)) {
+            this.players.delete(uuid);
+            return Promise.reject(new Error("Failed to add character controller"));
+        }
         this.engine.setCharacterControllerPosition(uuid, position);
         this.engine.setCharacterControllerRotation(uuid, rotation);
 
@@ -440,11 +619,6 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
     }
 
     addVehicleObject(vehicleUuid: string, spec: VehicleSpec, options: VehicleOptions): Promise<void> {
-        if (!supportsVehicles(this.engine)) {
-            console.warn("LegacyPhysicsAdapter.addVehicleObject: engine does not support vehicles");
-            return Promise.resolve();
-        }
-
         // VehicleSpec extends VehicleData, so it's assignable to the
         // engine's addVehicle parameter; the engine only sees the
         // pure-data fields.
@@ -478,15 +652,11 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
             this.vehicleVisualData.delete(vehicleUuid);
         }
 
-        if (supportsVehicles(this.engine)) {
-            this.engine.removeVehicle(vehicleUuid);
-        }
+        this.engine.removeVehicle(vehicleUuid);
     }
 
     moveVehicleObject(vehicleUuid: string, input: VehicleInput): void {
-        if (supportsVehicles(this.engine)) {
-            this.engine.setVehicleInput(vehicleUuid, input);
-        }
+        this.engine.setVehicleInput(vehicleUuid, input);
     }
 
     addCollidableObject(uuid: string): void {
@@ -506,11 +676,20 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
             }
             arr.push(listener);
         } else {
-            let arr = this.collisionListeners.get(uuid);
+            const arr = this.collisionListeners.get(uuid);
             if (arr) {
                 if (listener.id) {
-                    arr = arr.filter(l => l.id !== listener.id);
-                    this.collisionListeners.set(uuid, arr);
+                    let writeIndex = 0;
+                    for (let readIndex = 0; readIndex < arr.length; readIndex++) {
+                        const registeredListener = arr[readIndex]!;
+                        if (registeredListener.id !== listener.id) {
+                            arr[writeIndex++] = registeredListener;
+                        }
+                    }
+                    arr.length = writeIndex;
+                    if (arr.length === 0) {
+                        this.collisionListeners.delete(uuid);
+                    }
                 } else {
                     this.collisionListeners.delete(uuid);
                 }
@@ -541,10 +720,6 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         vec3PivotB: Vector3,
         vec4RotationB: QuaternionLike,
     ): void {
-        if (!supportsJoints(this.engine)) {
-            this.warnJointsUnsupported('addFixedJoint');
-            return;
-        }
         this.engine.addFixedJoint({
             collisionEnabled,
             uuidA,
@@ -567,10 +742,6 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         motorSpeed: number,
         motorTorque: number,
     ): void {
-        if (!supportsJoints(this.engine)) {
-            this.warnJointsUnsupported('addHingeJoint');
-            return;
-        }
         this.engine.addHingeJoint({
             collisionEnabled,
             uuidA,
@@ -593,10 +764,6 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         uuidB: string,
         vec3PivotB: Vector3,
     ): void {
-        if (!supportsJoints(this.engine)) {
-            this.warnJointsUnsupported('addPoint2PointJoint');
-            return;
-        }
         this.engine.addPointToPointJoint({
             collisionEnabled,
             uuidA,
@@ -607,72 +774,66 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
     }
 
     removeJoint(uuidA: string, uuidB: string): void {
-        if (!supportsJoints(this.engine)) {
-            this.warnJointsUnsupported('removeJoint');
-            return;
-        }
         this.engine.removeJoint(uuidA, uuidB);
     }
 
-    private jointsUnsupportedWarned = false;
-    private warnJointsUnsupported(method: string): void {
-        if (this.jointsUnsupportedWarned) return;
-        this.jointsUnsupportedWarned = true;
-        console.warn(`LegacyPhysicsAdapter.${method}: engine does not implement JointPhysics — joint calls will be ignored.`);
-    }
-
     private dispatchCollisionEvents(): void {
-        for (const { uuid1, uuid2 } of this.contactPairs.values()) {
-            this.dispatchCollision(uuid1, uuid2);
+        for (const pairsBySecondUuid of this.contactPairs.values()) {
+            for (const {uuid1, uuid2} of pairsBySecondUuid.values()) {
+                this.dispatchCollision(uuid1, uuid2);
+            }
         }
     }
 
     private dispatchCollision(uuid1: string, uuid2: string): void {
-        const passes = [
-            {
-                sourceUuuid: uuid1,
-                targetUuid: uuid2,
-            },
-            {
-                sourceUuuid: uuid2,
-                targetUuid: uuid1,
-            },
-        ];
+        this.dispatchCollisionPass(uuid1, uuid2);
+        this.dispatchCollisionPass(uuid2, uuid1);
+    }
 
-        for (const { sourceUuuid, targetUuid } of passes) {
-            const listeners = this.collisionListeners.get(sourceUuuid);
-            if (!listeners?.length) {
-                continue;
+    private dispatchCollisionPass(sourceUuid: string, targetUuid: string): void {
+        const listeners = this.collisionListeners.get(sourceUuid);
+        if (!listeners?.length) {
+            return;
+        }
+
+        for (let i = 0; i < listeners.length; i++) {
+            const listener = listeners[i]!;
+            switch (listener.type) {
+                case COLLISION_TYPE.WITH_PLAYER:
+                    if (!this.players.has(targetUuid)) {
+                        continue;
+                    }
+                    break;
+
+                case COLLISION_TYPE.WITH_COLLIDABLE_OBJECTS:
+                    if (!this.collidableUuids.has(targetUuid)) {
+                        continue;
+                    }
+                    break;
             }
 
-            for (const listener of listeners) {
-                switch (listener.type) {
-                    case COLLISION_TYPE.WITH_PLAYER:
-                        if (!this.players.has(targetUuid)) {
-                            continue;
-                        }
-                        break;
-                    
-                    case COLLISION_TYPE.WITH_COLLIDABLE_OBJECTS:
-                        if (!this.collidableUuids.has(targetUuid)) {
-                            continue;
-                        }
-                        break;
-                }
-
-                this.dispatcher.onCollision(sourceUuuid, listener.id);
-            }
+            this.dispatcher.onCollision(sourceUuid, listener.id);
         }
     }
 
     private handleCollision(event: CollisionEvent): void {
-        const { uuid1, uuid2, started } = event;
-        const key = uuid1 <= uuid2 ? `${uuid1}-${uuid2}` : `${uuid2}-${uuid1}`;
+        const {uuid1, uuid2, started} = event;
+        const firstUuid = uuid1 <= uuid2 ? uuid1 : uuid2;
+        const secondUuid = uuid1 <= uuid2 ? uuid2 : uuid1;
         if (started) {
-            this.contactPairs.set(key, { uuid1, uuid2 });
+            let pairsBySecondUuid = this.contactPairs.get(firstUuid);
+            if (!pairsBySecondUuid) {
+                pairsBySecondUuid = new Map();
+                this.contactPairs.set(firstUuid, pairsBySecondUuid);
+            }
+            pairsBySecondUuid.set(secondUuid, {uuid1, uuid2});
             this.applyCharacterPushImpulse(event);
         } else {
-            this.contactPairs.delete(key);
+            const pairsBySecondUuid = this.contactPairs.get(firstUuid);
+            pairsBySecondUuid?.delete(secondUuid);
+            if (pairsBySecondUuid?.size === 0) {
+                this.contactPairs.delete(firstUuid);
+            }
         }
     }
 
@@ -712,7 +873,7 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
         }
 
         // PRIMARY: player's walk velocity direction
-        const pushDirection = new Vector3(player.walkVelocity.x, 0, player.walkVelocity.z);
+        const pushDirection = this.pushDirection.set(player.walkVelocity.x, 0, player.walkVelocity.z);
 
         // FALLBACK: center-to-center
         if (pushDirection.lengthSq() < PUSH_DIRECTION_EPSILON) {
@@ -792,11 +953,16 @@ export class LegacyPhysicsAdapter extends PhysicsBase {
 
     private pruneContactPairs() {
         // Prune contact pairs where one or both objects have been removed
-        for (const [key, { uuid1, uuid2 }] of this.contactPairs) {
-            const exists1 = this.engine.hasRigidBody(uuid1) || this.engine.hasCharacterController(uuid1);
-            const exists2 = this.engine.hasRigidBody(uuid2) || this.engine.hasCharacterController(uuid2);
-            if (!exists1 || !exists2) {
-                this.contactPairs.delete(key);
+        for (const [firstUuid, pairsBySecondUuid] of this.contactPairs) {
+            for (const [secondUuid, {uuid1, uuid2}] of pairsBySecondUuid) {
+                const exists1 = this.engine.hasRigidBody(uuid1) || this.engine.hasCharacterController(uuid1);
+                const exists2 = this.engine.hasRigidBody(uuid2) || this.engine.hasCharacterController(uuid2);
+                if (!exists1 || !exists2) {
+                    pairsBySecondUuid.delete(secondUuid);
+                }
+            }
+            if (pairsBySecondUuid.size === 0) {
+                this.contactPairs.delete(firstUuid);
             }
         }
     }

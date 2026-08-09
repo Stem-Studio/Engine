@@ -1,35 +1,8 @@
-import * as THREE from "three";
+import UnsupportedLegacyLoader from "./UnsupportedLegacyLoader";
 
-import BaseLoader from "./BaseLoader";
-
-/**
- * PRWMLoader
- *
- */
-class PRWMLoader extends BaseLoader {
+class PRWMLoader extends UnsupportedLegacyLoader {
     constructor() {
-        super();
-    }
-
-    load(url) {
-        return new Promise(resolve => {
-            this.require("PRWMLoader").then(() => {
-                var loader = new THREE.PRWMLoader();
-
-                loader.load(
-                    url,
-                    geometry => {
-                        var material = new THREE.MeshPhongMaterial();
-                        var mesh = new THREE.Mesh(geometry, material);
-                        resolve(mesh);
-                    },
-                    undefined,
-                    () => {
-                        resolve(null);
-                    },
-                );
-            });
-        });
+        super("PRWMLoader");
     }
 }
 

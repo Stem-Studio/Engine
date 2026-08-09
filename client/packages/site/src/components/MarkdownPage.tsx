@@ -26,7 +26,6 @@ import directionalLightSettingsImg from "../../../../../docs/assets/directional-
 import editorProjectTabMapImg from "../../../../../docs/assets/editor-project-tab-map.png";
 import projectSettingsOverviewImg from "../../../../../docs/assets/project-settings-overview.png";
 import schedulerBehaviorPerformanceImg from "../../../../../docs/assets/scheduler-behavior-performance.png";
-import schedulerControlsImg from "../../../../../docs/assets/scheduler-controls.png";
 import schedulerLambdaExplorerImg from "../../../../../docs/assets/scheduler-lambda-explorer.png";
 import schedulerQualityPresetsImg from "../../../../../docs/assets/scheduler-quality-presets.png";
 import schedulerSettingsOverviewImg from "../../../../../docs/assets/scheduler-settings-overview.png";
@@ -55,7 +54,6 @@ const IMAGE_SOURCES: Record<string, string> = {
     "docs/assets/editor-project-tab-map.png": editorProjectTabMapImg,
     "docs/assets/project-settings-overview.png": projectSettingsOverviewImg,
     "docs/assets/scheduler-behavior-performance.png": schedulerBehaviorPerformanceImg,
-    "docs/assets/scheduler-controls.png": schedulerControlsImg,
     "docs/assets/scheduler-lambda-explorer.png": schedulerLambdaExplorerImg,
     "docs/assets/scheduler-quality-presets.png": schedulerQualityPresetsImg,
     "docs/assets/scheduler-settings-overview.png": schedulerSettingsOverviewImg,

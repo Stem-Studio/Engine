@@ -2,9 +2,17 @@ import React, { useState, useEffect, useRef } from "react";
 import i18n from "i18next";
 import styled from "styled-components";
 
-import EngineRuntime from "@stem/editor-oss/EngineRuntime";
-import { BehaviorThrottlePriority } from "../../../../../../behaviors/performance/interfaces/IThrottleStrategy";
+import type EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
+import {
+    runtimeFrameTelemetry,
+    type RuntimeFrameTelemetrySnapshot,
+} from "@stem/editor-oss/core/performance/RuntimeFrameTelemetry";
+import {
+    type GpuResourceOwnershipDiagnostics,
+} from "@stem/editor-oss/core/resources/GpuResourceOwnership";
+import type {RuntimeLodDiagnostics} from "@stem/editor-oss/core/lod/RuntimeLodController";
+import {getRuntimeSubsystemDiagnostics} from "@stem/editor-oss/core/performance/RuntimeSubsystemDiagnostics";
 
 const OverlayContainer = styled.div<{ $isVisible: boolean; $isCompact: boolean }>`
     position: fixed;
@@ -151,20 +159,6 @@ const SectionTitle = styled.div`
     font-weight: bold;
 `;
 
-const PriorityBar = styled.div<{ $width: number; $color: string }>`
-    height: 16px;
-    background: ${props => props.$color};
-    width: ${props => props.$width}%;
-    border-radius: 2px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 8px;
-    color: white;
-    margin: 2px 0;
-    min-width: 20px;
-`;
-
 const RecommendationCard = styled.div<{ $type: 'info' | 'warning' | 'success' }>`
     background: ${props => 
         props.$type === 'warning' ? 'rgba(255, 165, 0, 0.2)' : 
@@ -256,9 +250,69 @@ interface PerformanceData {
     cullingEfficiency: number;
     throttlingEfficiency: number;
     runTimeMs: number;
-    behaviorCounts: Record<BehaviorThrottlePriority, number>;
-    frameRate: number;
-    actualFPS: number;
+}
+
+interface SubsystemDiagnostics {
+    gpuResources: GpuResourceOwnershipDiagnostics;
+    lod: RuntimeLodDiagnostics | null;
+    renderer: RendererDiagnostics | null;
+}
+
+export interface RendererDiagnostics {
+    calls: number;
+    triangles: number;
+    frameCalls: number | null;
+    frameTriangles: number | null;
+    counterScope: "cumulative" | "frame" | "unknown";
+    geometries: number;
+    textures: number;
+    pixelRatio: number;
+    drawingBufferWidth: number;
+    drawingBufferHeight: number;
+}
+
+const finiteCounter = (value: unknown): number => {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+};
+
+const optionalFiniteCounter = (value: unknown): number | null => {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
+};
+
+/** Read renderer-owned counters without touching the scene or forcing layout. */
+export function getRendererDiagnostics(app: EngineRuntime | null | undefined): RendererDiagnostics | null {
+    const renderer = app?.renderer as (EngineRuntime["renderer"] & {
+        info?: {
+            autoReset?: boolean;
+            render?: {calls?: number; triangles?: number};
+            memory?: {geometries?: number; textures?: number};
+        };
+        getPixelRatio?: () => number;
+        domElement?: {width?: number; height?: number};
+    }) | undefined;
+    if (!renderer?.info) return null;
+
+    const frameInfo = (app as EngineRuntime & {
+        lastRendererFrameInfo?: {calls?: number; triangles?: number} | null;
+    } | null | undefined)?.lastRendererFrameInfo;
+    const counterScope = renderer.info.autoReset === false
+        ? "cumulative"
+        : renderer.info.autoReset === true
+            ? "frame"
+            : "unknown";
+
+    return {
+        calls: finiteCounter(renderer.info.render?.calls),
+        triangles: finiteCounter(renderer.info.render?.triangles),
+        frameCalls: optionalFiniteCounter(frameInfo?.calls),
+        frameTriangles: optionalFiniteCounter(frameInfo?.triangles),
+        counterScope,
+        geometries: finiteCounter(renderer.info.memory?.geometries),
+        textures: finiteCounter(renderer.info.memory?.textures),
+        pixelRatio: finiteCounter(renderer.getPixelRatio?.()),
+        drawingBufferWidth: finiteCounter(renderer.domElement?.width),
+        drawingBufferHeight: finiteCounter(renderer.domElement?.height),
+    };
 }
 
 const PerformanceOverlayComponent: React.FC = () => {
@@ -269,6 +323,10 @@ const PerformanceOverlayComponent: React.FC = () => {
         return saved ? JSON.parse(saved) : false;
     });
     const [performanceData, setPerformanceData] = useState<PerformanceData | null>(null);
+    const [frameTelemetry, setFrameTelemetry] = useState<RuntimeFrameTelemetrySnapshot>(
+        () => runtimeFrameTelemetry.getSnapshot(),
+    );
+    const [subsystemDiagnostics, setSubsystemDiagnostics] = useState<SubsystemDiagnostics | null>(null);
     const [showFPS, setShowFPS] = useState(() => {
         // Persist FPS counter visibility state
         const saved = localStorage.getItem('performanceFPSVisible');
@@ -281,12 +339,6 @@ const PerformanceOverlayComponent: React.FC = () => {
     });
     const [appliedActions, setAppliedActions] = useState<Set<string>>(new Set());
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
-    const fpsRef = useRef({ 
-        frameCount: 0, 
-        lastTime: performance.now(), 
-        currentFPS: 0,
-        animationFrameId: 0,
-    });
 
     // Persist state changes
     useEffect(() => {
@@ -301,69 +353,29 @@ const PerformanceOverlayComponent: React.FC = () => {
         localStorage.setItem('performanceOverlayCompact', JSON.stringify(isCompactMode));
     }, [isCompactMode]);
 
-    // FPS tracking through animation frame
-    const trackFPS = () => {
-        const now = performance.now();
-        fpsRef.current.frameCount++;
-        
-        if (now - fpsRef.current.lastTime >= 1000) {
-            fpsRef.current.currentFPS = Math.round(fpsRef.current.frameCount * 1000 / (now - fpsRef.current.lastTime));
-            fpsRef.current.frameCount = 0;
-            fpsRef.current.lastTime = now;
-        }
-        
-        fpsRef.current.animationFrameId = requestAnimationFrame(trackFPS);
-    };
+    useEffect(() => runtimeFrameTelemetry.subscribe(setFrameTelemetry), []);
 
     const updatePerformanceData = React.useCallback(() => {
-        if (!app?.game?.behaviorManager) return;
-
-        const metrics = app.game.behaviorManager.getPerformanceMetrics();
-        if (!metrics) return;
-
-        // Count behaviors by priority from scene objects
-        const behaviorCounts = {
-            [BehaviorThrottlePriority.CRITICAL]: 0,
-            [BehaviorThrottlePriority.HIGH]: 0,
-            [BehaviorThrottlePriority.MEDIUM]: 0,
-            [BehaviorThrottlePriority.LOW]: 0,
-            [BehaviorThrottlePriority.MINIMAL]: 0,
-        };
-
-        if (app.editor?.scene) {
-            app.editor.scene.traverse((object: any) => {
-                if (object.userData?.behaviors && Array.isArray(object.userData.behaviors)) {
-                    object.userData.behaviors.forEach((behaviorData: any) => {
-                        const priority = behaviorData.throttlePriority || BehaviorThrottlePriority.MEDIUM;
-                        if (priority in behaviorCounts) {
-                            behaviorCounts[priority as BehaviorThrottlePriority]++;
-                        }
-                    });
-                }
-            });
+        const metrics = app?.game?.behaviorManager?.getPerformanceMetrics();
+        if (metrics) {
+            setPerformanceData(metrics);
         }
 
-        const estimatedFrameRate = metrics.runTimeMs > 0 ? 
-            Math.min(60, Math.round(metrics.totalChecks / (metrics.runTimeMs / 1000))) : 0;
-
-        setPerformanceData({
-            ...metrics,
-            behaviorCounts,
-            frameRate: estimatedFrameRate,
-            actualFPS: fpsRef.current.currentFPS,
-        });
+        const {gpuResources, lod} = getRuntimeSubsystemDiagnostics(app);
+        setSubsystemDiagnostics({gpuResources, lod, renderer: getRendererDiagnostics(app)});
     }, [app]);
 
     useEffect(() => {
+        // The collapsed overlay must have zero polling cost. The FPS badge is
+        // driven by render-loop telemetry and does not need this behavior poll.
+        if (!isVisible) return;
+
         // Enable performance reporting when overlay is used
         if (app?.game?.behaviorManager) {
             app.game.behaviorManager.updateThrottlingConfig({
                 enablePerformanceReporting: true,
             });
         }
-
-        // Start FPS tracking
-        fpsRef.current.animationFrameId = requestAnimationFrame(trackFPS);
 
         // Start monitoring
         updatePerformanceData();
@@ -372,12 +384,10 @@ const PerformanceOverlayComponent: React.FC = () => {
         return () => {
             if (intervalRef.current) {
                 clearInterval(intervalRef.current);
-            }
-            if (fpsRef.current.animationFrameId) {
-                cancelAnimationFrame(fpsRef.current.animationFrameId);
+                intervalRef.current = null;
             }
         };
-    }, [updatePerformanceData]);
+    }, [app, isVisible, updatePerformanceData]);
 
     // Handle keyboard shortcut and custom events
     useEffect(() => {
@@ -417,30 +427,18 @@ const PerformanceOverlayComponent: React.FC = () => {
         if (!performanceData) return [];
 
         const recommendations = [];
-        const totalBehaviors = Object.values(performanceData.behaviorCounts).reduce((a, b) => a + b, 0);
-        const criticalPercentage = totalBehaviors > 0 ? 
-            performanceData.behaviorCounts[BehaviorThrottlePriority.CRITICAL] / totalBehaviors * 100 : 0;
-
-        if (performanceData.actualFPS < 30) {
+        const actualFPS = Math.round(frameTelemetry.fpsEma);
+        if (actualFPS < 30) {
             recommendations.push({
                 type: 'warning' as const,
-                message: `Low FPS (${performanceData.actualFPS}). Try performance preset.`,
+                message: `Low FPS (${actualFPS}). Try performance preset.`,
                 action: () => applyPerformancePreset('performanceFocused'),
                 actionLabel: 'Apply High Performance',
             });
-        } else if (performanceData.actualFPS > 55) {
+        } else if (actualFPS > 55) {
             recommendations.push({
                 type: 'success' as const,
-                message: `Great FPS (${performanceData.actualFPS})! Performance optimized.`,
-            });
-        }
-
-        if (criticalPercentage > 30 && !appliedActions.has('openGameSettings')) {
-            recommendations.push({
-                type: 'warning' as const,
-                message: `${criticalPercentage.toFixed(0)}% behaviors are CRITICAL.`,
-                action: () => openGameSettings(),
-                actionLabel: 'Open Settings',
+                message: `Great FPS (${actualFPS})! Performance optimized.`,
             });
         }
 
@@ -451,7 +449,7 @@ const PerformanceOverlayComponent: React.FC = () => {
             });
         }
 
-        if (performanceData.throttlingEfficiency < 50 && totalBehaviors > 5 && !appliedActions.has('balanced')) {
+        if (performanceData.throttlingEfficiency < 50 && performanceData.totalChecks > 5 && !appliedActions.has('balanced')) {
             recommendations.push({
                 type: 'info' as const,
                 message: `Throttling efficiency could be improved (${performanceData.throttlingEfficiency.toFixed(0)}%).`,
@@ -526,22 +524,28 @@ const PerformanceOverlayComponent: React.FC = () => {
         setAppliedActions(prev => new Set([...prev, presetType]));
     };
 
-    const openGameSettings = () => {
-        // Dispatch event to open game settings panel
-        const event = new CustomEvent('openGameSettingsPanel');
-        window.dispatchEvent(event);
-        // Track that this action has been used
-        setAppliedActions(prev => new Set([...prev, 'openGameSettings']));
-    };
-
     const exportPerformanceData = () => {
         if (!performanceData) return;
         
         const exportData = {
             timestamp: new Date().toISOString(),
-            fps: performanceData.actualFPS,
-            totalBehaviors,
-            behaviorDistribution: performanceData.behaviorCounts,
+            fps: Math.round(frameTelemetry.fpsEma),
+            frameTimeP95Ms: frameTelemetry.frameTimeP95Ms,
+            frameTimeP99Ms: frameTelemetry.frameTimeP99Ms,
+            renderedFrames: frameTelemetry.renderedFrames,
+            skippedFrames: frameTelemetry.skippedFrames,
+            skippedByReason: frameTelemetry.skippedByReason,
+            simulation: {
+                fixedSteps: frameTelemetry.lastSimulationFixedSteps,
+                droppedSteps: frameTelemetry.lastSimulationDroppedSteps,
+                droppedTimeMs: frameTelemetry.lastSimulationDroppedTimeMs,
+                totalDroppedSteps: frameTelemetry.totalSimulationDroppedSteps,
+                totalDroppedTimeMs: frameTelemetry.totalSimulationDroppedTimeMs,
+            },
+            lod: subsystemDiagnostics?.lod ?? null,
+            gpuResources: subsystemDiagnostics?.gpuResources ?? null,
+            behaviorDistribution: null,
+            behaviorDistributionStatus: "Unavailable without a maintained behavior-priority index",
             cullingEfficiency: performanceData.cullingEfficiency,
             throttlingEfficiency: performanceData.throttlingEfficiency,
             runTimeMs: performanceData.runTimeMs,
@@ -559,23 +563,12 @@ const PerformanceOverlayComponent: React.FC = () => {
         URL.revokeObjectURL(url);
     };
 
-    const priorityColors = {
-        [BehaviorThrottlePriority.CRITICAL]: '#ff4444',
-        [BehaviorThrottlePriority.HIGH]: '#ff8800',
-        [BehaviorThrottlePriority.MEDIUM]: '#ffcc00',
-        [BehaviorThrottlePriority.LOW]: '#88cc00',
-        [BehaviorThrottlePriority.MINIMAL]: '#44cc44',
-    };
-
-    const totalBehaviors = performanceData ? 
-        Object.values(performanceData.behaviorCounts).reduce((a, b) => a + b, 0) : 0;
-
     return (
         <>
             {/* FPS Counter */}
             {showFPS && 
                 <FPSCounter>
-                    FPS: {performanceData?.actualFPS || 0}
+                    FPS: {Math.round(frameTelemetry.fpsEma)}
                 </FPSCounter>
             }
 
@@ -627,31 +620,170 @@ const PerformanceOverlayComponent: React.FC = () => {
                             </MetricCard>
                             
                             <MetricCard $color="#ff8800">
-                                <MetricValue>{totalBehaviors}</MetricValue>
+                                <MetricValue>—</MetricValue>
                                 <MetricLabel>{i18n.t("Behaviors")}</MetricLabel>
                             </MetricCard>
                             
                             <MetricCard $color="#ff4488">
-                                <MetricValue>{performanceData.actualFPS}</MetricValue>
+                                <MetricValue>{Math.round(frameTelemetry.fpsEma)}</MetricValue>
                                 <MetricLabel>{i18n.t("Real FPS")}</MetricLabel>
+                            </MetricCard>
+
+                            <MetricCard $color="#b084ff">
+                                <MetricValue>{frameTelemetry.frameTimeP95Ms.toFixed(1)}ms</MetricValue>
+                                <MetricLabel>{i18n.t("Frame p95")}</MetricLabel>
+                            </MetricCard>
+
+                            <MetricCard $color="#ff6677">
+                                <MetricValue>{frameTelemetry.skippedFrames}</MetricValue>
+                                <MetricLabel>{i18n.t("Skipped")}</MetricLabel>
                             </MetricCard>
                         </MetricsGrid>
 
                         {!isCompactMode && 
                             <Section>
                                 <SectionTitle>{i18n.t("Priority Distribution")}</SectionTitle>
-                                {Object.entries(performanceData.behaviorCounts).map(([priority, count]) => {
-                                    const percentage = totalBehaviors > 0 ? count / totalBehaviors * 100 : 0;
-                                    return percentage > 0 ? 
-                                        <PriorityBar 
-                                            key={priority}
-                                            $width={Math.max(percentage, 10)}
-                                            $color={priorityColors[priority as BehaviorThrottlePriority]}
-                                        >
-                                            {priority.slice(0, 3)}: {count}
-                                        </PriorityBar>
-                                     : null;
-                                })}
+                                <div style={{fontSize: '10px', color: '#888'}}>
+                                    {i18n.t("Unavailable until behavior priority indexing is enabled.")}
+                                </div>
+                            </Section>
+                        }
+
+                        {!isCompactMode &&
+                            <Section data-testid="simulation-diagnostics">
+                                <SectionTitle>{i18n.t("Authoritative Simulation")}</SectionTitle>
+                                <MetricsGrid>
+                                    <MetricCard $color="#36d399">
+                                        <MetricValue>{frameTelemetry.lastSimulationFixedSteps}</MetricValue>
+                                        <MetricLabel>{i18n.t("Fixed steps")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color={frameTelemetry.totalSimulationDroppedSteps > 0 ? "#ff6677" : "#36d399"}>
+                                        <MetricValue>{frameTelemetry.totalSimulationDroppedSteps}</MetricValue>
+                                        <MetricLabel>{i18n.t("Dropped steps")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#b084ff">
+                                        <MetricValue>{frameTelemetry.totalSimulationDroppedTimeMs.toFixed(1)}ms</MetricValue>
+                                        <MetricLabel>{i18n.t("Dropped time")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#5ea7ff">
+                                        <MetricValue>{frameTelemetry.lastSimulationDroppedSteps}</MetricValue>
+                                        <MetricLabel>{i18n.t("Last-frame drops")}</MetricLabel>
+                                    </MetricCard>
+                                </MetricsGrid>
+                            </Section>
+                        }
+
+                        {!isCompactMode && subsystemDiagnostics?.lod &&
+                            <Section data-testid="lod-diagnostics">
+                                <SectionTitle>{i18n.t("Runtime LOD")}</SectionTitle>
+                                <MetricsGrid>
+                                    <MetricCard $color="#5ea7ff">
+                                        <MetricValue>{subsystemDiagnostics.lod.registeredGroups}</MetricValue>
+                                        <MetricLabel>{i18n.t("Groups")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color={subsystemDiagnostics.lod.pendingTransitions > 0 ? "#ffb020" : "#36d399"}>
+                                        <MetricValue>{subsystemDiagnostics.lod.pendingTransitions}</MetricValue>
+                                        <MetricLabel>{i18n.t("Pending")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#36d399">
+                                        <MetricValue>{subsystemDiagnostics.lod.appliedTransitions}</MetricValue>
+                                        <MetricLabel>{i18n.t("Applied")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color={subsystemDiagnostics.lod.residencyBlockedTransitions > 0 ? "#ff6677" : "#36d399"}>
+                                        <MetricValue>{subsystemDiagnostics.lod.residencyBlockedTransitions}</MetricValue>
+                                        <MetricLabel>{i18n.t("Residency blocked")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#b084ff">
+                                        <MetricValue>{subsystemDiagnostics.lod.lastUpdateCostMs.toFixed(2)}ms</MetricValue>
+                                        <MetricLabel>{i18n.t("Update cost")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#8f9bad">
+                                        <MetricValue>{subsystemDiagnostics.lod.disabledGroups}</MetricValue>
+                                        <MetricLabel>{i18n.t("Disabled")}</MetricLabel>
+                                    </MetricCard>
+                                </MetricsGrid>
+                            </Section>
+                        }
+
+                        {!isCompactMode && subsystemDiagnostics &&
+                            <Section data-testid="gpu-resource-diagnostics">
+                                <SectionTitle>{i18n.t("Shared GPU Resources")}</SectionTitle>
+                                <MetricsGrid>
+                                    <MetricCard $color="#5ea7ff">
+                                        <MetricValue>{subsystemDiagnostics.gpuResources.activeResources}</MetricValue>
+                                        <MetricLabel>{i18n.t("Managed resources")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#36d399">
+                                        <MetricValue>{subsystemDiagnostics.gpuResources.activeOwners}</MetricValue>
+                                        <MetricLabel>{i18n.t("Owners")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#b084ff">
+                                        <MetricValue>{subsystemDiagnostics.gpuResources.retainedResourceLinks}</MetricValue>
+                                        <MetricLabel>{i18n.t("Owner links")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#8f9bad">
+                                        <MetricValue>{subsystemDiagnostics.gpuResources.disposedManagedResources}</MetricValue>
+                                        <MetricLabel>{i18n.t("Disposed")}</MetricLabel>
+                                    </MetricCard>
+                                </MetricsGrid>
+                            </Section>
+                        }
+
+                        {!isCompactMode && subsystemDiagnostics?.renderer &&
+                            <Section data-testid="renderer-diagnostics">
+                                <SectionTitle>{i18n.t("Renderer")}</SectionTitle>
+                                <MetricsGrid>
+                                    <MetricCard $color="#5ea7ff">
+                                        <MetricValue>
+                                            {subsystemDiagnostics.renderer.frameCalls === null
+                                                ? "—"
+                                                : Math.round(subsystemDiagnostics.renderer.frameCalls)}
+                                        </MetricValue>
+                                        <MetricLabel>{i18n.t("Last frame calls")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#ffb020">
+                                        <MetricValue>
+                                            {subsystemDiagnostics.renderer.frameTriangles === null
+                                                ? "—"
+                                                : Math.round(subsystemDiagnostics.renderer.frameTriangles).toLocaleString()}
+                                        </MetricValue>
+                                        <MetricLabel>{i18n.t("Last frame triangles")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#5ea7ff">
+                                        <MetricValue>{Math.round(subsystemDiagnostics.renderer.calls)}</MetricValue>
+                                        <MetricLabel>
+                                            {i18n.t(subsystemDiagnostics.renderer.counterScope === "cumulative"
+                                                ? "Renderer total calls"
+                                                : "Renderer calls")}
+                                        </MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#ffb020">
+                                        <MetricValue>{Math.round(subsystemDiagnostics.renderer.triangles).toLocaleString()}</MetricValue>
+                                        <MetricLabel>
+                                            {i18n.t(subsystemDiagnostics.renderer.counterScope === "cumulative"
+                                                ? "Renderer total triangles"
+                                                : "Renderer triangles")}
+                                        </MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#b084ff">
+                                        <MetricValue>{subsystemDiagnostics.renderer.pixelRatio.toFixed(2)}</MetricValue>
+                                        <MetricLabel>{i18n.t("Pixel ratio")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#36d399">
+                                        <MetricValue>
+                                            {Math.round(subsystemDiagnostics.renderer.drawingBufferWidth)}×{Math.round(subsystemDiagnostics.renderer.drawingBufferHeight)}
+                                        </MetricValue>
+                                        <MetricLabel>{i18n.t("Draw buffer")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#8f9bad">
+                                        <MetricValue>{Math.round(subsystemDiagnostics.renderer.geometries)}</MetricValue>
+                                        <MetricLabel>{i18n.t("Geometries")}</MetricLabel>
+                                    </MetricCard>
+                                    <MetricCard $color="#8f9bad">
+                                        <MetricValue>{Math.round(subsystemDiagnostics.renderer.textures)}</MetricValue>
+                                        <MetricLabel>{i18n.t("Textures")}</MetricLabel>
+                                    </MetricCard>
+                                </MetricsGrid>
                             </Section>
                         }
 

@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
     setCopilotModelSelection: vi.fn(),
 }));
 
-vi.mock("../../../../copilot", () => ({
+vi.mock("../../../../copilot/playgroundCopilotKeys", () => ({
     COPILOT_KEYS_CHANGED_EVENT: "stem:playground-copilot-keys-changed",
     COPILOT_MODEL_OPTIONS: {
         anthropic: [{label: "Claude Sonnet 4.5", model: "claude-sonnet-4-5-20250929"}],

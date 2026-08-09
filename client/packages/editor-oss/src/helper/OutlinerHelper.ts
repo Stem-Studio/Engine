@@ -1,10 +1,13 @@
-import * as THREE from "three";
-
+import {Object3D} from "three";
 import BaseHelper from "./BaseHelper";
 import EventBus from "../behaviors/event/EventBus";
 import ObjectOutliner from "../editor/effects/ObjectOutliner";
 import global from "../global";
 import {isGaussianSplatObject} from "../model/gaussianSplats";
+import {
+    containsPlanCadSelectionMetadata,
+    hasPlanCadSelectionMetadata,
+} from "../utils/PlanCadSelectionMetadata";
 
 /**
  * OutlinerHelper - Manages object outlining for both hovered and selected objects
@@ -14,11 +17,12 @@ import {isGaussianSplatObject} from "../model/gaussianSplats";
  * Selected objects should always have an outline regardless of hover state.
  */
 class OutlinerHelper extends BaseHelper {
-    private outlinedObjects: Set<THREE.Object3D>;
-    private selectedObjects: Set<THREE.Object3D>;
-    private hoveredObject: THREE.Object3D | null;
+    private outlinedObjects: Set<Object3D>;
+    private selectedObjects: Set<Object3D>;
+    private hoveredObject: Object3D | null;
     private objectOutliner: ObjectOutliner | null;
     private app: any;
+    private eventBusSubscriptionTokens: string[];
 
     constructor() {
         super();
@@ -27,6 +31,7 @@ class OutlinerHelper extends BaseHelper {
         this.hoveredObject = null;
         this.objectOutliner = null;
         this.app = global.app;
+        this.eventBusSubscriptionTokens = [];
 
         // Bind methods
         this.onObjectOutlined = this.onObjectOutlined.bind(this);
@@ -38,15 +43,19 @@ class OutlinerHelper extends BaseHelper {
     }
 
     start() {
+        this.unsubscribeEventBusSubscriptions();
+
         // Listen to outline events
         this.app.on(`objectOutlined.${this.id}`, this.onObjectOutlined);
         this.app.on(`objectUnoutlined.${this.id}`, this.onObjectUnoutlined);
-        EventBus.instance.subscribe(`objectOutlined`, (_, data: THREE.Object3D) => {
-            this.onObjectOutlined(data);
-        });
-        EventBus.instance.subscribe(`objectUnoutlined`, (_, data: THREE.Object3D) => {
-            this.onObjectUnoutlined(data);
-        });
+        this.eventBusSubscriptionTokens = [
+            EventBus.instance.subscribe(`objectOutlined`, (_, data: Object3D) => {
+                this.onObjectOutlined(data);
+            }),
+            EventBus.instance.subscribe(`objectUnoutlined`, (_, data: Object3D) => {
+                this.onObjectUnoutlined(data);
+            }),
+        ];
 
         // Listen to selection events to maintain outline on selected objects
         this.app.on(`objectSelected.${this.id}`, this.onObjectSelected);
@@ -61,8 +70,7 @@ class OutlinerHelper extends BaseHelper {
     stop() {
         this.app.on(`objectOutlined.${this.id}`, null);
         this.app.on(`objectUnoutlined.${this.id}`, null);
-        EventBus.instance.unsubscribe(`objectOutlined`);
-        EventBus.instance.unsubscribe(`objectUnoutlined`);
+        this.unsubscribeEventBusSubscriptions();
         this.app.on(`objectSelected.${this.id}`, null);
         this.app.on(`objectArraySelected.${this.id}`, null);
         this.app.on(`objectRemoved.${this.id}`, null);
@@ -70,14 +78,20 @@ class OutlinerHelper extends BaseHelper {
 
         // Clear all outlined objects
         this.clearAllOutlines();
+        this.objectOutliner?.dispose();
+        if (this.app.objectOutliner === this.objectOutliner) {
+            this.app.objectOutliner = null;
+        }
+        this.objectOutliner = null;
     }
 
     onSceneLoaded() {
+        this.objectOutliner?.dispose();
         this.objectOutliner = new ObjectOutliner(this.app.scene, this.app.camera, this.app.renderer);
         this.app.objectOutliner = this.objectOutliner;
     }
 
-    onObjectOutlined(object: THREE.Object3D) {
+    onObjectOutlined(object: Object3D) {
         if (!object) return;
         if (this.shouldSkipOutline(object)) return;
 
@@ -92,7 +106,7 @@ class OutlinerHelper extends BaseHelper {
         this.updateOutline();
     }
 
-    onObjectUnoutlined(object: THREE.Object3D) {
+    onObjectUnoutlined(object: Object3D) {
         if (!object) return;
 
         // Remove from outlined objects only if it's not selected
@@ -122,7 +136,7 @@ class OutlinerHelper extends BaseHelper {
         }
     }
 
-    onObjectSelected(object: THREE.Object3D | null) {
+    onObjectSelected(object: Object3D | null) {
         // Clear previous selected objects
         this.selectedObjects.clear();
         this.outlinedObjects.clear();
@@ -136,7 +150,7 @@ class OutlinerHelper extends BaseHelper {
         this.updateOutline();
     }
 
-    onObjectArraySelected(objects: THREE.Object3D[] | null) {
+    onObjectArraySelected(objects: Object3D[] | null) {
         // Clear previous selected objects
         this.selectedObjects.clear();
         this.outlinedObjects.clear();
@@ -154,7 +168,7 @@ class OutlinerHelper extends BaseHelper {
         this.updateOutline();
     }
 
-    onObjectRemoved(object: THREE.Object3D) {
+    onObjectRemoved(object: Object3D) {
         // Clean up references to removed object
         this.outlinedObjects.delete(object);
         this.selectedObjects.delete(object);
@@ -178,28 +192,37 @@ class OutlinerHelper extends BaseHelper {
         this.app.call("outlineObjects", this, []);
     }
 
-    private shouldSkipOutline(object: THREE.Object3D): boolean {
-        return isGaussianSplatObject(object);
+    private unsubscribeEventBusSubscriptions() {
+        this.eventBusSubscriptionTokens.forEach(token => EventBus.instance.unsubscribe(token));
+        this.eventBusSubscriptionTokens = [];
+    }
+
+    private shouldSkipOutline(object: Object3D): boolean {
+        return (
+            isGaussianSplatObject(object) ||
+            hasPlanCadSelectionMetadata(object) ||
+            containsPlanCadSelectionMetadata(object)
+        );
     }
 
     // Public methods for external use
-    public getOutlinedObjects(): THREE.Object3D[] {
+    public getOutlinedObjects(): Object3D[] {
         return Array.from(this.outlinedObjects);
     }
 
-    public getSelectedObjects(): THREE.Object3D[] {
+    public getSelectedObjects(): Object3D[] {
         return Array.from(this.selectedObjects);
     }
 
-    public getHoveredObject(): THREE.Object3D | null {
+    public getHoveredObject(): Object3D | null {
         return this.hoveredObject;
     }
 
-    public isObjectOutlined(object: THREE.Object3D): boolean {
+    public isObjectOutlined(object: Object3D): boolean {
         return this.outlinedObjects.has(object);
     }
 
-    public isObjectSelected(object: THREE.Object3D): boolean {
+    public isObjectSelected(object: Object3D): boolean {
         return this.selectedObjects.has(object);
     }
 }

@@ -9,13 +9,10 @@ export type WhereOp = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not-in" | 
 export type WhereClause = readonly [field: string, op: WhereOp, value: unknown];
 
 /**
- * IRemoteDocStore is the seam between editor-side persistence (user
- * profile, pending sign-ups, recently-viewed scenes) and any concrete
- * remote document store. Integrated mode wires a `FirestoreDocStore`
- * that delegates to firebase/firestore. OSS mode wires a
- * `NullRemoteDocStore` whose writes are silent no-ops and reads
- * return null — the dummy local user is sufficient for OSS use, and
- * there's no remote backing store to talk to.
+ * IRemoteDocStore is the seam between editor-side persistence call sites and
+ * any concrete remote document store. This repository wires
+ * `NullRemoteDocStore`: writes are silent no-ops and reads return null because
+ * the dummy local user is sufficient and there is no remote backing store.
  *
  * The interface is intentionally narrow: simple key-by-collection-and-id
  * reads, single-level `where` queries. Multi-level nested queries,
@@ -60,11 +57,9 @@ export interface IRemoteDocStore {
 }
 
 /**
- * Default no-op implementation. Used by OSS builds and as a fallback
- * before integrated bootstrap registers a real store. Reads return
- * null/empty so consumers fall through to their default-path branches;
- * writes silently succeed so flows like "save pending user form" don't
- * crash on OSS.
+ * Default no-op implementation. Reads return null/empty so consumers fall
+ * through to their default-path branches; writes silently succeed so flows
+ * like "save pending user form" do not crash.
  */
 export class NullRemoteDocStore implements IRemoteDocStore {
     async getDoc<T = Record<string, unknown>>(_collection: string, _id: string): Promise<T | null> {

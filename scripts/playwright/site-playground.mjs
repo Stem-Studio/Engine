@@ -5,7 +5,7 @@
  * Verifies:
  *   - /playground renders the site chrome (top bar with "Playground mode" pill)
  *   - the top bar does not expose internal builder query-param entry points
- *   - the iframe src points at the dashboard route with mode=playground
+ *   - the iframe src points at the standalone app shell with mode=playground
  *   - inside the iframe, the editor app shell mounts (PublicAppContainerLite)
  *   - <html data-playground-mode="true"> is set inside the iframe document
  *   - the OSS bootstrap modal is hidden in playground mode (CSS rule)
@@ -43,14 +43,21 @@ page.on("pageerror", error => runtimeErrors.push(`pageerror: ${error.message}`))
 page.on("requestfailed", request => runtimeErrors.push(`request: ${request.url()} ${request.failure()?.errorText || ""}`));
 page.on("response", response => {
     const pathname = new URL(response.url()).pathname;
-    if (pathname === "/playground" || pathname === "/dashboard" || pathname === "/dashboard/index.html") {
+    if (pathname === "/playground" || pathname === "/dashboard" || pathname === "/dashboard/index.html" || pathname === "/shell.html") {
         routeStatuses.set(pathname, response.status());
     }
     if (response.status() >= 400) runtimeErrors.push(`response: ${response.status()} ${response.url()}`);
 });
 
 try {
-    const playgroundResponse = await page.goto(`${baseUrl}/playground`, {waitUntil: "domcontentloaded", timeout: 20000});
+    const cleanRouteResponse = await page.goto(`${baseUrl}/playground`, {waitUntil: "domcontentloaded", timeout: 20000});
+    assert(
+        "clean playground route returns HTTP success",
+        (cleanRouteResponse?.status() ?? routeStatuses.get("/playground") ?? 0) < 400,
+        `status=${cleanRouteResponse?.status() ?? routeStatuses.get("/playground") ?? "missing"}`,
+    );
+
+    const playgroundResponse = await page.goto(`${baseUrl}/playground/index.html`, {waitUntil: "domcontentloaded", timeout: 20000});
 
     assert(
         "playground route returns HTTP success",
@@ -73,8 +80,8 @@ try {
     const iframeEl = page.locator(".playground-frame");
     const src = await iframeEl.getAttribute("src");
     assert(
-        "iframe targets dashboard with playground mode flag",
-        typeof src === "string" && /\/dashboard\?(?:.*&)?mode=playground/.test(src),
+        "iframe targets app shell with playground mode flag",
+        typeof src === "string" && /\/shell\.html\?(?:.*&)?mode=playground/.test(src),
         src ?? "",
     );
 
@@ -155,10 +162,14 @@ try {
         dashboardContent === true,
         `frame=${embeddedFrame?.url() ?? "missing"}; body=${dashboardBodyText.slice(0, 160)}; errors=${runtimeErrors.slice(0, 3).join(" | ")}`,
     );
+    const embeddedPath = embeddedFrame ? new URL(embeddedFrame.url()).pathname : "";
+    const embeddedRouteStatus = embeddedPath === "/shell.html"
+        ? await page.request.get(embeddedFrame.url(), {timeout: 10000}).then(response => response.status()).catch(() => 0)
+        : (routeStatuses.get("/dashboard/index.html") ?? routeStatuses.get("/dashboard") ?? 0);
     assert(
-        "embedded dashboard route returns HTTP success",
-        (routeStatuses.get("/dashboard/index.html") ?? routeStatuses.get("/dashboard") ?? 0) < 400,
-        `status=${routeStatuses.get("/dashboard/index.html") ?? routeStatuses.get("/dashboard") ?? "missing"}`,
+        "embedded app-shell route returns HTTP success",
+        embeddedRouteStatus > 0 && embeddedRouteStatus < 400,
+        `path=${embeddedPath || "missing"}; status=${embeddedRouteStatus || "missing"}`,
     );
 } catch (e) {
     failures.push(`exception: ${e.message}`);

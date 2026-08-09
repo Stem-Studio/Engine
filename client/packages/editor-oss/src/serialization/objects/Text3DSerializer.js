@@ -1,23 +1,48 @@
-import {FontLoader} from "three/examples/jsm/loaders/FontLoader.js";
-
-import {DEFAULT_FONT, DEFAULT_WEIGHT, FONT_MAP, resolveFontPath} from "@web-shared/object/geometry/fontMap";
-import Text3D from "@web-shared/object/geometry/Text3D";
 import BaseSerializer from "../BaseSerializer";
 import Object3DSerializer from "../core/Object3DSerializer";
 import MaterialsSerializer from "../material/MaterialsSerializer";
 
 const fontCache = new Map();
-const fontLoader = new FontLoader();
+let fontLoaderPromise = null;
+let fontConfigPromise = null;
+let text3DConstructorPromise = null;
+
+function getFontLoader() {
+    if (!fontLoaderPromise) {
+        fontLoaderPromise = import("three/addons/loaders/FontLoader.js")
+            .then(({FontLoader}) => new FontLoader());
+    }
+
+    return fontLoaderPromise;
+}
+
+function getFontConfig() {
+    if (!fontConfigPromise) {
+        fontConfigPromise = import("@web-shared/object/geometry/fontMap");
+    }
+
+    return fontConfigPromise;
+}
+
+function getText3DConstructor() {
+    if (!text3DConstructorPromise) {
+        text3DConstructorPromise = import("@web-shared/object/geometry/Text3D")
+            .then(({default: Text3D}) => Text3D);
+    }
+
+    return text3DConstructorPromise;
+}
 
 /**
  *
  * @param path
  * @param cacheKey
  */
-function loadFontCached(path, cacheKey) {
+async function loadFontCached(path, cacheKey) {
     if (fontCache.has(cacheKey)) {
         return Promise.resolve(fontCache.get(cacheKey));
     }
+    const fontLoader = await getFontLoader();
     return new Promise((resolve, reject) => {
         fontLoader.load(
             path,
@@ -52,6 +77,11 @@ class Text3DSerializer extends BaseSerializer {
         }
 
         const textConfig = json.textConfig || {};
+        const [fontConfig, Text3D] = await Promise.all([
+            getFontConfig(),
+            getText3DConstructor(),
+        ]);
+        const {DEFAULT_FONT, DEFAULT_WEIGHT, FONT_MAP, resolveFontPath} = fontConfig;
 
         // Reset to default if font is not in FONT_MAP
         const fontName = FONT_MAP[textConfig.fontName] ? textConfig.fontName : DEFAULT_FONT;

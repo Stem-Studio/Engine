@@ -426,13 +426,12 @@ const COMMAND_PARAMS: Record<string, CommandHelp> = {
         registryCommand: "set_physics_engine",
         description: "Set the scene-level physics engine (and optionally gravity). Takes effect at next scene load.",
         params: [
-            {name: "<type>", type: "string", required: true, description: "Physics engine: 'ammo' (default) | 'rapier' | 'jolt' | 'physx'"},
+            {name: "<type>", type: "string", required: true, description: "Physics engine: 'ammo' (default) | 'rapier'"},
             {name: "gravity", type: "number", required: false, description: "Scene gravity on the Y axis. Negative = down (Earth-like is -9.81)"},
         ],
         examples: [
             "physics engine ammo",
-            "physics engine jolt gravity=-9.81",
-            "physics engine physx",
+            "physics engine rapier gravity=-9.81",
         ],
     },
     "scene compartments": {
@@ -1067,7 +1066,7 @@ const HELP_CATEGORIES: HelpCategory[] = [
         name: "Physics",
         description: "Enable and configure physics simulation",
         entries: [
-            {syntax: "physics engine <type> [gravity=<n>]", description: "Set scene-level physics engine (ammo | rapier | jolt | physx) and optional gravity"},
+            {syntax: "physics engine <type> [gravity=<n>]", description: "Set scene-level physics engine (ammo | rapier) and optional gravity"},
             {syntax: "get physics engine", description: "Get scene-level physics engine settings"},
             {syntax: "physics enable <target>", description: "Enable physics on an object"},
             {syntax: "physics disable <target>", description: "Disable physics on an object"},

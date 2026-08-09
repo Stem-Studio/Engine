@@ -1,4 +1,4 @@
-import {useEffect, useState} from "react";
+import {useEffect, useRef} from "react";
 import {useTranslation} from "react-i18next";
 import {useNavigate} from "react-router-dom";
 import {toast} from "toastywave";
@@ -6,16 +6,14 @@ import {toast} from "toastywave";
 import {AppVersion} from "./AppVersion/AppVersion";
 import {StyledNav, LeftSide, EditorButton, Middle, Right, MenuButton} from "./FloatingNav.style";
 import {createTrackedShareUrl} from "@stem/network/api/rewards";
-import {forkScene} from "@stem/network/api/scene/v2";
 import EventBus from "../../../../../../behaviors/event/EventBus";
-import {useAppGlobalContext, useAuthorizationContext} from "@stem/editor-oss/context";
+import {useAppGlobalContext} from "@stem/editor-oss/context";
 import EngineRuntime, {ApplicationMode} from "@stem/editor-oss/EngineRuntime";
-import {IS_OSS} from "@stem/editor-oss/mode/buildMode";
 import global from "@stem/editor-oss/global";
 import {useFullscreen} from "@stem/editor-oss/hooks/useFullscreen";
 import {ROUTES} from "@web-shared/routes";
 import {IFRAME_MESSAGES} from "@stem/editor-oss/types/editor";
-import {generateProjectLink, getGameUrl} from "../../../../../../v2/pages/links";
+import {getGameUrl, syncPlaygroundSceneRoute} from "../../../../../../v2/pages/links";
 import {Section} from "../../../common/Section";
 import {TopMenu} from "../../../RightPanel/common/TopMenu/TopMenu";
 import {SceneName} from "../../../TopNav/SceneName";
@@ -30,54 +28,44 @@ interface Props {
 export const FloatingNav = ({setIsPlaying, isPlaying}: Props) => {
     const {t} = useTranslation();
     const app = global.app as EngineRuntime;
+    const navRef = useRef<HTMLElement | null>(null);
     const navigate = useNavigate();
     const {slug} = useAppGlobalContext();
-    const {dbUser} = useAuthorizationContext();
     const {exitFullscreen} = useFullscreen();
-    const [isForking, setIsForking] = useState(false);
 
     const isSandbox = !!app.editor?.isSandbox;
-    const sceneId = app.editor?.sceneID || "";
-    const viewerId = dbUser?.id || app.userId || "";
-    // In OSS the local user owns every project on this device, so Edit
-    // always applies and Remix (the cloud fork flow) never does.
-    const isOwner = IS_OSS || (!!viewerId && app.editor?.projectUserId === viewerId);
-    const canRemix = !IS_OSS && !isOwner && app.editor?.isCloneable === true;
-    const secondaryDisabled = !isOwner && (!canRemix || isForking);
+
+    useEffect(() => {
+        app?.registerViewportSafeAreaElement("editor-floating-nav", navRef.current);
+        return () => {
+            app?.registerViewportSafeAreaElement("editor-floating-nav", null);
+        };
+    }, [app]);
 
     const handleGameClose = () => {
         setIsPlaying(false);
     };
 
     const stopPlayingSession = async () => {
-        if (!isPlaying) return;
+        if (app.isModeTransitioning || (!isPlaying && !app.isPlaying && app.mode !== ApplicationMode.PLAY)) return;
+        const syncEditRoute = () => syncPlaygroundSceneRoute(app.editor?.sceneID, app.editor?.sceneName, "edit");
+        // Publish the edit route before progressive teardown so refresh cannot
+        // replay the stale `/play` URL while the stop promise is draining.
+        syncEditRoute();
         exitFullscreen();
         await app.setMode(ApplicationMode.EDIT);
         handleGameClose();
         EventBus.instance.send("game.stop");
+        // setMode emits playerStopped while the floating nav is still mounted.
+        // Sync after the stop notification and once more on the next frame so
+        // any lifecycle listener cannot restore the stale `/play` URL.
+        syncEditRoute();
+        requestAnimationFrame(syncEditRoute);
     };
 
     const handleStop = (e?: any) => {
         e?.preventDefault();
         void stopPlayingSession();
-    };
-
-    const handleRemix = async (e?: any) => {
-        e?.preventDefault();
-        if (!sceneId || secondaryDisabled) return;
-
-        setIsForking(true);
-        try {
-            const result = await forkScene(sceneId);
-            toast.success(t("Starting a remix"));
-            if (result?.newSceneId) {
-                window.location.href = generateProjectLink(result.newSceneId);
-            }
-        } catch (error: unknown) {
-            toast.error(error instanceof Error ? error.message : t("Remix failed."));
-        } finally {
-            setIsForking(false);
-        }
     };
 
     const handleOpenGamesLibrary = async () => {
@@ -138,7 +126,7 @@ export const FloatingNav = ({setIsPlaying, isPlaying}: Props) => {
 
     return (
         <>
-            <StyledNav>
+            <StyledNav ref={navRef} data-stem-host-chrome="true">
                 <LeftSide>
                     <Section $gap="4px"
                         $direction="row"
@@ -166,26 +154,18 @@ export const FloatingNav = ({setIsPlaying, isPlaying}: Props) => {
                         </MenuButton>
                     </Section>
                 </LeftSide>
-                {(!isSandbox || IS_OSS) &&
-                    <Middle>
-                        <EditorButton $isBlue={isPlaying}>{t("Play")}</EditorButton>
-                        <EditorButton
-                            $isBlue={!isPlaying}
-                            $disabled={secondaryDisabled}
-                            aria-disabled={secondaryDisabled}
-                            title={
-                                isOwner
-                                    ? t("Edit this game")
-                                    : canRemix
-                                        ? t("Remix this game")
-                                        : t("This game cannot be remixed")
-                            }
-                            onClick={isOwner ? handleStop : handleRemix}
-                        >
-                            {isOwner ? t("Edit") : isForking ? t("...") : t("Remix")}
-                        </EditorButton>
-                    </Middle>
-                }
+                <Middle>
+                    <EditorButton $isBlue={isPlaying}>{t("Play")}</EditorButton>
+                    <EditorButton
+                        $isBlue={!isPlaying}
+                        title={t("Edit this game")}
+                        aria-disabled={app.isModeTransitioning}
+                        onClick={handleStop}
+                        data-testid="topnav-edit"
+                    >
+                        {t("Edit")}
+                    </EditorButton>
+                </Middle>
                 <Right>
                     <TopMenu inGameUI />
                 </Right>

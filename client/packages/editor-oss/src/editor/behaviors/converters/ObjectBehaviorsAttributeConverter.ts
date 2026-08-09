@@ -6,6 +6,7 @@ import BehaviorAttributeType from "../BehaviorAttributeType";
 import AttributeConverter from "./AttributeConverter";
 import {BehaviorContext} from "../BehaviorContextProvider";
 import {DYNAMIC_ROOT_NAME} from "@stem/editor-oss/scene/dynamicRoots";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 class ObjectBehaviorsAttributeConverter implements AttributeConverter {
     convertAttribute(attributeData: BehaviorAttributeData, behaviorContext: BehaviorContext): ObjectBehaviorsAttribute {
@@ -21,7 +22,7 @@ class ObjectBehaviorsAttributeConverter implements AttributeConverter {
         );
         const excludeSelf = attributeData.excludeSelf === true;
         const objectOptions: {name: string; uuid: string}[] = includeNone ? [{name: "none", uuid: ""}] : [];
-        editor.scene.traverse((child: Object3D & {isGroup?: boolean}) => {
+        traverseObjectDepthFirst(editor.scene, (child: Object3D & {isGroup?: boolean}) => {
             // Skip runtime-only and internal objects
             if (child.name === DYNAMIC_ROOT_NAME || child.name === "BatchRoot" || child.userData?.isRuntimeOnly) {
                 return;

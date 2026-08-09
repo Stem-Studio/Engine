@@ -1,5 +1,4 @@
-import * as THREE from "three";
-
+import {BackSide, BufferGeometry, Float32BufferAttribute, Line, LineBasicMaterial, Mesh, MeshBasicMaterial} from "three";
 /**
  * @author abelnation / http://github.com/abelnation
  * @author Mugen87 / http://github.com/Mugen87
@@ -7,15 +6,15 @@ import * as THREE from "three";
  *
  *  This helper must be added as a child of the light
  */
-class RectAreaLightHelper extends THREE.Line {
+class RectAreaLightHelper extends Line {
     constructor(light, color) {
         var positions = [1, 1, 0, -1, 1, 0, -1, -1, 0, 1, -1, 0, 1, 1, 0];
 
-        var geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        var geometry = new BufferGeometry();
+        geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
         geometry.computeBoundingSphere();
 
-        var material = new THREE.LineBasicMaterial({fog: false});
+        var material = new LineBasicMaterial({fog: false});
 
         super(geometry, material);
 
@@ -29,11 +28,18 @@ class RectAreaLightHelper extends THREE.Line {
 
         var positions2 = [1, 1, 0, -1, 1, 0, -1, -1, 0, 1, 1, 0, -1, -1, 0, 1, -1, 0];
 
-        var geometry2 = new THREE.BufferGeometry();
-        geometry2.setAttribute("position", new THREE.Float32BufferAttribute(positions2, 3));
+        var geometry2 = new BufferGeometry();
+        geometry2.setAttribute("position", new Float32BufferAttribute(positions2, 3));
         geometry2.computeBoundingSphere();
 
-        this.picker = new THREE.Mesh(geometry2, new THREE.MeshBasicMaterial({side: THREE.BackSide, fog: false}));
+        this.picker = new Mesh(geometry2, new MeshBasicMaterial({
+            side: BackSide,
+            fog: false,
+            transparent: true,
+            opacity: 0,
+            colorWrite: false,
+            depthWrite: false,
+        }));
 
         this.add(this.picker);
 

@@ -1,4 +1,7 @@
-import * as THREE from "three";
+import {Object3D} from "three";
+
+import {cloneJsonCompatible, jsonCompatibleEquals} from "@stem/editor-oss/utils/cloneJsonCompatible";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 type BehaviorSnapshot = {
     uuid: string;
@@ -6,8 +9,8 @@ type BehaviorSnapshot = {
 };
 
 type ObjectSnapshot = {
-    object: THREE.Object3D;
-    parent: THREE.Object3D | null;
+    object: Object3D;
+    parent: Object3D | null;
     childIndex: number;
     depth: number;
     visible: boolean;
@@ -22,12 +25,12 @@ export type PlaymodeSnapshot = {
 };
 
 export type PlaymodeRestoreResult = {
-    restoredObjects: THREE.Object3D[];
-    removedObjects: THREE.Object3D[];
+    restoredObjects: Object3D[];
+    removedObjects: Object3D[];
 };
 
 export type PlaymodeRestoreOptions = {
-    removeExtraObject?: (object: THREE.Object3D) => void;
+    removeExtraObject?: (object: Object3D) => void;
 };
 
 const cloneAttributes = (value: unknown): unknown => {
@@ -35,38 +38,102 @@ const cloneAttributes = (value: unknown): unknown => {
     try {
         return structuredClone(value);
     } catch {
-        return JSON.parse(JSON.stringify(value));
+        return cloneJsonCompatible(value);
     }
 };
 
-export const capturePlaymodeSnapshot = (scene: THREE.Object3D): PlaymodeSnapshot => {
-    const objects = new Map<string, ObjectSnapshot>();
-    scene.traverse(obj => {
-        let depth = 0;
-        let currentParent = obj.parent;
-        while (currentParent) {
-            depth += 1;
-            currentParent = currentParent.parent;
+const PLAYMODE_SNAPSHOT_FRAME_BUDGET_MS = 8;
+const PLAYMODE_SNAPSHOT_OBJECT_BATCH_SIZE = 250;
+
+const nowForSnapshot = (): number =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+
+const yieldSnapshotToPaint = (): Promise<void> =>
+    new Promise(resolve => {
+        const finish = () => setTimeout(() => resolve(), 0);
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => finish());
+        } else {
+            finish();
         }
-        const snap: ObjectSnapshot = {
-            object: obj,
-            parent: obj.parent,
-            childIndex: obj.parent?.children.indexOf(obj) ?? 0,
-            depth,
-            visible: obj.visible,
-            position: [obj.position.x, obj.position.y, obj.position.z],
-            quaternion: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
-            scale: [obj.scale.x, obj.scale.y, obj.scale.z],
-        };
-        const behaviors = obj.userData?.behaviors as Array<{uuid: string; attributesData?: unknown}> | undefined;
-        if (behaviors?.length) {
-            snap.behaviors = behaviors.map(b => ({
-                uuid: b.uuid,
-                attributesData: cloneAttributes(b.attributesData ?? {}),
-            }));
-        }
-        objects.set(obj.uuid, snap);
     });
+
+const createSnapshotYieldController = () => {
+    let sliceStart = nowForSnapshot();
+    let processedThisSlice = 0;
+
+    return async (): Promise<void> => {
+        if (
+            processedThisSlice < PLAYMODE_SNAPSHOT_OBJECT_BATCH_SIZE &&
+            nowForSnapshot() - sliceStart < PLAYMODE_SNAPSHOT_FRAME_BUDGET_MS
+        ) {
+            processedThisSlice += 1;
+            return;
+        }
+
+        await yieldSnapshotToPaint();
+        sliceStart = nowForSnapshot();
+        processedThisSlice = 0;
+    };
+};
+
+const createObjectSnapshot = (obj: Object3D, depth: number): ObjectSnapshot => {
+    const snap: ObjectSnapshot = {
+        object: obj,
+        parent: obj.parent,
+        childIndex: obj.parent?.children.indexOf(obj) ?? 0,
+        depth,
+        visible: obj.visible,
+        position: [obj.position.x, obj.position.y, obj.position.z],
+        quaternion: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
+        scale: [obj.scale.x, obj.scale.y, obj.scale.z],
+    };
+    const behaviors = obj.userData?.behaviors as Array<{uuid: string; attributesData?: unknown}> | undefined;
+    if (behaviors?.length) {
+        snap.behaviors = behaviors.map(b => ({
+            uuid: b.uuid,
+            attributesData: cloneAttributes(b.attributesData ?? {}),
+        }));
+    }
+    return snap;
+};
+
+export const capturePlaymodeSnapshot = (scene: Object3D): PlaymodeSnapshot => {
+    const objects = new Map<string, ObjectSnapshot>();
+    const stack: Array<{object: Object3D; depth: number}> = [{object: scene, depth: 0}];
+    while (stack.length > 0) {
+        const entry = stack.pop();
+        if (!entry) continue;
+        objects.set(entry.object.uuid, createObjectSnapshot(entry.object, entry.depth));
+
+        for (let i = entry.object.children.length - 1; i >= 0; i--) {
+            const child = entry.object.children[i];
+            if (child) stack.push({object: child, depth: entry.depth + 1});
+        }
+    }
+    return {objects};
+};
+
+export const capturePlaymodeSnapshotAsync = async (scene: Object3D): Promise<PlaymodeSnapshot> => {
+    const objects = new Map<string, ObjectSnapshot>();
+    const maybeYield = createSnapshotYieldController();
+    const stack: Array<{object: Object3D; depth: number}> = [{object: scene, depth: 0}];
+
+    while (stack.length > 0) {
+        const entry = stack.pop();
+        if (!entry) continue;
+        objects.set(entry.object.uuid, createObjectSnapshot(entry.object, entry.depth));
+
+        for (let i = entry.object.children.length - 1; i >= 0; i--) {
+            const child = entry.object.children[i];
+            if (child) stack.push({object: child, depth: entry.depth + 1});
+        }
+
+        await maybeYield();
+    }
+
     return {objects};
 };
 
@@ -106,20 +173,11 @@ const quadChanged = (
     Math.abs(a[2] - b[2]) > EPSILON ||
     Math.abs(a[3] - b[3]) > EPSILON;
 
-const deepEqual = (a: unknown, b: unknown): boolean => {
-    if (a === b) return true;
-    try {
-        return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-        return false;
-    }
-};
-
-export const diffPlaymodeSnapshot = (scene: THREE.Object3D, snap: PlaymodeSnapshot): PlaymodeDiff => {
+export const diffPlaymodeSnapshot = (scene: Object3D, snap: PlaymodeSnapshot): PlaymodeDiff => {
     const transforms: TransformDiff[] = [];
     const behaviorAttributes: BehaviorAttributeDiff[] = [];
 
-    scene.traverse(obj => {
+    traverseObjectDepthFirst(scene, obj => {
         const s = snap.objects.get(obj.uuid);
         if (!s) return;
 
@@ -165,7 +223,7 @@ export const diffPlaymodeSnapshot = (scene: THREE.Object3D, snap: PlaymodeSnapsh
                 const afterAttrs = live.attributesData ?? {};
                 const allKeys = new Set([...Object.keys(beforeAttrs), ...Object.keys(afterAttrs)]);
                 for (const key of allKeys) {
-                    if (!deepEqual(beforeAttrs[key], afterAttrs[key])) {
+                    if (!jsonCompatibleEquals(beforeAttrs[key], afterAttrs[key])) {
                         behaviorAttributes.push({
                             uuid: obj.uuid,
                             objectName: obj.name || obj.type,
@@ -229,10 +287,10 @@ const fmtTriple = (v: [number, number, number]): string =>
 const fmtQuad = (v: [number, number, number, number]): string =>
     `(${v[0].toFixed(3)}, ${v[1].toFixed(3)}, ${v[2].toFixed(3)}, ${v[3].toFixed(3)})`;
 
-const collectExtraObjects = (scene: THREE.Object3D, snap: PlaymodeSnapshot): THREE.Object3D[] => {
-    const extras: THREE.Object3D[] = [];
+const collectExtraObjects = (scene: Object3D, snap: PlaymodeSnapshot): Object3D[] => {
+    const extras: Object3D[] = [];
 
-    const visit = (parent: THREE.Object3D) => {
+    const visit = (parent: Object3D) => {
         for (const child of [...parent.children]) {
             if (!snap.objects.has(child.uuid)) {
                 extras.push(child);
@@ -247,7 +305,7 @@ const collectExtraObjects = (scene: THREE.Object3D, snap: PlaymodeSnapshot): THR
 };
 
 const restoreChildOrder = (snap: PlaymodeSnapshot) => {
-    const childOrder = new Map<THREE.Object3D, Map<string, number>>();
+    const childOrder = new Map<Object3D, Map<string, number>>();
 
     for (const [uuid, objectSnapshot] of snap.objects) {
         if (!objectSnapshot.parent) {
@@ -276,18 +334,18 @@ const restoreChildOrder = (snap: PlaymodeSnapshot) => {
 };
 
 export const restorePlaymodeSnapshot = (
-    scene: THREE.Object3D,
+    scene: Object3D,
     snap: PlaymodeSnapshot,
     options: PlaymodeRestoreOptions = {},
 ): PlaymodeRestoreResult => {
     const removedObjects = collectExtraObjects(scene, snap);
-    const removeExtraObject = options.removeExtraObject ?? ((object: THREE.Object3D) => object.removeFromParent());
+    const removeExtraObject = options.removeExtraObject ?? ((object: Object3D) => object.removeFromParent());
 
     for (const extraObject of removedObjects) {
         removeExtraObject(extraObject);
     }
 
-    const restoredObjects: THREE.Object3D[] = [];
+    const restoredObjects: Object3D[] = [];
     const snapshots = Array.from(snap.objects.values()).sort((left, right) => {
         if (left.depth !== right.depth) {
             return left.depth - right.depth;

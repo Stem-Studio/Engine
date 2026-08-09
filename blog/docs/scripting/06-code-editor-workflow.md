@@ -100,7 +100,8 @@ Text files can be edited directly in Monaco and saved as file asset revisions. T
 
 ## Saving Model
 
-There is **no auto-save**.
+Code-editor asset revisions are **not auto-saved**. This is separate from the
+project/scene auto-save path.
 
 Use:
 

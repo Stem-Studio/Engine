@@ -10,8 +10,8 @@ import {Footer} from "../../Footer/Footer";
 // The Terms and Privacy Policy are now written as community-driven
 // starting-point templates rather than corporate documents tied to a
 // single entity (see TOS.tsx / PrivacyPolicy.tsx). They render in both
-// integrated and OSS builds; operators of a hosted deployment should
-// review and customise for their jurisdiction before relying on them.
+// this app shell and downstream forks; public deployments should review
+// and customise them for their jurisdiction before relying on them.
 const privacyPolicyDate = "May 17, 2026";
 const TOSDate = "May 17, 2026";
 

@@ -135,6 +135,17 @@ describe("QualityAssessmentStateMachine", () => {
         expect(debug.recoveryCount).toBe(0);
     });
 
+    it("getDebugState counts only alarms still inside the rolling window", () => {
+        const { machine } = createMachine();
+
+        machine.processAlarm({ alarmType: "render_pressure", negative: true, timestamp: 1000 });
+        machine.processAlarm({ alarmType: "render_pressure", negative: false, timestamp: 2000 });
+
+        const debug = machine.getDebugState(14000);
+
+        expect(debug.negativeCount).toBe(0);
+    });
+
     it("old alarms outside window are pruned", () => {
         const { machine, recommendations } = createMachine();
 

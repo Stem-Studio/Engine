@@ -20,8 +20,8 @@ export interface ObjectPool<T> {
 export function createObjectPool<T>(config: ObjectPoolConfig<T>): ObjectPool<T> {
     const { create, reset, initialSize = 0, maxSize = 1024 } = config;
     const pool: T[] = [];
+    const trackedInUse = new Set<T>();
     let totalCreated = 0;
-    let inUseCount = 0;
 
     /**
      *
@@ -39,12 +39,14 @@ export function createObjectPool<T>(config: ObjectPoolConfig<T>): ObjectPool<T> 
     return {
         get(): T {
             if (pool.length > 0) {
-                inUseCount++;
-                return pool.pop()!;
+                const item = pool.pop()!;
+                trackedInUse.add(item);
+                return item;
             }
             if (totalCreated < maxSize) {
-                inUseCount++;
-                return allocateOne();
+                const item = allocateOne();
+                trackedInUse.add(item);
+                return item;
             }
             // Over maxSize — still create but don't track for pool return
             return create();
@@ -52,10 +54,9 @@ export function createObjectPool<T>(config: ObjectPoolConfig<T>): ObjectPool<T> 
 
         release(item: T): void {
             reset(item);
-            if (pool.length + inUseCount <= maxSize) {
+            if (trackedInUse.delete(item) && pool.length < maxSize) {
                 pool.push(item);
             }
-            inUseCount = Math.max(0, inUseCount - 1);
         },
 
         preallocate(count: number): void {
@@ -67,15 +68,15 @@ export function createObjectPool<T>(config: ObjectPoolConfig<T>): ObjectPool<T> 
 
         clear(): void {
             pool.length = 0;
+            trackedInUse.clear();
             totalCreated = 0;
-            inUseCount = 0;
         },
 
         getStats() {
             return {
                 total: totalCreated,
                 available: pool.length,
-                inUse: inUseCount,
+                inUse: trackedInUse.size,
             };
         },
     };

@@ -175,6 +175,9 @@ export const settingsToConfig = (settings: PhysicsSettings): Partial<PhysicsConf
     if (settings.restitution !== undefined) {
         config.restitution = settings.restitution;
     }
+    if (settings.ccd !== undefined) {
+        config.ccd = settings.ccd;
+    }
     if (settings.rollingFriction !== undefined) {
         config.rollingFriction = settings.rollingFriction;
     }
@@ -235,6 +238,7 @@ export const configToSettings = (config: PhysicsConfig): PhysicsSettings => {
     settings.mass = config.mass;
     settings.friction = config.friction;
     settings.restitution = config.restitution;
+    settings.ccd = config.ccd === true;
     settings.rollingFriction = config.rollingFriction;
     settings.spinningFriction = config.spinningFriction;
     settings.material = INTERNAL_TO_MATERIAL[config.collision_material] ?? 'ground';

@@ -1,6 +1,17 @@
 import styled, {css} from "styled-components";
 
-import {flexCenter, regularFont} from "../../../../assets/style";
+const flexCenter = css`
+    display: flex;
+    justify-content: center;
+    align-items: center;
+`;
+
+const regularFont = (size: "xs" | "s") => css`
+    font-size: var(--theme-font-size-${size});
+    font-weight: var(--theme-font-regular);
+    line-height: 120%;
+    color: var(--theme-font-main-selected-color);
+`;
 
 export const Overlay = styled.div`
     position: fixed;

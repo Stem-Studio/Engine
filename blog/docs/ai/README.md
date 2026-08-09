@@ -2,6 +2,11 @@
 
 Guides for using AI-powered creation and gameplay features in StemStudio.
 
+In Playground mode, AI is bring-your-own-key and browser-direct. Provider
+availability is narrower than the repository's optional proxy-backed
+integration surface. Each guide marks features that are not currently
+available in Playground.
+
 ## Articles
 
 1. [AI Copilot](01-ai-copilot.md) — Using the built-in AI assistant for scene creation and code help

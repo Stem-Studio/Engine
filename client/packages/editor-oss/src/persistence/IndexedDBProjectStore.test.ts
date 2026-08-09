@@ -6,6 +6,7 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
 
 import type {IndexedDBProjectStore as IndexedDBProjectStoreType} from "./IndexedDBProjectStore";
 import type {ProjectBody} from "./types";
+import type {StoredAsset} from "./types";
 
 const sampleBody = (name = "Demo"): ProjectBody => ({
     meta: {
@@ -106,5 +107,32 @@ describe("IndexedDBProjectStore round trip", () => {
     it("rejects malformed import blobs", async () => {
         const garbage = new Blob([JSON.stringify({not: "a project"})], {type: "application/json"});
         await expect(store.importFromBlob(garbage)).rejects.toThrow("not a valid .stemscript");
+    });
+
+    it("keeps the prior scene and assets when an atomic commit aborts", async () => {
+        const originalBody = sampleBody("Last Known Good");
+        originalBody.meta.id = "atomic-project";
+        const oldAsset: StoredAsset = {
+            assetId: "old",
+            revisionId: "r1",
+            type: "model",
+            format: "glb",
+            name: "Old",
+            data: "T0xE",
+        };
+        await store.commitProject(originalBody, [oldAsset]);
+
+        const brokenBody = sampleBody("Broken Replacement");
+        brokenBody.meta.id = "atomic-project";
+        const uncloneableAsset = {
+            ...oldAsset,
+            assetId: "new",
+            metadata: {uncloneable: () => undefined},
+        } as unknown as StoredAsset;
+
+        await expect(store.commitProject(brokenBody, [uncloneableAsset])).rejects.toThrow();
+
+        expect((await store.load("atomic-project")).meta.name).toBe("Last Known Good");
+        expect((await store.loadAssets("atomic-project")).map(asset => asset.assetId)).toEqual(["old"]);
     });
 });

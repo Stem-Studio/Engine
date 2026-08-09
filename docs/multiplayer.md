@@ -1,6 +1,6 @@
 # Multiplayer
 
-StemStudio's multiplayer is built on [Colyseus](https://colyseus.io). In OSS mode, the Colyseus server runs as a local sidecar on `ws://localhost:2567` — the exact same code that runs in production deployments, just bound to localhost with in-memory room state.
+StemStudio's multiplayer is built on [Colyseus](https://colyseus.io). By default, the Colyseus server runs as a local sidecar on `ws://localhost:2567` with in-memory room state.
 
 ## Local sidecar (default)
 
@@ -54,9 +54,9 @@ REACT_APP_MULTIPLAYER_SERVER_URL=wss://mp.example.com bun run dev:editor
 
 ## Persistence
 
-In OSS mode, the sidecar holds **no persistent state**. Rooms exist only while they have at least one connected client. When the last client disconnects, the room is destroyed and its state is gone.
+By default, the sidecar holds **no persistent state**. Rooms exist only while they have at least one connected client. When the last client disconnects, the room is destroyed and its state is gone.
 
-If you need cross-session persistence — leaderboards, character progression, world state that survives a server restart — that lives in a separate game-services backend which is not part of OSS. You can either:
+If you need cross-session persistence — leaderboards, character progression, world state that survives a server restart — wire that into a self-hosted game-services backend. You can either:
 
 - Run a local persistence layer yourself by wiring a behavior to write to `localStorage` or IndexedDB on each client.
 - Self-host a game-services backend; see the [self-hosting](#self-hosting-the-sidecar) section below.
@@ -81,7 +81,7 @@ To deploy the multiplayer sidecar on a real server (so players on different mach
 
 For production use you'll want to add:
 
-- A MongoDB connection (the submodule supports persistent rooms via `MONGO_URL`; the OSS sidecar runs in-memory by default).
+- A MongoDB connection (the submodule supports persistent rooms via `MONGO_URL`; the default sidecar runs in-memory).
 - Rate limiting at the reverse proxy.
 - Process supervision (systemd, Docker, Kubernetes).
 - Monitoring (the sidecar exposes basic `/health` and `/metrics` endpoints).
@@ -97,4 +97,10 @@ Behaviors that use multiplayer should:
 3. **Pin schema versions** — if your behavior reads a schema field, version it so old clients don't crash on a new server.
 4. **Test the offline path** by killing the sidecar with `kill $(lsof -ti:2567)` and verifying your behavior still loads.
 
-The multiplayer client code lives under `client/packages/editor-oss/src/multiplayer/` — read `MultiplayerProxy.ts` and the worker code in `worker/` to see the wire protocol and how rooms are joined.
+The active Play-mode path wraps the selected local Ammo or Rapier engine with
+`client/packages/editor-oss/src/physics/simple/PhysicsWrapper.ts`. Room joins
+and gameplay synchronization are handled by
+`multiplayer/worker/SimpleMultiplayerClient.ts`; collaborative editor scene
+synchronization is layered on by
+`multiplayer/worker/SimpleMultiplayerCollaborativeClient.ts` and
+`multiplayer/worker/CollaborationClient.ts`.

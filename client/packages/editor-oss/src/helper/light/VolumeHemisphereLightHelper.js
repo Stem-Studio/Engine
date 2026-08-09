@@ -3,19 +3,17 @@
  * Purpose: Contains logic for volume hemisphere light helper.
  */
 
-import * as THREE from "three";
-
-
-class VolumeHemisphereLightHelper extends THREE.HemisphereLightHelper {
+import {HemisphereLightHelper, Mesh, MeshBasicMaterial, SphereGeometry} from "three";
+class VolumeHemisphereLightHelper extends HemisphereLightHelper {
     constructor(light, size, color) {
         super(light, size, color);
-        var geometry = new THREE.SphereGeometry(2, 4, 2);
-        var material = new THREE.MeshBasicMaterial({
+        var geometry = new SphereGeometry(2, 4, 2);
+        var material = new MeshBasicMaterial({
             color: 0xff0000,
             visible: false,
         });
 
-        this.picker = new THREE.Mesh(geometry, material);
+        this.picker = new Mesh(geometry, material);
         this.picker.name = "picker";
         this.add(this.picker);
     }

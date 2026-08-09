@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import * as THREE from "three";
 
 import {
@@ -28,6 +28,21 @@ function createAvatarObject(z: number): THREE.Object3D {
     object.updateMatrixWorld(true);
     markObjectForAvatarBudget(object, {enabled: true});
     return object;
+}
+
+function createDeepAvatarObject(depth: number): THREE.Object3D {
+    const root = new THREE.Group();
+    let current = root;
+
+    for (let i = 0; i < depth; i++) {
+        const child = new THREE.Group();
+        child.name = `avatar-depth-${i}`;
+        current.add(child);
+        current = child;
+    }
+
+    current.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial()));
+    return root;
 }
 
 describe("AvatarBudgetPolicy", () => {
@@ -80,6 +95,32 @@ describe("AvatarBudgetPolicy", () => {
         expect(object.visible).toBe(true);
     });
 
+    it("prepares camera state once for multiple avatar decisions in a frame", () => {
+        const camera = createCamera();
+        const updateMatrixWorld = vi.spyOn(camera, "updateMatrixWorld");
+        const first = createAvatarObject(-5);
+        const second = createAvatarObject(-8);
+        const policy = new AvatarBudgetPolicy({isMobile: true});
+
+        policy.beginFrame(camera);
+        policy.decide(first, camera);
+        policy.decide(second, camera);
+        policy.endFrame();
+
+        expect(updateMatrixWorld).toHaveBeenCalledTimes(1);
+    });
+
+    it("reads avatar world position once per distance and visibility decision", () => {
+        const camera = createCamera();
+        const object = createAvatarObject(-8);
+        const getWorldPosition = vi.spyOn(object, "getWorldPosition");
+        const policy = new AvatarBudgetPolicy({isMobile: true});
+
+        policy.decide(object, camera);
+
+        expect(getWorldPosition).toHaveBeenCalledTimes(1);
+    });
+
     it("tightens full distance for heavy avatars", () => {
         const camera = createCamera();
         const object = createAvatarObject(-18);
@@ -121,6 +162,33 @@ describe("AvatarBudgetPolicy", () => {
         expect(stats.textureCount).toBe(1);
         expect(stats.textureBytes).toBe(Math.ceil(64 * 32 * 4 * 4 / 3));
         expect(stats.bounds.x).toBeGreaterThan(2);
+    });
+
+    it("collects deep avatar stats without Object3D.traverse recursion", () => {
+        const root = createDeepAvatarObject(12000);
+        const traverse = vi.spyOn(root, "traverse");
+
+        const stats = collectAvatarBudgetStats(root);
+
+        expect(stats.triangles).toBeGreaterThan(0);
+        expect(stats.bounds.x).toBeGreaterThan(0);
+        expect(traverse).not.toHaveBeenCalled();
+    });
+
+    it("collects multi-material avatar draw calls without duplicating textures", () => {
+        const root = new THREE.Group();
+        const sharedTexture = new THREE.Texture({width: 32, height: 32});
+        const materials = [
+            new THREE.MeshBasicMaterial({map: sharedTexture}),
+            new THREE.MeshBasicMaterial({map: sharedTexture}),
+        ];
+        root.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), materials));
+        root.updateMatrixWorld(true);
+
+        const stats = collectAvatarBudgetStats(root);
+
+        expect(stats.drawCalls).toBe(2);
+        expect(stats.textureCount).toBe(1);
     });
 
     it("marks explicit local and remote player avatar ownership", () => {

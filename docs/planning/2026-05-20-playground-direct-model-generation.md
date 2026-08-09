@@ -1,5 +1,10 @@
 # Browser-direct model generation in the playground
 
+> **Status: Historical implementation note.**
+> The provider API calls described here concern optional generated assets, not
+> remote scene loading. They do not change the current local Playground scope.
+> See the [planning index](./README.md).
+
 ## Goal
 
 The deployed playground has no Go `ai-server`. 3D model generation must route

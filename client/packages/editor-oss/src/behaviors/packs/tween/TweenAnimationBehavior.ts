@@ -10,12 +10,43 @@ enum ANIMATION_TYPES {
     PLAY_ONCE = "Play Once",
 }
 
+const EASING_FUNCTIONS: Record<string, (amount: number) => number> = {
+    linear: Easing.Linear.None,
+    quadIn: Easing.Quadratic.In,
+    quadOut: Easing.Quadratic.Out,
+    quadInOut: Easing.Quadratic.InOut,
+    cubicIn: Easing.Cubic.In,
+    cubicOut: Easing.Cubic.Out,
+    cubicInOut: Easing.Cubic.InOut,
+    quartIn: Easing.Quartic.In,
+    quartOut: Easing.Quartic.Out,
+    quartInOut: Easing.Quartic.InOut,
+    quintIn: Easing.Quintic.In,
+    quintOut: Easing.Quintic.Out,
+    quintInOut: Easing.Quintic.InOut,
+    sineIn: Easing.Sinusoidal.In,
+    sineOut: Easing.Sinusoidal.Out,
+    sineInOut: Easing.Sinusoidal.InOut,
+    backIn: Easing.Back.In,
+    backOut: Easing.Back.Out,
+    backInOut: Easing.Back.InOut,
+    circIn: Easing.Circular.In,
+    circOut: Easing.Circular.Out,
+    circInOut: Easing.Circular.InOut,
+    bounceIn: Easing.Bounce.In,
+    bounceOut: Easing.Bounce.Out,
+    bounceInOut: Easing.Bounce.InOut,
+    elasticIn: Easing.Elastic.In,
+    elasticOut: Easing.Elastic.Out,
+    elasticInOut: Easing.Elastic.InOut,
+};
+
 interface TweenAnimationConfig {
     startPosition: THREE.Vector3;
-    startRotation: THREE.Euler;
+    startQuaternion: THREE.Quaternion;
     startScale: THREE.Vector3;
     endPosition: THREE.Vector3;
-    endRotation: THREE.Euler;
+    endQuaternion: THREE.Quaternion;
     endScale: THREE.Vector3;
     hasPositionAnimation: boolean;
     hasRotationAnimation: boolean;
@@ -85,6 +116,7 @@ class TweenAnimationBehavior extends BehaviorBase {
         // Store initial values
         const startPosition = target.position.clone();
         const startRotation = target.rotation.clone();
+        const startQuaternion = target.quaternion.clone();
         const startScale = target.scale.clone();
 
         const moveX = this.attributes.move?.x ?? 0;
@@ -106,7 +138,7 @@ class TweenAnimationBehavior extends BehaviorBase {
 
         // Calculate target values
         let endPosition = startPosition.clone();
-        let endRotation = startRotation.clone();
+        let endQuaternion = startQuaternion.clone();
         let endScale = startScale.clone();
 
         if (hasPositionAnimation) {
@@ -119,11 +151,13 @@ class TweenAnimationBehavior extends BehaviorBase {
         }
 
         if (hasRotationAnimation) {
+            const endRotation = startRotation.clone();
             endRotation.set(
                 startRotation.x + THREE.MathUtils.degToRad(rotateX),
                 startRotation.y + THREE.MathUtils.degToRad(rotateY),
                 startRotation.z + THREE.MathUtils.degToRad(rotateZ),
             );
+            endQuaternion = new THREE.Quaternion().setFromEuler(endRotation);
         }
 
         if (hasScaleAnimation) {
@@ -136,10 +170,10 @@ class TweenAnimationBehavior extends BehaviorBase {
 
         return {
             startPosition,
-            startRotation,
+            startQuaternion,
             startScale,
             endPosition,
-            endRotation,
+            endQuaternion,
             endScale,
             hasPositionAnimation,
             hasRotationAnimation,
@@ -156,10 +190,7 @@ class TweenAnimationBehavior extends BehaviorBase {
             }
 
             if (config.hasRotationAnimation) {
-                // TODO: avoid gimbal roll issues
-                target.rotation.x = THREE.MathUtils.lerp(config.startRotation.x, config.endRotation.x, progress);
-                target.rotation.y = THREE.MathUtils.lerp(config.startRotation.y, config.endRotation.y, progress);
-                target.rotation.z = THREE.MathUtils.lerp(config.startRotation.z, config.endRotation.z, progress);
+                target.quaternion.copy(config.startQuaternion).slerp(config.endQuaternion, progress);
             }
 
             if (config.hasScaleAnimation) {
@@ -260,37 +291,7 @@ class TweenAnimationBehavior extends BehaviorBase {
     }
 
     private getEasingFunction(easingName: string) {
-        const easingMap: Record<string, (amount: number) => number> = {
-            linear: Easing.Linear.None,
-            quadIn: Easing.Quadratic.In,
-            quadOut: Easing.Quadratic.Out,
-            quadInOut: Easing.Quadratic.InOut,
-            cubicIn: Easing.Cubic.In,
-            cubicOut: Easing.Cubic.Out,
-            cubicInOut: Easing.Cubic.InOut,
-            quartIn: Easing.Quartic.In,
-            quartOut: Easing.Quartic.Out,
-            quartInOut: Easing.Quartic.InOut,
-            quintIn: Easing.Quintic.In,
-            quintOut: Easing.Quintic.Out,
-            quintInOut: Easing.Quintic.InOut,
-            sineIn: Easing.Sinusoidal.In,
-            sineOut: Easing.Sinusoidal.Out,
-            sineInOut: Easing.Sinusoidal.InOut,
-            backIn: Easing.Back.In,
-            backOut: Easing.Back.Out,
-            backInOut: Easing.Back.InOut,
-            circIn: Easing.Circular.In,
-            circOut: Easing.Circular.Out,
-            circInOut: Easing.Circular.InOut,
-            bounceIn: Easing.Bounce.In,
-            bounceOut: Easing.Bounce.Out,
-            bounceInOut: Easing.Bounce.InOut,
-            elasticIn: Easing.Elastic.In,
-            elasticOut: Easing.Elastic.Out,
-            elasticInOut: Easing.Elastic.InOut,
-        };
-        return easingMap[easingName] || Easing.Linear.None;
+        return EASING_FUNCTIONS[easingName] || Easing.Linear.None;
     }
 }
 

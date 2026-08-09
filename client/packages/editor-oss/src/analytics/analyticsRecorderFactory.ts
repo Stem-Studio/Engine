@@ -4,8 +4,8 @@ let singleton: IAnalyticsRecorder | undefined;
 
 /**
  * Returns the process-wide analytics recorder. Defaults to
- * `NullAnalyticsRecorder` (silent drop) until an integrated bootstrap
- * registers a real impl.
+ * `NullAnalyticsRecorder` (silent drop) unless an embedder registers a
+ * custom implementation.
  */
 export function getAnalyticsRecorder(): IAnalyticsRecorder {
     if (!singleton) {
@@ -14,7 +14,7 @@ export function getAnalyticsRecorder(): IAnalyticsRecorder {
     return singleton;
 }
 
-/** Replace the singleton. Integrated bootstrap calls this with a Firebase-backed impl. */
+/** Replace the singleton. Tests and embedders can use this to inject a recorder. */
 export function setAnalyticsRecorder(recorder: IAnalyticsRecorder | undefined): void {
     singleton = recorder;
 }

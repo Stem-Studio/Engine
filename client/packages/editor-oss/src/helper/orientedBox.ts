@@ -1,5 +1,5 @@
-import * as THREE from "three";
-
+import {Box3, Matrix4, Mesh, Object3D, Quaternion, SkinnedMesh, Vector3} from "three";
+import {updateObjectMatrixWorldDepthFirst} from "../utils/SceneTraverser";
 /**
  * Result of computing an oriented bounding box for an Object3D.
  *
@@ -12,35 +12,45 @@ import * as THREE from "three";
  *   oriented box in world space.
  */
 export interface OrientedBoxResult {
-    box: THREE.Box3;
-    basis: THREE.Matrix4;
+    box: Box3;
+    basis: Matrix4;
     hasGeometry: boolean;
 }
 
-const _pos = new THREE.Vector3();
-const _rot = new THREE.Quaternion();
-const _scl = new THREE.Vector3();
-const _one = new THREE.Vector3(1, 1, 1);
-const _v = new THREE.Vector3();
-const _skinnedVertex = new THREE.Vector3();
-const _bounds = new THREE.Box3();
-const _inv = new THREE.Matrix4();
-const _childMat = new THREE.Matrix4();
+export interface ComputeOrientedBoxOptions {
+    shouldAbort?: (object: Object3D) => boolean;
+}
 
-type ObjectWithBounds = THREE.Object3D & {
-    boundingBox?: THREE.Box3 | null;
+const _pos = new Vector3();
+const _rot = new Quaternion();
+const _scl = new Vector3();
+const _one = new Vector3(1, 1, 1);
+const _v = new Vector3();
+const _skinnedVertex = new Vector3();
+const _bounds = new Box3();
+const _inv = new Matrix4();
+const _childMat = new Matrix4();
+const _sizeResult: OrientedBoxResult = {
+    box: new Box3(),
+    basis: new Matrix4(),
+    hasGeometry: false,
+};
+const DEFAULT_COMPUTE_OPTIONS: ComputeOrientedBoxOptions = {};
+
+type ObjectWithBounds = Object3D & {
+    boundingBox?: Box3 | null;
     computeBoundingBox?: () => void;
-    getBoundingBox?: (centersOnly?: boolean) => THREE.Box3;
+    getBoundingBox?: (centersOnly?: boolean) => Box3;
 };
 
-const isSkinnedMesh = (object: THREE.Object3D): object is THREE.SkinnedMesh => {
-    return (object as THREE.SkinnedMesh).isSkinnedMesh === true;
+const isSkinnedMesh = (object: Object3D): object is SkinnedMesh => {
+    return (object as SkinnedMesh).isSkinnedMesh === true;
 };
 
 const expandBoxCorners = (
-    box: THREE.Box3,
-    matrix: THREE.Matrix4,
-    target: THREE.Box3,
+    box: Box3,
+    matrix: Matrix4,
+    target: Box3,
 ): boolean => {
     if (box.isEmpty()) return false;
 
@@ -57,9 +67,9 @@ const expandBoxCorners = (
 };
 
 const expandSkinnedMeshVertices = (
-    mesh: THREE.SkinnedMesh,
-    orientedInverse: THREE.Matrix4,
-    target: THREE.Box3,
+    mesh: SkinnedMesh,
+    orientedInverse: Matrix4,
+    target: Box3,
 ): boolean => {
     const positions = mesh.geometry.getAttribute("position");
     if (!positions) return false;
@@ -78,25 +88,35 @@ const expandSkinnedMeshVertices = (
 };
 
 export const createOrientedBoxResult = (): OrientedBoxResult => ({
-    box: new THREE.Box3(),
-    basis: new THREE.Matrix4(),
+    box: new Box3(),
+    basis: new Matrix4(),
     hasGeometry: false,
 });
 
 export const computeOrientedBox = (
-    object: THREE.Object3D,
+    object: Object3D,
     target: OrientedBoxResult = createOrientedBoxResult(),
+    options: ComputeOrientedBoxOptions = DEFAULT_COMPUTE_OPTIONS,
 ): OrientedBoxResult => {
-    object.updateMatrixWorld(true);
+    updateObjectMatrixWorldDepthFirst(object, true);
     object.matrixWorld.decompose(_pos, _rot, _scl);
     target.basis.compose(_pos, _rot, _one);
     _inv.copy(target.basis).invert();
 
     target.box.makeEmpty();
     let hasGeometry = false;
+    const stack: Object3D[] = [object];
 
-    object.traverse(child => {
-        const mesh = child as THREE.Mesh;
+    while (stack.length > 0) {
+        const child = stack.pop();
+        if (!child) continue;
+        if (options.shouldAbort?.(child)) {
+            target.box.makeEmpty();
+            target.hasGeometry = false;
+            return target;
+        }
+
+        const mesh = child as Mesh;
         const geom = mesh.geometry;
         const childWithBounds = child as ObjectWithBounds;
 
@@ -104,42 +124,46 @@ export const computeOrientedBox = (
             if (expandSkinnedMeshVertices(child, _inv, target.box)) {
                 hasGeometry = true;
             }
-            return;
-        }
+        } else {
+            _bounds.makeEmpty();
 
-        _bounds.makeEmpty();
+            if (typeof childWithBounds.getBoundingBox === "function") {
+                try {
+                    _bounds.copy(childWithBounds.getBoundingBox(false));
+                } catch {
+                    _bounds.makeEmpty();
+                }
+            }
 
-        if (typeof childWithBounds.getBoundingBox === "function") {
-            try {
-                _bounds.copy(childWithBounds.getBoundingBox(false));
-            } catch {
-                _bounds.makeEmpty();
+            if (_bounds.isEmpty() && childWithBounds.boundingBox !== undefined) {
+                if (childWithBounds.boundingBox === null) {
+                    childWithBounds.computeBoundingBox?.();
+                }
+                if (childWithBounds.boundingBox) {
+                    _bounds.copy(childWithBounds.boundingBox);
+                }
+            }
+
+            if (_bounds.isEmpty() && geom) {
+                if (!geom.boundingBox) geom.computeBoundingBox();
+                if (geom.boundingBox) {
+                    _bounds.copy(geom.boundingBox);
+                }
+            }
+
+            if (!_bounds.isEmpty()) {
+                _childMat.multiplyMatrices(_inv, child.matrixWorld);
+                if (expandBoxCorners(_bounds, _childMat, target.box)) {
+                    hasGeometry = true;
+                }
             }
         }
 
-        if (_bounds.isEmpty() && childWithBounds.boundingBox !== undefined) {
-            if (childWithBounds.boundingBox === null) {
-                childWithBounds.computeBoundingBox?.();
-            }
-            if (childWithBounds.boundingBox) {
-                _bounds.copy(childWithBounds.boundingBox);
-            }
+        for (let index = child.children.length - 1; index >= 0; index--) {
+            const descendant = child.children[index];
+            if (descendant) stack.push(descendant);
         }
-
-        if (_bounds.isEmpty() && geom) {
-            if (!geom.boundingBox) geom.computeBoundingBox();
-            if (geom.boundingBox) {
-                _bounds.copy(geom.boundingBox);
-            }
-        }
-
-        if (_bounds.isEmpty()) return;
-
-        _childMat.multiplyMatrices(_inv, child.matrixWorld);
-        if (expandBoxCorners(_bounds, _childMat, target.box)) {
-            hasGeometry = true;
-        }
-    });
+    }
 
     target.hasGeometry = hasGeometry;
     return target;
@@ -156,10 +180,10 @@ export const computeOrientedBox = (
  * @returns
  */
 export const computeOrientedSize = (
-    object: THREE.Object3D,
-    target: THREE.Vector3 = new THREE.Vector3(),
-): THREE.Vector3 => {
-    const result = computeOrientedBox(object);
+    object: Object3D,
+    target: Vector3 = new Vector3(),
+): Vector3 => {
+    const result = computeOrientedBox(object, _sizeResult);
     if (!result.hasGeometry || result.box.isEmpty()) {
         return target.set(0, 0, 0);
     }

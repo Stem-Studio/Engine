@@ -5,20 +5,15 @@ import {BehaviorAttributeData, ObjectAttribute} from "../BehaviorAttributes";
 import BehaviorAttributeType from "../BehaviorAttributeType";
 import AttributeConverter from "./AttributeConverter";
 import {BehaviorContext} from "../BehaviorContextProvider";
+import {
+    findObjectByUuidDepthFirst,
+    findObjectDepthFirst,
+    traverseObjectDepthFirst,
+} from "@stem/editor-oss/utils/SceneTraverser";
 
 class ChildrenAttributeConverter implements AttributeConverter {
     private containsMesh(object: Object3D): boolean {
-        if ((object as Mesh).isMesh) {
-            return true;
-        }
-        if (object.children) {
-            for (const child of object.children) {
-                if (this.containsMesh(child)) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return findObjectDepthFirst(object, child => (child as Mesh).isMesh === true) !== null;
     }
 
     private isBoneNode(object: Object3D): boolean {
@@ -48,11 +43,11 @@ class ChildrenAttributeConverter implements AttributeConverter {
         const seenUuids = new Set<string>();
 
         const rootObject = behaviorContext.object
-            ? editor.scene.getObjectByProperty("uuid", behaviorContext.object.uuid)
+            ? findObjectByUuidDepthFirst(editor.scene, behaviorContext.object.uuid)
             : null;
 
         if (rootObject) {
-            rootObject.traverse((child: Object3D) => {
+            traverseObjectDepthFirst(rootObject, (child: Object3D) => {
                 if (child.uuid === rootObject.uuid || seenUuids.has(child.uuid)) {
                     return;
                 }

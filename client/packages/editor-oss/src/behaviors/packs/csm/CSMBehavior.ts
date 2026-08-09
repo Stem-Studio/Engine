@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { CSMMode } from "three/examples/jsm/csm/CSM.js";
+import { CSMMode } from "three/addons/csm/CSM.js";
 
 import { CSMManager } from "./CSMManager";
 import { BehaviorBase, BehaviorOptions } from "../../Behavior";
@@ -14,12 +14,37 @@ export interface CSMParams {
   fade?: boolean;
 }
 
+export interface CSMEditorShadowBudget {
+  enabled?: boolean;
+  maxCascades?: number;
+}
+
+/** Resolve the cascade count without changing the authored/runtime setting. */
+export function getEffectiveCsmCascades(
+  requested: unknown,
+  editorPreviewActive: boolean,
+  budget?: CSMEditorShadowBudget,
+): number {
+  const authored = Number(requested);
+  const normalizedAuthored = Number.isFinite(authored) && authored >= 1
+    ? Math.floor(authored)
+    : 3;
+  if (!editorPreviewActive || budget?.enabled === false) return normalizedAuthored;
+
+  const configuredCap = Number(budget?.maxCascades ?? 2);
+  const cap = Number.isFinite(configuredCap) && configuredCap >= 1
+    ? Math.floor(configuredCap)
+    : 2;
+  return Math.min(normalizedAuthored, cap);
+}
+
 /**
  * CSMBehavior: Attach to a DirectionalLight to manage CSM state and parameters.
  * Extends BehaviorBase to integrate with the behavior system.
  */
 export default class CSMBehavior extends BehaviorBase {
   private csmManager: CSMManager;
+  private editorPreviewActive = false;
 
   constructor(target: THREE.Object3D, id: string, options: BehaviorOptions) {
     super(target, id, options);
@@ -30,15 +55,29 @@ export default class CSMBehavior extends BehaviorBase {
     super.init(game);
   }
 
+  private getEditorShadowBudget(): CSMEditorShadowBudget | undefined {
+    let root: THREE.Object3D = this.target;
+    while (root.parent) root = root.parent;
+    return root.userData?.rendering?.editorShadowBudget;
+  }
+
+  private buildCSMParams(): CSMParams {
+    return {
+      cascades: getEffectiveCsmCascades(
+        this.attributes.cascades,
+        this.editorPreviewActive,
+        this.getEditorShadowBudget(),
+      ),
+      mode: this.attributes.mode || 'practical',
+      lightMargin: this.attributes.lightMargin || 200,
+      fade: this.attributes.fade ?? false,
+    };
+  }
+
   onStart(): void {
     if (this.target && this.target instanceof THREE.DirectionalLight) {
       // Set initial CSM parameters from attributes
-      const csmParams: CSMParams = {
-        cascades: this.attributes.cascades || 3,
-        mode: this.attributes.mode || 'practical',
-        lightMargin: this.attributes.lightMargin || 200,
-        fade: this.attributes.fade ?? false,
-      };
+      const csmParams = this.buildCSMParams();
 
       // Store CSM parameters in the light's userData
       this.target.userData.csmEnabled = true;
@@ -59,12 +98,7 @@ export default class CSMBehavior extends BehaviorBase {
   onAttributesUpdated(): void {
     if (this.target && this.target instanceof THREE.DirectionalLight && this.target.userData.csmEnabled) {
       // Update CSM parameters from attributes
-      const csmParams: CSMParams = {
-        cascades: this.attributes.cascades || 3,
-        mode: this.attributes.mode || 'practical',
-        lightMargin: this.attributes.lightMargin || 200,
-        fade: this.attributes.fade ?? false,
-      };
+      const csmParams = this.buildCSMParams();
 
       // Update CSM parameters in the light's userData
       this.csmManager.enableCSM(this.target, csmParams);
@@ -84,14 +118,17 @@ export default class CSMBehavior extends BehaviorBase {
 
   // Editor methods
   onEditorAdded(): void {
+      this.editorPreviewActive = true;
       this.onStart();
   }
 
   onEditorRemoved(): void {
+      this.editorPreviewActive = false;
       this.onStop();
   }
 
   onEditorDispose(): void {
+      this.editorPreviewActive = false;
       this.onStop();
   }
 

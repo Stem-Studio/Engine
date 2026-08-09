@@ -58,6 +58,29 @@ describe("scatterOnSurface", () => {
         }
     });
 
+    it("is reproducible with rotation jitter enabled", () => {
+        const a = scatterOnSurface(source, target, {
+            count: 20,
+            seed: 11,
+            rotationJitter: Math.PI,
+            scaleJitter: 0.25,
+        });
+        const b = scatterOnSurface(source, target, {
+            count: 20,
+            seed: 11,
+            rotationJitter: Math.PI,
+            scaleJitter: 0.25,
+        });
+        const matA = new THREE.Matrix4();
+        const matB = new THREE.Matrix4();
+        a.getMatrixAt(8, matA);
+        b.getMatrixAt(8, matB);
+
+        for (let i = 0; i < 16; i++) {
+            expect(matA.elements[i]!).toBeCloseTo(matB.elements[i]!, 5);
+        }
+    });
+
     it("differs across different seeds", () => {
         const a = scatterOnSurface(source, target, {count: 20, seed: 1});
         const b = scatterOnSurface(source, target, {count: 20, seed: 2});

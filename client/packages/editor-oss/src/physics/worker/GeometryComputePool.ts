@@ -2,6 +2,9 @@ import * as Comlink from "comlink";
 import GeometryWorkerConstructor from "./GeometryWorker.ts?worker";
 import type { GeometryWorkerAPI } from "./GeometryWorker";
 import type { SerializableGeometry } from "../hull/HullCompute";
+import {getGeometryWorkerPoolSize, setGeometryWorkerPoolSize} from "./GeometryComputePoolConfig";
+
+export {setGeometryWorkerPoolSize};
 
 interface PoolEntry {
     worker: Worker;
@@ -16,6 +19,7 @@ export class GeometryComputePool {
     private entries: PoolEntry[] = [];
     private availableEntries: PoolEntry[] = [];
     private taskQueue: Array<() => void> = [];
+    private taskQueueHead = 0;
     private maxWorkers: number;
 
     constructor(maxWorkers: number = navigator.hardwareConcurrency || 4) {
@@ -47,6 +51,7 @@ export class GeometryComputePool {
         this.entries = [];
         this.availableEntries = [];
         this.taskQueue = [];
+        this.taskQueueHead = 0;
     }
 
     /**
@@ -100,9 +105,17 @@ export class GeometryComputePool {
     }
 
     private processQueue(): void {
-        while (this.taskQueue.length > 0 && this.availableEntries.length > 0) {
-            const task = this.taskQueue.shift()!;
+        while (this.taskQueueHead < this.taskQueue.length && this.availableEntries.length > 0) {
+            const task = this.taskQueue[this.taskQueueHead++]!;
             task();
+        }
+
+        if (this.taskQueueHead === this.taskQueue.length) {
+            this.taskQueue.length = 0;
+            this.taskQueueHead = 0;
+        } else if (this.taskQueueHead > 1024 && this.taskQueueHead * 2 >= this.taskQueue.length) {
+            this.taskQueue.splice(0, this.taskQueueHead);
+            this.taskQueueHead = 0;
         }
     }
 
@@ -121,7 +134,7 @@ export class GeometryComputePool {
             totalWorkers: this.entries.length,
             busyWorkers: busyCount,
             availableWorkers: this.availableEntries.length,
-            queuedTasks: this.taskQueue.length,
+            queuedTasks: this.taskQueue.length - this.taskQueueHead,
             pendingTasks: busyCount,
         };
     }
@@ -129,23 +142,13 @@ export class GeometryComputePool {
 
 // Singleton instance
 let poolInstance: GeometryComputePool | null = null;
-let configuredWorkerCount: number | null = null;
-
-/**
- * Set the maximum number of workers for the geometry compute pool.
- * Must be called before getGeometryComputePool() to take effect.
- */
-export function setGeometryWorkerPoolSize(count: number): void {
-    configuredWorkerCount = count;
-    console.log(`⚙️  Geometry worker pool size configured: ${count} workers`);
-}
 
 /**
  * Get the singleton geometry compute pool instance
  */
 export function getGeometryComputePool(): GeometryComputePool {
     if (!poolInstance) {
-        const workerCount = configuredWorkerCount ?? (navigator.hardwareConcurrency || 4);
+        const workerCount = getGeometryWorkerPoolSize() ?? (navigator.hardwareConcurrency || 4);
         poolInstance = new GeometryComputePool(workerCount);
         poolInstance.initialize();
     }

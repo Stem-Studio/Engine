@@ -323,6 +323,29 @@ try {
             await startGame.click({timeout: 5000, force: true});
             logStep("clicked START GAME", "ok");
         } catch (e) { logStep("START GAME never became clickable (may auto-start)", "warn", {error: String(e).slice(0, 160)}); }
+        if (process.env.PROBE_INPUT === "1") {
+            const beforeInput = await page.evaluate(() => {
+                const app = window.app || globalThis.app;
+                return {
+                    matchStarted: !!app?.game?.scene?.userData?._matchStarted,
+                    forward: app?.game?.inputManager?.getMotion?.("forward") ?? null,
+                    turn: app?.game?.inputManager?.getMotion?.("turn") ?? null,
+                };
+            }).catch(error => ({error: String(error?.message || error)}));
+            await page.keyboard.down("w");
+            await page.waitForTimeout(250);
+            const heldInput = await page.evaluate(() => {
+                const app = window.app || globalThis.app;
+                return {
+                    matchStarted: !!app?.game?.scene?.userData?._matchStarted,
+                    forward: app?.game?.inputManager?.getMotion?.("forward") ?? null,
+                    turn: app?.game?.inputManager?.getMotion?.("turn") ?? null,
+                };
+            }).catch(error => ({error: String(error?.message || error)}));
+            await page.keyboard.up("w");
+            report.inputProbe = {beforeInput, heldInput};
+            logStep("probed ship keyboard input", "ok", report.inputProbe);
+        }
         entered = true;
         await page.waitForTimeout(10000);
         await page.screenshot({path: resolve(outDir, "03-play.png")}).catch(() => {});

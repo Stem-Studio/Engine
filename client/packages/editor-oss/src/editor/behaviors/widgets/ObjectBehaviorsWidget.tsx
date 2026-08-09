@@ -8,6 +8,7 @@ import {LambdaComponentData} from "../../../lambdas/Lambda";
 import {MultiselectWithCheckboxes} from "../../assets/v2/RightPanel/common/MultiselectWithCheckboxes";
 import {PanelCheckbox} from "../../assets/v2/RightPanel/common/PanelCheckbox";
 import {SelectRow} from "../../assets/v2/RightPanel/common/SelectRow";
+import {findObjectByUuidDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
 
 const BehaviorsContainer = styled.div`
     margin: 8px 0;
@@ -86,7 +87,7 @@ const ObjectBehaviorsWidgetComponent: React.FC<ObjectBehaviorsWidgetComponentPro
 
         const app = (global as any).app;
         const editor = app.editor;
-        const object = editor.scene.getObjectByProperty("uuid", value.object);
+        const object = findObjectByUuidDepthFirst(editor.scene, value.object);
 
         if (!object || !object.userData) {
             setAvailableBehaviors([]);

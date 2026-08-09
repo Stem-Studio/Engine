@@ -1,4 +1,15 @@
-import {MathUtils, Object3D, QuaternionLike, Vector3, Vector3Like} from "three";
+import {
+    BufferAttribute,
+    BufferGeometry,
+    DynamicDrawUsage,
+    LineBasicMaterial,
+    LineSegments,
+    MathUtils,
+    Object3D,
+    Vector3,
+    type QuaternionLike,
+    type Vector3Like,
+} from "three";
 
 import {
     BoxData,
@@ -11,7 +22,6 @@ import {
     ConvexHullData,
     IDispatcher,
     IPlayerOptions,
-    ModelData,
     SphereData,
     TerrainData,
     CollisionFlag,
@@ -20,10 +30,18 @@ import {
     VehicleOptions,
     VehicleSpec,
 } from "../common/types";
-import {BatchObjectUpdate, BatchUpdateEvent, PHYSICS_EVENTS} from "../common/events";
+import {
+    BatchObjectUpdate,
+    BatchUpdateEvent,
+    BodyUpdate,
+    BodyUpdateBatchEvent,
+    PHYSICS_EVENTS,
+    PhysicsDebugFrameEvent,
+} from "../common/events";
 import PhysicsBase from "../PhysicsBase";
 import type {PreloadedPhysicsWorker} from "../PhysicsEngineFactory";
 import {SceneLoadProfiler} from "@stem/editor-oss/utils/SceneLoadProfiler";
+import {isConcaveHullBodyTypeSupported} from "../common/physicsConfig";
 
 export default class PhysicsProxy extends PhysicsBase {
     /** Maximum simulate dt the worker is allowed to consume in one step. Surplus is dropped → physics goes slow-mo under sustained load instead of letting the message queue grow. */
@@ -40,15 +58,28 @@ export default class PhysicsProxy extends PhysicsBase {
     private objectUpdates: Record<string, BatchObjectUpdate> = {};
 
     private shapeUuids = new Set<string>();
+    /** Shape kind metadata lets the worker proxy reject unsupported bodies before local bookkeeping. */
+    private shapeTypes = new Map<string, CollisionShape["type"]>();
     private velocityCache = new Map<string, Vector3Like>();
+    private angularVelocityCache = new Map<string, Vector3Like>();
     /** Maps vehicleUuid -> visual object UUIDs registered in dynamicObjects */
     private vehicleVisualUuids = new Map<string, string[]>();
+    private debugGeometry: BufferGeometry | null = null;
+    private debugMaterial: LineBasicMaterial | null = null;
+    private debugMesh: LineSegments | null = null;
 
     // True between posting SIMULATE and receiving SIMULATE_DONE. While busy, atomic events
     // queue locally and per-uuid latest-wins state coalesces; we don't grow the worker's queue.
     private workerBusy = false;
     private pendingSimulateDt = 0;
     private pendingAtomic: Array<any> = [];
+    private static readonly AUTHORITATIVE_QUEUE_CAPACITY = 32;
+    private readonly authoritativeStepDeltas = new Float64Array(PhysicsProxy.AUTHORITATIVE_QUEUE_CAPACITY);
+    private readonly authoritativeStepSubsteps = new Uint8Array(PhysicsProxy.AUTHORITATIVE_QUEUE_CAPACITY);
+    private authoritativeQueueHead = 0;
+    private authoritativeQueueCount = 0;
+    private authoritativeStepInFlight = false;
+    private cancelAuthoritativeCompletion = false;
 
     // Per-uuid latest-wins buffers for high-frequency events. Flushed once per simulate().
     private pendingPlayerMoves = new Map<string, { direction: Vector3Like; jump: boolean }>();
@@ -92,19 +123,61 @@ export default class PhysicsProxy extends PhysicsBase {
             };
             console.log("Physics worker adopted");
             this.preloaded.onReady(() => {
-                if (!this.workerReady) {
-                    this.workerReady = true;
-                    this.dispatcher.onReady();
-                }
+                this.markWorkerReady();
                 resolve();
             });
         });
     }
 
     terminate() {
-        // Worker is going away; bypass back-pressure.
-        this.workerHandler?.postMessage({event: PHYSICS_EVENTS.TERMINATE});
-        this.workerHandler?.terminate();
+        // Worker is going away; bypass back-pressure. Detach handlers before
+        // terminating so a late message cannot retain this proxy through the
+        // worker event target, then clear every latest-wins/authoritative map
+        // that may still reference scene objects or callback closures.
+        const worker = this.workerHandler;
+        if (worker) {
+            try {
+                worker.postMessage({event: PHYSICS_EVENTS.TERMINATE});
+            } catch {
+                // The worker may already be closed during a failed startup.
+            }
+            worker.onmessage = null;
+            worker.onerror = null;
+            worker.onmessageerror = null;
+            worker.terminate();
+        }
+        this.workerHandler = null;
+        this.workerReady = false;
+        this.workerBusy = false;
+        this.pendingSimulateDt = 0;
+        this.pendingAtomic.length = 0;
+        this.authoritativeQueueHead = 0;
+        this.authoritativeQueueCount = 0;
+        this.authoritativeStepInFlight = false;
+        this.cancelAuthoritativeCompletion = true;
+        this.pingCallbacks.clear();
+        this.objectUpdates = {};
+        this.shapeUuids.clear();
+        this.shapeTypes.clear();
+        this.velocityCache.clear();
+        this.angularVelocityCache.clear();
+        this.vehicleVisualUuids.clear();
+        this.debugGeometry?.dispose();
+        this.debugGeometry = null;
+        this.debugMaterial?.dispose();
+        this.debugMaterial = null;
+        this.debugMesh?.removeFromParent();
+        this.debugMesh = null;
+        this.pendingPlayerMoves.clear();
+        this.pendingVehicleMoves.clear();
+        this.pendingPlayerGravity.clear();
+        this.pendingPlayerPosition.clear();
+        this.pendingLinearVelocity.clear();
+        this.pendingAngularVelocity.clear();
+        this.pendingLinearDamping.clear();
+        this.pendingAngularDamping.clear();
+        this.pendingCollisionBehavior.clear();
+        this.clearTrackedObjects();
     }
 
     simulate(deltaTime: number) {
@@ -135,7 +208,40 @@ export default class PhysicsProxy extends PhysicsBase {
         this.maybeLogClamp();
     }
 
+    /**
+     * Queues a fixed step without merging it with neighboring steps. The
+     * worker acknowledges every entry independently.
+     */
+    simulateFixedStep(deltaTime: number, substeps: number): boolean {
+        const safeDeltaTime = Number.isFinite(deltaTime) && deltaTime > 0
+            ? Math.min(deltaTime, PhysicsProxy.MAX_DT)
+            : 0;
+        if (safeDeltaTime <= 0) return false;
+        const safeSubsteps = Math.min(16, Math.max(1, Math.floor(substeps || 1)));
+
+        if (!this.workerBusy) {
+            this.dispatchAuthoritativeFixedStep(safeDeltaTime, safeSubsteps);
+            return true;
+        }
+        if (this.authoritativeQueueCount >= PhysicsProxy.AUTHORITATIVE_QUEUE_CAPACITY) {
+            return false;
+        }
+
+        const tail = (
+            this.authoritativeQueueHead + this.authoritativeQueueCount
+        ) % PhysicsProxy.AUTHORITATIVE_QUEUE_CAPACITY;
+        this.authoritativeStepDeltas[tail] = safeDeltaTime;
+        this.authoritativeStepSubsteps[tail] = safeSubsteps;
+        this.authoritativeQueueCount++;
+        return true;
+    }
+
     pause() {
+        this.authoritativeQueueCount = 0;
+        this.authoritativeQueueHead = 0;
+        if (this.authoritativeStepInFlight) {
+            this.cancelAuthoritativeCompletion = true;
+        }
         this.postAtomic({event: PHYSICS_EVENTS.PAUSE});
     }
 
@@ -253,6 +359,13 @@ export default class PhysicsProxy extends PhysicsBase {
         update.scale = { x: scale.x, y: scale.y, z: scale.z };
     }
 
+    setSolverIterations(solverIterations: number): void {
+        this.postAtomic({
+            event: PHYSICS_EVENTS.SET.SOLVER_ITERATIONS,
+            solverIterations,
+        });
+    }
+
     setPlayerGravity(uuid: string, gravity: Vector3Like) {
         if (!uuid || uuid === "") {
             console.warn("PhysicsProxy: setPlayerGravity called with empty UUID, ignoring");
@@ -281,6 +394,7 @@ export default class PhysicsProxy extends PhysicsBase {
             shape: collisionShape,
         });
         this.shapeUuids.add(uuid);
+        this.shapeTypes.set(uuid, collisionShape.type);
     }
 
     removeShape(uuid: string) {
@@ -289,17 +403,41 @@ export default class PhysicsProxy extends PhysicsBase {
             uuid,
         });
         this.shapeUuids.delete(uuid);
+        this.shapeTypes.delete(uuid);
     }
 
     hasShape(uuid: string): boolean {
         return this.shapeUuids.has(uuid);
     }
 
-    setRigidBodyShape(/* uuid: string, newShapeUuid: string */): void {
-        console.warn("PhysicsProxy.setRigidBodyShape: not implemented");
+    setRigidBodyShape(uuid: string, newShapeUuid: string): void {
+        if (!uuid || uuid === "" || !newShapeUuid || newShapeUuid === "") {
+            console.warn("PhysicsProxy.setRigidBodyShape: body and shape UUIDs are required");
+            return;
+        }
+        if (!this.shapeUuids.has(newShapeUuid)) {
+            console.warn(`PhysicsProxy.setRigidBodyShape: shape not found ${newShapeUuid}`);
+            return;
+        }
+        this.postAtomic({
+            event: PHYSICS_EVENTS.SET.SHAPE,
+            uuid,
+            newShapeUuid,
+        });
     }
 
     addBody(object: Object3D, shapeUuid: string, data: CommonData): void {
+        const effectiveCollisionFlag = this.getCollisionFlag(
+            data.mass,
+            data.collision_flag ?? CollisionFlag.DYNAMIC,
+        );
+        if (!isConcaveHullBodyTypeSupported(this.shapeTypes.get(shapeUuid), effectiveCollisionFlag)) {
+            console.warn(
+                `PhysicsProxy.addBody: rejected ${effectiveCollisionFlag} body "${data.uuid}" with concave hull shape "${shapeUuid}". ` +
+                'Ammo/Rapier support concave hulls only for Static bodies; use ctype "Static" with mass <= 0, ConvexHull, or compound primitive colliders.',
+            );
+            return;
+        }
         data.collision_flag = super.addObject(data.uuid, data.mass, data.collision_flag!, object);
         this.addObjectAndPostEvent(object, PHYSICS_EVENTS.ADD.BODY, {...data, shapeUuid});
     }
@@ -313,6 +451,14 @@ export default class PhysicsProxy extends PhysicsBase {
     }
 
     addConcaveHull(object: Object3D, data: ConcaveHullData) {
+        const effectiveCollisionFlag = this.getCollisionFlag(data.mass, data.collision_flag!);
+        if (effectiveCollisionFlag === CollisionFlag.DYNAMIC || effectiveCollisionFlag === CollisionFlag.KINEMATIC) {
+            console.warn(
+                `PhysicsProxy.addConcaveHull: rejected ${effectiveCollisionFlag} body "${data.uuid}". ` +
+                'Ammo/Rapier support concave hulls only for Static bodies; use ctype "Static" with mass <= 0, ConvexHull, or compound primitive colliders.',
+            );
+            return;
+        }
         this.addObjectAndPostEvent(object, PHYSICS_EVENTS.ADD.CONCAVEHULL, data);
     }
 
@@ -322,10 +468,6 @@ export default class PhysicsProxy extends PhysicsBase {
 
     addCapsuleShape(object: Object3D, data: CapsuleData) {
         this.addObjectAndPostEvent(object, PHYSICS_EVENTS.ADD.CAPSULE, data);
-    }
-
-    addModel(object: Object3D, data: ModelData) {
-        this.addObjectAndPostEvent(object, PHYSICS_EVENTS.ADD.MODEL, data);
     }
 
     addTerrain(object: Object3D, data: TerrainData) {
@@ -468,6 +610,14 @@ export default class PhysicsProxy extends PhysicsBase {
         });
     }
 
+    kickNearbyObjects(uuid: string, kickImpulse: number): void {
+        if (!uuid || uuid === "") {
+            console.warn("PhysicsProxy: kickNearbyObjects called with empty UUID, ignoring");
+            return;
+        }
+        this.postAtomic({event: PHYSICS_EVENTS.APPLY.KICK_NEARBY_OBJECTS, uuid, kickImpulse});
+    }
+
     setCurrentAnimation(/* uuid: string, animation: string */): void {
         //noop
     }
@@ -500,9 +650,8 @@ export default class PhysicsProxy extends PhysicsBase {
         return this.velocityCache.get(uuid) || null;
     }
 
-    getAngularVelocity(_uuid: string): Vector3Like | null {
-        // Angular velocity is not available in the worker path (not in motionState)
-        return null;
+    getAngularVelocity(uuid: string): Vector3Like | null {
+        return this.angularVelocityCache.get(uuid) || null;
     }
 
     setLinearDamping(uuid: string, damping: number): void {
@@ -541,6 +690,8 @@ export default class PhysicsProxy extends PhysicsBase {
         this.pendingLinearDamping.delete(uuid);
         this.pendingAngularDamping.delete(uuid);
         this.pendingCollisionBehavior.delete(uuid);
+        this.velocityCache.delete(uuid);
+        this.angularVelocityCache.delete(uuid);
         delete this.objectUpdates[uuid];
     }
 
@@ -641,6 +792,34 @@ export default class PhysicsProxy extends PhysicsBase {
         this.pendingAtomic.length = 0;
     }
 
+    private dispatchAuthoritativeFixedStep(deltaTime: number, substeps: number): void {
+        this.flushLatestWins();
+        const batchUpdate: BatchUpdateEvent = {
+            event: PHYSICS_EVENTS.BATCH.UPDATE,
+            objects: this.objectUpdates,
+        };
+        this.workerHandler?.postMessage(batchUpdate);
+        this.objectUpdates = {};
+        this.workerHandler?.postMessage({
+            event: PHYSICS_EVENTS.SIMULATE,
+            deltaTime,
+            substeps,
+            authoritativeFixedStep: true,
+        });
+        this.workerBusy = true;
+        this.authoritativeStepInFlight = true;
+    }
+
+    private dispatchNextAuthoritativeFixedStep(): void {
+        if (this.workerBusy || this.authoritativeQueueCount <= 0) return;
+        const head = this.authoritativeQueueHead;
+        const deltaTime = this.authoritativeStepDeltas[head]!;
+        const substeps = this.authoritativeStepSubsteps[head]!;
+        this.authoritativeQueueHead = (head + 1) % PhysicsProxy.AUTHORITATIVE_QUEUE_CAPACITY;
+        this.authoritativeQueueCount--;
+        this.dispatchAuthoritativeFixedStep(deltaTime, substeps);
+    }
+
     /** Reports MAX_DT clamp events at most once a second. Clamps mean the engine can't keep
      *  up with real-time and physics is running in slow-motion — actionable signal. */
     private maybeLogClamp(): void {
@@ -657,19 +836,40 @@ export default class PhysicsProxy extends PhysicsBase {
         let {data} = msg;
         switch (data.event) {
             case PHYSICS_EVENTS.READY:
-                this.workerReady = true;
-                this.dispatcher.onReady();
+                this.markWorkerReady();
                 break;
             case PHYSICS_EVENTS.SIMULATE_DONE:
                 this.workerBusy = false;
-                this.flushPendingAtomic();
+                try {
+                    if (
+                        data.authoritativeFixedStep === true &&
+                        this.authoritativeStepInFlight &&
+                        !this.cancelAuthoritativeCompletion
+                    ) {
+                        this.dispatcher.onSimulationComplete?.(data.deltaTime);
+                    }
+                } catch (error) {
+                    console.error("PhysicsProxy: fixed-step completion listener failed", error);
+                } finally {
+                    this.authoritativeStepInFlight = false;
+                    this.cancelAuthoritativeCompletion = false;
+                    this.flushPendingAtomic();
+                    this.dispatchNextAuthoritativeFixedStep();
+                }
+                break;
+            case PHYSICS_EVENTS.DEBUG.FRAME:
+                this.applyDebugFrame(data as PhysicsDebugFrameEvent);
                 break;
             case PHYSICS_EVENTS.BODY.UPDATE: {
-                const {uuid, position, quaternion, scale, motionState, dt} = data;
-                if (motionState?.linearVelocity) {
-                    this.velocityCache.set(uuid, motionState.linearVelocity);
+                // Compatibility fallback for workers from before body-update batching.
+                this.dispatchBodyUpdate(data as BodyUpdate);
+                break;
+            }
+            case PHYSICS_EVENTS.BODY.UPDATE_BATCH: {
+                const {updates} = data as BodyUpdateBatchEvent;
+                for (const update of updates) {
+                    this.dispatchBodyUpdate(update);
                 }
-                this.dispatcher.onBodyUpdate(uuid, position, quaternion, scale, dt, motionState);
                 break;
             }
             case PHYSICS_EVENTS.PONG: {
@@ -701,7 +901,63 @@ export default class PhysicsProxy extends PhysicsBase {
         }
     };
 
+    private markWorkerReady(): void {
+        if (this.workerReady) {
+            return;
+        }
+        this.workerReady = true;
+        this.dispatcher.onReady();
+    }
+
+    private dispatchBodyUpdate({uuid, position, quaternion, scale, motionState, dt}: BodyUpdate): void {
+        if (motionState?.linearVelocity) {
+            this.velocityCache.set(uuid, motionState.linearVelocity);
+        } else {
+            this.velocityCache.delete(uuid);
+        }
+        if (motionState?.angularVelocity) {
+            this.angularVelocityCache.set(uuid, motionState.angularVelocity);
+        } else {
+            this.angularVelocityCache.delete(uuid);
+        }
+        this.dispatcher.onBodyUpdate(uuid, position, quaternion, scale, dt, motionState);
+    }
+
     initDebug(): Object3D {
-        return undefined as unknown as Object3D;
+        if (!this.debugMesh) {
+            this.debugGeometry = new BufferGeometry();
+            this.debugGeometry.setAttribute(
+                "position",
+                new BufferAttribute(new Float32Array(0), 3).setUsage(DynamicDrawUsage),
+            );
+            this.debugGeometry.setAttribute(
+                "color",
+                new BufferAttribute(new Float32Array(0), 4).setUsage(DynamicDrawUsage),
+            );
+            this.debugMaterial = new LineBasicMaterial({vertexColors: true});
+            this.debugMesh = new LineSegments(this.debugGeometry, this.debugMaterial);
+            this.debugMesh.frustumCulled = false;
+        }
+        this.postAtomic({event: PHYSICS_EVENTS.DEBUG.ENABLE});
+        return this.debugMesh;
+    }
+
+    private applyDebugFrame({vertices, colors, drawCount}: PhysicsDebugFrameEvent): void {
+        if (!this.debugGeometry) return;
+        const safeDrawCount = Number.isFinite(drawCount)
+            ? Math.max(0, Math.min(Math.floor(drawCount), Math.floor(vertices.length / 3)))
+            : 0;
+        this.debugGeometry.setAttribute(
+            "position",
+            new BufferAttribute(vertices, 3).setUsage(DynamicDrawUsage),
+        );
+        const colorItemSize = safeDrawCount > 0 && colors.length % safeDrawCount === 0
+            ? Math.max(3, Math.min(4, colors.length / safeDrawCount))
+            : 4;
+        this.debugGeometry.setAttribute(
+            "color",
+            new BufferAttribute(colors, colorItemSize).setUsage(DynamicDrawUsage),
+        );
+        this.debugGeometry.setDrawRange(0, safeDrawCount);
     }
 }

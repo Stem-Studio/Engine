@@ -35,6 +35,12 @@ export const Wrapper = styled.div<{$isFullScreen?: boolean}>`
         width: 800px;
     height: ${LIBRARY_HEIGHT};
     `}
+
+    @media (max-width: 600px) {
+        width: 100vw;
+        height: 100dvh;
+        border-radius: 0;
+    }
 `;
 
 export const Nav = styled.div`
@@ -45,6 +51,79 @@ export const Nav = styled.div`
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid var(--theme-grey-bg);
+
+    @media (max-width: 960px) {
+        height: 64px;
+        min-height: 64px;
+        padding: 5px 8px;
+        gap: 4px;
+
+        > div:first-child {
+            min-width: 0;
+            flex: 1 1 auto;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+
+        .library-nav-actions {
+            min-width: 220px;
+            flex: 0 1 260px;
+        }
+
+        .library-nav-actions > div:first-child {
+            width: auto !important;
+            min-width: 100px;
+            height: 44px;
+            flex: 1 1 auto;
+        }
+
+        .library-window-actions {
+            flex: 0 0 auto;
+        }
+
+        .library-window-actions button {
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+        }
+    }
+
+    @media (max-width: 600px) {
+        height: 112px;
+        min-height: 112px;
+        padding: 6px 8px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+
+        > div:first-child {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+
+        .library-nav-actions {
+            width: 100%;
+            min-width: 0;
+            justify-content: space-between;
+        }
+
+        .library-nav-actions > div:first-child {
+            width: auto !important;
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+
+        .library-window-actions {
+            flex: 0 0 auto;
+        }
+
+        .library-window-actions button {
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+        }
+    }
 `;
 
 export const InfoContainer = styled.div<{$filtersRendered: boolean}>`
@@ -83,6 +162,10 @@ export const InfoContainer = styled.div<{$filtersRendered: boolean}>`
         .infoCard {
             left: 16px;
         }
+    }
+
+    @media (max-width: 960px) {
+        display: none;
     }
 `;
 
@@ -126,6 +209,12 @@ export const AssetsContainaer = styled.div`
         font-size: 10px;
         color: var(--theme-font-unselected-tertiary-color);
     }
+
+    @media (max-width: 600px) {
+        padding: 8px;
+        row-gap: 12px;
+        min-width: 0;
+    }
 `;
 
 export const FlexWrapper = styled.div<{$gap?: string}>`
@@ -139,6 +228,20 @@ export const MainFlexWrapper = styled.div<{$filtersRendered: boolean}>`
     height: calc(100% - ${NAV_HEIGHT});
     ${({$filtersRendered}) =>
         $filtersRendered && `height: calc(100% - ${NAV_HEIGHT} - ${FILTER_HEIGHT} - ${FILTER_MARGIN});`}
+
+    @media (max-width: 960px) {
+        height: calc(100% - 64px);
+        ${({$filtersRendered}) =>
+            $filtersRendered && `height: calc(100% - 64px - 54px - ${FILTER_MARGIN});`}
+        min-height: 0;
+    }
+
+    @media (max-width: 600px) {
+        height: calc(100% - 112px);
+        ${({$filtersRendered}) =>
+            $filtersRendered && `height: calc(100% - 112px - ${FILTER_HEIGHT} - ${FILTER_MARGIN});`}
+        min-height: 0;
+    }
 `;
 
 export const IconButton = styled.button`
@@ -152,6 +255,12 @@ export const IconButton = styled.button`
     img.deleteIcon,
     .revisionsIcon {
         width: 16px;
+    }
+
+    @media (max-width: 600px), (max-width: 960px) and (max-height: 600px) {
+        width: 44px;
+        height: 44px;
+        padding: 10px;
     }
 `;
 

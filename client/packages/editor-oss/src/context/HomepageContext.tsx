@@ -1,7 +1,8 @@
 import {useInfiniteQuery, useQueryClient} from "@tanstack/react-query";
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
-import {useAppGlobalContext, useAuthorizationContext} from ".";
+import {useAppGlobalContext} from "./AppGlobalContext";
+import {useAuthorizationContext} from "./AuthorizationContext";
 import {getGames} from "@stem/network/api/getGames";
 import {PAGES} from "../editor/assets/v2/CreateDashboard/constants";
 import {
@@ -11,7 +12,7 @@ import {
     fetchPublishedScenes,
     fetchTopPicksScenes,
     type PaginatedScenesResponse,
-} from "@stem/network/api/scene";
+} from "@stem/network/api/scene/list";
 import {ROUTES} from "@web-shared/routes";
 import type {CommunityFilterType, ProjectFilterType} from "../editor/assets/v2/CreateDashboard/CreateDashboard";
 import {FileData} from "../editor/assets/v2/types/file";
@@ -84,6 +85,7 @@ interface HomepageContextValue {
 }
 
 export const HomepageContext = React.createContext<HomepageContextValue>(null!);
+export const useHomepageContext = () => React.useContext(HomepageContext);
 
 export interface HomepageContextProviderProps {
     children: React.ReactNode;

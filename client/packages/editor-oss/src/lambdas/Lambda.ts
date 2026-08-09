@@ -193,8 +193,7 @@ export interface Lambda {
 
     /**
      * Called at fixed timestep for physics-dependent logic.
-     * Runs in FIXED_UPDATE stage when FrameOrchestrator is enabled and "Fixed Rate Updates" is on.
-     * If not implemented, falls back to update() with a console warning.
+     * In legacy runtime, fixedUpdate-only lambdas run from the normal apply pass.
      * @param fixedDeltaTime - Fixed timestep in seconds (e.g., 1/60 = 0.0167s at 60Hz)
      */
     fixedUpdate?(fixedDeltaTime: number): void;

@@ -6,6 +6,7 @@ import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import {getAssetResolutionContext} from "@stem/editor-oss/asset-management/AssetResolutionContext";
 import {useAssetResolutionContext} from "@stem/editor-oss/context/AssetResolutionContext";
 import global from "@stem/editor-oss/global";
+import {cloneJsonCompatible} from "@stem/editor-oss/utils/cloneJsonCompatible";
 import {LeftWrapper} from "../../AnimationCombiner/ModelAnimationCombiner.style";
 import {StyledButton} from "../../common/StyledButton";
 import {
@@ -103,7 +104,7 @@ export const MainPanel = ({onClose, materialInfo, cloneRef, pendingSettings, set
                 materialsBackup.push({
                     material: materialToBackup,
                     userData: child.userData?.materialSettings
-                        ? JSON.parse(JSON.stringify(child.userData.materialSettings))
+                        ? cloneJsonCompatible(child.userData.materialSettings)
                         : undefined,
                 });
             }
@@ -162,8 +163,8 @@ export const MainPanel = ({onClose, materialInfo, cloneRef, pendingSettings, set
 
         if (!selectedBackupRef.current || !materialBackupRef.current || !selectedObject) return;
         if (selectedBackupRef.current.userData?.materialSettings) {
-            selectedObject.userData.materialSettings = JSON.parse(
-                JSON.stringify(selectedBackupRef.current.userData.materialSettings),
+            selectedObject.userData.materialSettings = cloneJsonCompatible(
+                selectedBackupRef.current.userData.materialSettings,
             );
         } else {
             delete selectedObject.userData.materialSettings;
@@ -179,7 +180,7 @@ export const MainPanel = ({onClose, materialInfo, cloneRef, pendingSettings, set
                 child.material = cloneMaterialDeep(backupItem.material);
 
                 if (backupItem.userData) {
-                    child.userData.materialSettings = JSON.parse(JSON.stringify(backupItem.userData));
+                    child.userData.materialSettings = cloneJsonCompatible(backupItem.userData);
                 } else {
                     delete child.userData.materialSettings;
                 }

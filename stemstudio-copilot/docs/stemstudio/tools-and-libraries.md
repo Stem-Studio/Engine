@@ -4,187 +4,121 @@ Reference documentation for specialized tools and behavior packs available in St
 
 ## Terrain Systems
 
-### Perlin Terrain
+### Terrain (`terrain` behavior)
 
-Procedural terrain generated using Perlin noise heightmaps.
+The current procedural terrain behavior is the hidden, singleton `terrain`
+pack. It supports endless or bounded terrain, enhanced terrain and water
+options, layered surface textures, placement controls, and physics integration.
+Its schema is large and changes with the implementation; use the editor's
+generated attribute UI rather than copying defaults from this guide.
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `width` | number | `100` | Terrain width in units |
-| `depth` | number | `100` | Terrain depth in units |
-| `heightScale` | number | `10` | Maximum height variation |
-| `resolution` | number | `128` | Heightmap resolution (vertices per side) |
-| `seed` | number | `0` | Random seed for reproducible terrain |
-| `octaves` | number | `4` | Noise detail layers |
-| `persistence` | number | `0.5` | How much each octave contributes |
-| `lacunarity` | number | `2.0` | Frequency multiplier per octave |
-
-Created via the editor terrain tool. The terrain generates a mesh with vertex colors based on height (green lowlands, brown hills, white peaks).
-
-### Endless Terrain (`EndlessTerrain` behavior pack)
-
-Infinite procedural terrain that generates chunks around the player. Singleton behavior — only one per scene.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `chunkSize` | number | `64` | Size of each terrain chunk |
-| `viewDistance` | number | `3` | Number of chunks visible in each direction |
-| `heightScale` | number | `15` | Height multiplier |
-| `seed` | number | `42` | Random seed |
-| `detailLevels` | array | `[1, 2, 4]` | LOD levels for distant chunks |
-
-Attach via `attach_behavior` to any object (typically an empty group). Requires physics terrain for walkability.
-
-### Physics Terrain
-
-Provides collision for terrain surfaces. Works with both Perlin and Endless terrain.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `enabled` | boolean | Enable physics collision for terrain |
-| `shape` | string | Always `"btConcaveHullShape"` for terrain |
-| `ctype` | string | Always `"Static"` |
-| `mass` | number | Always `0` |
+Authoritative source:
+[terrain `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/terrain/behavior.json).
 
 ## Billboards
 
 ### Image Billboard (`image_billboard` behavior)
 
-Displays a static image on a flat plane, optionally always facing the camera.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `imageUrl` | string (autoFill: resources.images) | `""` | Image source |
-| `width` | number | `2` | Display width |
-| `height` | number | `2` | Display height |
-| `opacity` | slider (0-1) | `1` | Image opacity |
-| `faceCamera` | boolean | `true` | Always face camera |
+Displays image content using the current image-billboard behavior schema.
+Authoritative source:
+[image billboard `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/image_billboard/behavior.json).
 
 ### Video Billboard (`video_billboard` behavior)
 
-Plays video content on a flat plane in 3D space.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `videoUrl` | string (autoFill: resources.videos) | `""` | Video source |
-| `width` | number | `4` | Display width |
-| `height` | number | `2.25` | Display height |
-| `autoplay` | boolean | `true` | Start playing on load |
-| `loop` | boolean | `true` | Loop playback |
-| `muted` | boolean | `false` | Mute audio |
-| `volume` | slider (0-1) | `1` | Audio volume |
+Displays video content using the current video-billboard behavior schema.
+Authoritative source:
+[video billboard `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/video_billboard/behavior.json).
 
 ### Billboard (`billboard` behavior)
 
-General-purpose billboard supporting multiple content types: images, YouTube embeds, webpages.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `billboardMode` | enum | `"Image"` | Content type: `"Image"`, `"YouTube Video"`, `"Webpage"` |
-| `imageUrl` | string | `""` | Image URL (when mode = Image) |
-| `urlLink` | string | `""` | YouTube/Webpage URL (when mode = YouTube/Webpage) |
-| `width` | number | `4` | Display width |
-| `height` | number | `3` | Display height |
-| `faceCamera` | boolean | `false` | Always face camera |
-
-`billboardMode` controls which attributes are visible via `visibleIf` conditions.
+Provides the general billboard pack. Mode-specific fields and visibility
+conditions come from the schema rather than this reference.
+Authoritative source:
+[billboard `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/billboard/behavior.json).
 
 ## Water
 
-Water surfaces use a shader-based rendering system with reflection and refraction.
+Water is an editor asset primitive, not a behavior pack. The Assets panel
+creates a `Water` mesh directly with a subdivided plane and WebGPU-compatible
+TSL procedural waves. There is no water `behavior.json` or attachable water
+attribute schema.
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `color` | string (hex) | `"#001e0f"` | Water body color |
-| `opacity` | number | `0.8` | Water surface opacity |
-| `reflectivity` | number | `0.5` | Reflection strength |
-| `waveSpeed` | number | `1.0` | Wave animation speed |
-| `waveScale` | number | `0.1` | Wave height scale |
-| `distortionScale` | number | `3.7` | Refraction distortion |
-| `sunColor` | string (hex) | `"#ffffff"` | Sun reflection color |
-| `sunDirection` | vector3 | `[0, 1, 0]` | Sun direction for reflection |
-
-Water is typically added as a plane primitive with the water shader behavior attached. Position at Y = 0 or desired water level.
+The current constructor surface is `size`, `segments`, `waterColor`,
+`waveHeight`, and `waveSpeed`. The runtime object also exposes
+`setWaterColor()`, `setWaveHeight()`, and `setWaveSpeed()`. Treat those source
+APIs—not legacy reflection/refraction behavior fields—as authoritative:
+[Water component](../../../client/packages/editor-oss/src/object/component/Water.js)
+and
+[editor creation helper](../../../client/packages/editor-oss/src/editor/assets/v2/LeftPanel/MainTabs/AssetsTab/SubTabs/primitivesHelpers.ts).
 
 ## Sky & Day/Night Cycle
 
 ### Skybox (`skybox` behavior)
 
-Static environment skybox using cubemap textures.
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `cubemap` | array of 6 images | Six face textures (px, nx, py, ny, pz, nz) |
-| `intensity` | number | Environment lighting intensity |
-| `rotation` | number | Skybox rotation (radians) |
-
-Singleton behavior — only one skybox per scene. Attached to the scene root or an empty group.
+The current skybox pack has no configurable attributes. It is an init-only
+utility that prepares its target mesh hierarchy for use as a backdrop by
+disabling physics and shadows and enabling material transparency. The schema
+and embedded pack documentation are authoritative:
+[skybox `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/skybox/behavior.json).
 
 ### Day/Night Cycle (`dayNightCycle` behavior)
 
-Dynamic sky with animated sun/moon movement and lighting transitions.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `dayDuration` | number | `120` | Full cycle duration in seconds |
-| `startTime` | number | `0.25` | Start time (0-1, where 0.25 = noon) |
-| `sunColor` | string (hex) | `"#ffddaa"` | Sun light color |
-| `moonColor` | string (hex) | `"#aabbff"` | Moon light color |
-| `sunIntensity` | number | `1.0` | Sun light strength |
-| `moonIntensity` | number | `0.2` | Moon light strength |
-| `ambientDay` | string (hex) | `"#404060"` | Ambient color during day |
-| `ambientNight` | string (hex) | `"#101030"` | Ambient color at night |
-
-Singleton behavior. Automatically adjusts scene ambient light, directional light, and sky color over time.
+The current cycle behavior attaches to a directional light and exposes
+enablement, initial time, rotation speed, and pause state. Use its schema for
+the exact names, ranges, and defaults:
+[day/night `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/dayNightCycle/behavior.json).
 
 ## Navigation Mesh (NavMesh)
 
 ### NavMesh (`navmesh` behavior)
 
-Bakes a walkable navigation mesh for AI pathfinding. Used by enemy and NPC behaviors for movement.
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `agentRadius` | number | `0.5` | Agent collision radius |
-| `agentHeight` | number | `2.0` | Agent height |
-| `maxSlope` | number | `45` | Maximum walkable slope (degrees) |
-| `stepHeight` | number | `0.5` | Maximum step-up height |
-| `cellSize` | number | `0.3` | Navigation grid cell size |
-| `cellHeight` | number | `0.2` | Navigation grid cell height |
-
-Attach to the ground/terrain object. The navmesh is baked from the object's geometry. Multiple navmesh behaviors can cover different areas.
+The singleton NavMesh behavior generates walkable navigation data for AI. Its
+cell, agent, quality, detail, generation, filtering, and debug controls are
+defined by the current schema:
+[NavMesh `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/navmesh/behavior.json).
 
 ### NavMesh Connection (`navmesh-connection` behavior)
 
-Bridges separate navigation mesh areas (e.g., connecting two platforms via a bridge).
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `startArea` | object | Start navmesh area reference |
-| `endArea` | object | End navmesh area reference |
-| `bidirectional` | boolean | Allow movement in both directions |
-| `width` | number | Connection width |
+Adds an off-mesh connection from its host object to a target object. Current
+enablement, target, direction, radius, and visualization controls are defined
+by the schema:
+[NavMesh connection `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/navmesh-connection/behavior.json).
 
 ## LOD (Level of Detail)
 
-StemStudio supports automatic LOD for complex models to improve performance.
+StemStudio's live runtime manages authored `THREE.LOD` groups that are inside
+objects registered with the plot-budget system. The controller evaluates camera
+distance and projected screen size, applies hysteresis, limits the number of
+visible tier changes per frame, and scales authored thresholds under runtime
+quality pressure. Culled plots do not spend their transition budget.
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `levels` | array | LOD distance thresholds |
-| `autoGenerate` | boolean | Automatically generate simplified meshes |
-| `fadeTransition` | boolean | Smooth fade between LOD levels |
+| Runtime behavior | Current semantics |
+|----------|-------------|
+| Authored levels | Each resident level object and its authored distance are registered without adding runtime metadata to serialized `userData`. |
+| Transition budget | A bounded number of the highest-priority pending switches is applied per frame; remaining switches stay pending. |
+| Hysteresis | A boundary band prevents rapid tier oscillation while the camera hovers near a threshold. |
+| Quality pressure | The live plot-budget policy can scale authored LOD distances. |
+| Residency | A missing target must fail open by keeping the current resident tier. The current live integration does not fetch or stream missing derivatives. |
+| Fallback | If safe bounds/registration are unavailable, the authored `THREE.LOD` keeps its native update path. |
+| Cleanup | Unregistering or clearing runtime management restores authored visibility, distances, and `autoUpdate`. |
 
 ### LOD Distance Levels
 
-| Level | Typical Distance | Description |
-|-------|-----------------|-------------|
-| LOD0 | 0 - 10 | Full detail |
-| LOD1 | 10 - 30 | Reduced detail (50% triangles) |
-| LOD2 | 30 - 60 | Low detail (25% triangles) |
-| LOD3 | 60+ | Minimal detail or billboard |
+Distances are authored per `THREE.LOD`; there is no universal 10/30/60
+contract or guaranteed triangle percentage. Use LOD0 for the full-detail
+resident asset, then add genuinely cheaper resident objects at increasing
+distances. Validate switching at gameplay camera scale and under the target
+quality policy.
 
-LOD is configured per-model in the editor. For scenes with many instances of the same model, combine LOD with GPU instancing (`useInstancing: true` in rendering settings) for best performance.
+LOD generation tools and smooth cross-fade fields are not proof that runtime
+mesh generation, derivative streaming, or fade transitions are active. Verify
+the authored levels exist before relying on them. For scenes with many
+instances of the same model, combine authored LOD with GPU instancing where the
+asset path supports it.
+
+Known compatibility note: managed switching uses the derived bounds-sphere
+center and projected size, so offset geometry or non-default orthographic zoom
+can switch at a different point than native `THREE.LOD.update(camera)`.
 
 ## Instancing
 
@@ -246,13 +180,8 @@ See [physics-system.md](physics-system.md#vehicle-physics) for the VehicleSpec, 
 
 ## Cascaded Shadow Maps (CSM)
 
-The `csm` behavior provides high-quality shadows over large areas by splitting the shadow map into cascades.
+The hidden `csm` behavior provides cascaded shadows and currently exposes fade,
+distribution mode, cascade count, and light-margin controls.
 
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `cascades` | number | `3` | Number of shadow cascades |
-| `maxFar` | number | `100` | Maximum shadow distance |
-| `shadowMapSize` | number | `2048` | Shadow map resolution |
-| `lightDirection` | vector3 | `[-1, -1, -1]` | Shadow casting direction |
-
-Singleton behavior. Attach to scene root or empty group. Replaces the default directional light shadow.
+Authoritative source:
+[CSM `behavior.json`](../../../client/packages/editor-oss/src/behaviors/packs/csm/behavior.json).

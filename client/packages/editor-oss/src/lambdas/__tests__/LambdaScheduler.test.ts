@@ -3,14 +3,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import type { ISpatialGrid } from "@stem/editor-oss/scheduler/types";
 
+const visibilityCheckerMocks = vi.hoisted(() => ({
+    beginFrame: vi.fn(),
+    endFrame: vi.fn(),
+    isVisible: vi.fn(() => true),
+    clearCache: vi.fn(),
+    dispose: vi.fn(),
+}));
+
 // Mock the VisibilityChecker module before importing LambdaScheduler
 vi.mock("../../behaviors/performance/implementations/VisibilityChecker", () => ({
     VisibilityChecker: class MockVisibilityChecker {
-        isVisible(): boolean {
-            return true;
-        }
-        clearCache(): void { }
-        dispose(): void { }
+        beginFrame = visibilityCheckerMocks.beginFrame;
+        endFrame = visibilityCheckerMocks.endFrame;
+        isVisible = visibilityCheckerMocks.isVisible;
+        clearCache = visibilityCheckerMocks.clearCache;
+        dispose = visibilityCheckerMocks.dispose;
     },
 }));
 
@@ -22,6 +30,11 @@ describe("LambdaScheduler", () => {
     let camera: PerspectiveCamera;
 
     beforeEach(() => {
+        visibilityCheckerMocks.beginFrame.mockClear();
+        visibilityCheckerMocks.endFrame.mockClear();
+        visibilityCheckerMocks.isVisible.mockClear();
+        visibilityCheckerMocks.clearCache.mockClear();
+        visibilityCheckerMocks.dispose.mockClear();
         scheduler = new LambdaScheduler({
             targetFPS: 60,
             frameBudgetMs: 12,
@@ -50,6 +63,58 @@ describe("LambdaScheduler", () => {
             expect(customScheduler.frameBudgetMs).toBe(8);
             customScheduler.dispose();
         });
+
+        it("should apply defaultThrottleFactor as the healthy baseline throttle", () => {
+            const customScheduler = new LambdaScheduler({ defaultThrottleFactor: 2 });
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.updateMatrixWorld();
+
+            customScheduler.beginFrame(0);
+            expect(customScheduler.shouldProcess(object, camera, 0, false)).toBe(2);
+
+            customScheduler.beginFrame(1);
+            expect(customScheduler.shouldProcess(object, camera, 0, false)).toBe(0);
+
+            customScheduler.dispose();
+        });
+
+        it("should clamp defaultThrottleFactor to the supported adaptive throttle range", () => {
+            const customScheduler = new LambdaScheduler({ defaultThrottleFactor: 99 });
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.updateMatrixWorld();
+
+            customScheduler.beginFrame(0);
+            expect(customScheduler.shouldProcess(object, camera, 0, false)).toBe(3);
+
+            customScheduler.beginFrame(1);
+            expect(customScheduler.shouldProcess(object, camera, 0, false)).toBe(0);
+
+            customScheduler.dispose();
+        });
+
+        it("should ignore invalid distance and budget config values", () => {
+            const customScheduler = new LambdaScheduler({
+                targetFPS: 0,
+                frameBudgetMs: Number.NaN,
+                farDistanceSq: 0,
+                veryFarDistanceSq: -1,
+            });
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.position.set(5, 0, 0);
+            object.updateMatrixWorld();
+
+            expect(customScheduler.frameBudgetMs).toBe(12);
+
+            customScheduler.beginFrame(1);
+
+            expect(Number.isFinite(customScheduler.frameDeadline)).toBe(true);
+            expect(customScheduler.shouldProcess(object, camera, 0, false)).toBe(1);
+
+            customScheduler.dispose();
+        });
     });
 
     describe("beginFrame", () => {
@@ -74,6 +139,90 @@ describe("LambdaScheduler", () => {
                 spatialGrid: null,
             });
             expect(scheduler.frameDeadline).toBe(deadline);
+        });
+
+        it("should reuse orchestrator frameStartTime when provided", () => {
+            scheduler.beginFrame({
+                deltaTime: 0.016,
+                fixedDeltaTime: 0.01667,
+                fixedUpdatesEnabled: false,
+                frameCount: 1,
+                interpolationAlpha: 1,
+                fixedOverstep: 0,
+                frameStartTime: 1234,
+                frameDeadline: 1246,
+                underRenderPressure: false,
+                renderAvgMs: 0,
+                spatialGrid: null,
+            });
+
+            expect(scheduler.frameStartTime).toBe(1234);
+            expect(scheduler.frameDeadline).toBe(1246);
+        });
+
+        it("should use the spatial grid from frame context for distance lookups", () => {
+            const mockGrid: ISpatialGrid = {
+                update: vi.fn(),
+                getDistanceSq: vi.fn().mockReturnValue(25),
+                queryRadius: vi.fn().mockReturnValue([]),
+                remove: vi.fn(),
+                dispose: vi.fn(),
+            };
+            const object = new Object3D();
+            object.position.set(100, 0, 0);
+            object.updateMatrixWorld();
+            const objectSpy = vi.spyOn(object, "getWorldPosition");
+
+            scheduler.beginFrame({
+                deltaTime: 0.016,
+                fixedDeltaTime: 0.01667,
+                fixedUpdatesEnabled: false,
+                frameCount: 1,
+                interpolationAlpha: 1,
+                fixedOverstep: 0,
+                frameStartTime: 100,
+                frameDeadline: 112,
+                underRenderPressure: false,
+                renderAvgMs: 16,
+                spatialGrid: mockGrid,
+            });
+            scheduler.shouldProcess(object, camera, 0, false);
+
+            expect(mockGrid.getDistanceSq).toHaveBeenCalledWith(object.uuid, expect.any(Object));
+            expect(objectSpy).not.toHaveBeenCalled();
+            objectSpy.mockRestore();
+        });
+
+        it("should clear a previous spatial grid when frame context has none", () => {
+            const mockGrid: ISpatialGrid = {
+                update: vi.fn(),
+                getDistanceSq: vi.fn().mockReturnValue(0),
+                queryRadius: vi.fn().mockReturnValue([]),
+                remove: vi.fn(),
+                dispose: vi.fn(),
+            };
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.position.set(150, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.setSpatialGrid(mockGrid);
+            scheduler.beginFrame({
+                deltaTime: 0.016,
+                fixedDeltaTime: 0.01667,
+                fixedUpdatesEnabled: false,
+                frameCount: 0,
+                interpolationAlpha: 1,
+                fixedOverstep: 0,
+                frameStartTime: 100,
+                frameDeadline: 112,
+                underRenderPressure: false,
+                renderAvgMs: 16,
+                spatialGrid: null,
+            });
+
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(3);
+            expect(mockGrid.getDistanceSq).not.toHaveBeenCalled();
         });
 
         it("should keep config budget available as a compatibility accessor", () => {
@@ -194,6 +343,34 @@ describe("LambdaScheduler", () => {
             expect(typeof object.userData._lambdaHash).toBe("number");
         });
 
+        it("should keep cached lambda hashes out of serialized userData", () => {
+            const object = new Object3D();
+            object.position.set(5, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+
+            expect(object.userData._lambdaHash).toBeDefined();
+            expect(Object.prototype.propertyIsEnumerable.call(object.userData, "_lambdaHash")).toBe(false);
+            expect(JSON.stringify(object.userData)).not.toContain("_lambdaHash");
+        });
+
+        it("should preserve legacy hash values while making them non-enumerable", () => {
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.position.set(60, 0, 0);
+            object.updateMatrixWorld();
+
+            expect(Object.prototype.propertyIsEnumerable.call(object.userData, "_lambdaHash")).toBe(true);
+
+            scheduler.beginFrame(1);
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(0);
+
+            expect(object.userData._lambdaHash).toBe(0);
+            expect(Object.prototype.propertyIsEnumerable.call(object.userData, "_lambdaHash")).toBe(false);
+        });
+
         it("should reuse cached hash on subsequent calls", () => {
             const object = new Object3D();
             object.position.set(5, 0, 0);
@@ -209,10 +386,75 @@ describe("LambdaScheduler", () => {
 
             expect(firstHash).toBe(secondHash);
         });
+
+        it("should prefer the internal hash cache over later userData mutations", () => {
+            const object = new Object3D();
+            object.position.set(60, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+            const cachedHash = object.userData._lambdaHash as number;
+            const runFrame = cachedHash % 4;
+
+            object.userData._lambdaHash = cachedHash + 1;
+
+            scheduler.beginFrame(runFrame);
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(3);
+        });
+
+        it("should not redefine already hidden cached hashes on subsequent frames", () => {
+            const object = new Object3D();
+            object.position.set(5, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+            expect(Object.prototype.propertyIsEnumerable.call(object.userData, "_lambdaHash")).toBe(false);
+
+            const definePropertySpy = vi.spyOn(Object, "defineProperty");
+
+            scheduler.beginFrame(1);
+            scheduler.shouldProcess(object, camera, 0, false);
+
+            expect(definePropertySpy).not.toHaveBeenCalled();
+            definePropertySpy.mockRestore();
+        });
+
+        it("should skip visibility checks on frames rejected by distance throttling", () => {
+            const object = new Object3D();
+            object.position.set(60, 0, 0); // Far enough for base throttle factor 4
+            object.userData._lambdaHash = 0;
+            object.updateMatrixWorld();
+
+            scheduler.beginFrame(1);
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(0);
+            expect(visibilityCheckerMocks.isVisible).not.toHaveBeenCalled();
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+            expect(visibilityCheckerMocks.isVisible).toHaveBeenCalledTimes(1);
+        });
+
+        it("should prepare visibility once for multiple checks in the same frame", () => {
+            const object1 = new Object3D();
+            const object2 = new Object3D();
+            object1.position.set(5, 0, 0);
+            object2.position.set(10, 0, 0);
+            object1.updateMatrixWorld();
+            object2.updateMatrixWorld();
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object1, camera, 0, false);
+            scheduler.shouldProcess(object2, camera, 1, false);
+
+            expect(visibilityCheckerMocks.beginFrame).toHaveBeenCalledTimes(1);
+            expect(visibilityCheckerMocks.beginFrame).toHaveBeenCalledWith(camera);
+        });
     });
 
     describe("shouldProcess - Camera caching", () => {
-        it("should cache camera position per frame", () => {
+        it("should read current camera matrix without forcing a world-position update", () => {
             const object1 = new Object3D();
             const object2 = new Object3D();
             object1.position.set(5, 0, 0);
@@ -226,13 +468,12 @@ describe("LambdaScheduler", () => {
             scheduler.shouldProcess(object1, camera, 0, false);
             scheduler.shouldProcess(object2, camera, 1, false);
 
-            // Camera position should only be computed once per frame
-            expect(cameraSpy).toHaveBeenCalledTimes(1);
+            expect(cameraSpy).not.toHaveBeenCalled();
 
             cameraSpy.mockRestore();
         });
 
-        it("should recompute camera position when switching cameras within the same frame", () => {
+        it("should reuse current camera matrices when switching cameras within the same frame", () => {
             const object = new Object3D();
             object.position.set(5, 0, 0);
             object.updateMatrixWorld();
@@ -248,37 +489,123 @@ describe("LambdaScheduler", () => {
 
             // First call with camera 1
             scheduler.shouldProcess(object, camera, 0, false);
-            expect(cameraSpy).toHaveBeenCalledTimes(1);
+            expect(cameraSpy).not.toHaveBeenCalled();
 
-            // Second call with camera 2 - should trigger re-computation
+            // Second call with camera 2 reads its current matrix directly.
             scheduler.shouldProcess(object, camera2, 0, false);
-            expect(camera2Spy).toHaveBeenCalledTimes(1);
+            expect(camera2Spy).not.toHaveBeenCalled();
 
-            // Third call with camera 1 again - should trigger re-computation again
+            // Third call with camera 1 again also uses its current matrix.
             scheduler.shouldProcess(object, camera, 0, false);
-            expect(cameraSpy).toHaveBeenCalledTimes(2);
+            expect(cameraSpy).not.toHaveBeenCalled();
 
             cameraSpy.mockRestore();
             camera2Spy.mockRestore();
         });
 
-        it("should recompute camera position on new frame", () => {
+        it("should use getWorldPosition when the camera matrix is stale", () => {
             const object = new Object3D();
             object.position.set(5, 0, 0);
             object.updateMatrixWorld();
+            camera.matrixWorldNeedsUpdate = true;
 
             const cameraSpy = vi.spyOn(camera, "getWorldPosition");
 
             scheduler.beginFrame(0);
             scheduler.shouldProcess(object, camera, 0, false);
 
-            scheduler.beginFrame(1);
-            scheduler.shouldProcess(object, camera, 0, false);
-
-            // Camera position should be computed once per frame
-            expect(cameraSpy).toHaveBeenCalledTimes(2);
+            expect(cameraSpy).toHaveBeenCalledTimes(1);
 
             cameraSpy.mockRestore();
+        });
+    });
+
+    describe("shouldProcess - Object position fallback", () => {
+        it("should read a current object matrix without forcing a world-position update", () => {
+            const object = new Object3D();
+            object.position.set(5, 0, 0);
+            object.updateMatrixWorld();
+
+            const objectSpy = vi.spyOn(object, "getWorldPosition");
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+
+            expect(objectSpy).not.toHaveBeenCalled();
+
+            objectSpy.mockRestore();
+        });
+
+        it("should use getWorldPosition when an ancestor matrix is stale", () => {
+            const parent = new Object3D();
+            const object = new Object3D();
+            parent.add(object);
+            object.position.set(5, 0, 0);
+            parent.updateMatrixWorld(true);
+            parent.matrixWorldNeedsUpdate = true;
+
+            const objectSpy = vi.spyOn(object, "getWorldPosition");
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(object, camera, 0, false);
+
+            expect(objectSpy).toHaveBeenCalledTimes(1);
+
+            objectSpy.mockRestore();
+        });
+
+        it("reuses clean shared ancestry for many lambda targets in one frame", () => {
+            const root = new Object3D();
+            let sharedParent = root;
+            for (let i = 0; i < 500; i++) {
+                const child = new Object3D();
+                sharedParent.add(child);
+                sharedParent = child;
+            }
+            const targets = Array.from({length: 100}, (_, index) => {
+                const target = new Object3D();
+                target.userData._lambdaHash = index;
+                sharedParent.add(target);
+                return target;
+            });
+            root.updateMatrixWorld(true);
+
+            let rootStateReads = 0;
+            let rootNeedsUpdate = root.matrixWorldNeedsUpdate;
+            Object.defineProperty(root, "matrixWorldNeedsUpdate", {
+                configurable: true,
+                get: () => {
+                    rootStateReads++;
+                    return rootNeedsUpdate;
+                },
+                set: value => {
+                    rootNeedsUpdate = value;
+                },
+            });
+
+            scheduler.beginFrame(0);
+            for (let i = 0; i < targets.length; i++) {
+                scheduler.shouldProcess(targets[i]!, camera, i, false);
+            }
+
+            expect(rootStateReads).toBe(1);
+        });
+
+        it("refreshes a lambda target after its cached parent moves mid-frame", () => {
+            const parent = new Object3D();
+            const first = new Object3D();
+            const second = new Object3D();
+            parent.add(first, second);
+            parent.updateMatrixWorld(true);
+
+            scheduler.beginFrame(0);
+            scheduler.shouldProcess(first, camera, 0, false);
+
+            parent.position.x = 25;
+            parent.updateMatrix();
+            scheduler.shouldProcess(second, camera, 1, false);
+
+            expect(second.matrixWorld.elements[12]).toBeCloseTo(25);
         });
     });
 
@@ -337,6 +664,42 @@ describe("LambdaScheduler", () => {
     describe("dispose", () => {
         it("should dispose visibility checker without error", () => {
             expect(() => scheduler.dispose()).not.toThrow();
+        });
+    });
+
+    describe("updateConfig", () => {
+        it("should ignore invalid runtime quality settings", () => {
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.position.set(5, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.updateConfig({
+                targetFPS: Number.NaN,
+                frameBudgetMs: 0,
+                farDistanceSq: 0,
+                veryFarDistanceSq: 0,
+            });
+            scheduler.beginFrame(1);
+
+            expect(scheduler.frameBudgetMs).toBe(12);
+            expect(Number.isFinite(scheduler.frameDeadline)).toBe(true);
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(1);
+        });
+
+        it("should keep very-far distance at least as large as far distance", () => {
+            const object = new Object3D();
+            object.userData._lambdaHash = 0;
+            object.position.set(75, 0, 0);
+            object.updateMatrixWorld();
+
+            scheduler.updateConfig({
+                farDistanceSq: 2500,
+                veryFarDistanceSq: 100,
+            });
+            scheduler.beginFrame(4);
+
+            expect(scheduler.shouldProcess(object, camera, 0, false)).toBe(3);
         });
     });
 });

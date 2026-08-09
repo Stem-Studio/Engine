@@ -1,16 +1,18 @@
 // Open a game in the real /playground iframe, enter Play mode, and capture
 // what renders + the full console during play.
 import {chromium} from "playwright";
-import {readdirSync, statSync, readFileSync, mkdirSync} from "node:fs";
+import {readdirSync, statSync, readFileSync, mkdirSync, existsSync} from "node:fs";
 import {join, resolve, dirname} from "node:path";
 import {fileURLToPath} from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outDir = resolve(__dirname, "verify-playground-play-output");
 mkdirSync(outDir, {recursive: true});
-const baseUrl = "http://localhost:5173";
-const projectsDir = "/Users/n/Documents/stemstudio-projects";
-const targetId = "oss-mpfzb8ja-44juxv";
+const baseUrl = (process.env.PLAYWRIGHT_BASE_URL || "http://localhost:5173").replace(/\/$/, "");
+const projectsDir = process.env.GAMES_ROOT
+    || (existsSync("/Volumes/ORICO/Stem Studio - OSS/stemstudio-projects")
+        ? "/Volumes/ORICO/Stem Studio - OSS/stemstudio-projects"
+        : "/Users/n/Documents/stemstudio-projects");
 
 const walk = (root, prefix = "") => readdirSync(root).flatMap(e => {
     if (e === ".DS_Store") return [];
@@ -18,7 +20,13 @@ const walk = (root, prefix = "") => readdirSync(root).flatMap(e => {
     const rel = prefix ? `${prefix}/${e}` : e;
     return statSync(abs).isDirectory() ? walk(abs, rel) : [{path: rel, abs}];
 });
-const files = walk(projectsDir).map(f => ({path: f.path, b64: readFileSync(f.abs).toString("base64")}));
+const projectFiles = walk(projectsDir);
+const targetId = process.env.TARGET_ID
+    || projectFiles
+        .map(file => file.path.match(/\.(oss-[^.]+)\.stemscript\.json$/)?.[1])
+        .find(Boolean);
+if (!targetId) throw new Error(`No .stemscript.json project found under ${projectsDir}; set TARGET_ID explicitly`);
+const files = projectFiles.map(f => ({path: f.path, b64: readFileSync(f.abs).toString("base64")}));
 
 const browser = await chromium.launch({headless: true});
 const page = await (await browser.newContext({viewport: {width: 1440, height: 900}})).newPage();

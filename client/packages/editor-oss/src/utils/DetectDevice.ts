@@ -38,26 +38,19 @@ export class DetectDevice {
     static getOS(): string {
         if (DetectDevice.cachedGetOs === undefined) {
             const userAgent = navigator.userAgent;
-            console.log("🔍 [DetectDevice] getOS() - User Agent:", userAgent);
 
             if (/Windows NT/i.test(userAgent)) {
                 DetectDevice.cachedGetOs = "Windows";
-                console.log("🪟 [DetectDevice] OS detected: Windows");
             } else if (/iPhone|iPad|iPod/i.test(userAgent)) {
                 DetectDevice.cachedGetOs = "iOS";
-                console.log("📱 [DetectDevice] OS detected: iOS");
             } else if (/Mac OS X/i.test(userAgent)) {
                 DetectDevice.cachedGetOs = "macOS";
-                console.log("🍎 [DetectDevice] OS detected: macOS");
             } else if (/Android/i.test(userAgent)) {
                 DetectDevice.cachedGetOs = "Android"; //must go before Linux
-                console.log("🤖 [DetectDevice] OS detected: Android");
             } else if (/Linux/i.test(userAgent)) {
                 DetectDevice.cachedGetOs = "Linux";
-                console.log("🐧 [DetectDevice] OS detected: Linux");
             } else {
                 DetectDevice.cachedGetOs = "Unknown OS";
-                console.log("❓ [DetectDevice] OS detected: Unknown OS");
             }
         }
         return DetectDevice.cachedGetOs;

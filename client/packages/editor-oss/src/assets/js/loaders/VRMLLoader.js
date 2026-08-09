@@ -1,4 +1,4 @@
-import { VRMLLoader as ThreeVRMLLoader } from "three/examples/jsm/loaders/VRMLLoader.js";
+import { VRMLLoader as ThreeVRMLLoader } from "three/addons/loaders/VRMLLoader.js";
 
 import BaseLoader from "./BaseLoader";
 

@@ -3,7 +3,7 @@ import {useMemo} from "react";
 import {isPlaygroundMode} from "@web-shared/playgroundMode";
 import {BannerCard, BannerOverlay, BannerStat, BannerTag, BannerTitle, BannersGrid} from "./CTABanners.style";
 import {ProgressiveImage} from "../../../common/ProgressiveImage/ProgressiveImage";
-import {getThumbnail} from "@stem/editor-oss/services";
+import {getThumbnail} from "@stem/editor-oss/utils/thumbnailUrl";
 import {FileData} from "../../../types/file";
 
 const formatStat = (value?: number) => {

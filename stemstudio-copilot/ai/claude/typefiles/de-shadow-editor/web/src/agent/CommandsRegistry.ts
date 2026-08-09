@@ -610,12 +610,12 @@ export class CommandsRegistry {
         this.registerCommand({
             name: SupportedCommands.SetPhysicsEngine,
             description:
-                "Set the scene-level physics engine (ammo | rapier | jolt | physx) and optionally scene gravity. Takes effect at next scene load.",
+                "Set the scene-level physics engine (ammo | rapier) and optionally scene gravity. Takes effect at next scene load.",
             parameters: [
                 {
                     name: "type",
                     type: "string",
-                    description: "Physics engine: 'ammo' (default) | 'rapier' | 'jolt' | 'physx'",
+                    description: "Physics engine: 'ammo' (default) | 'rapier'",
                     required: true,
                 },
                 {

@@ -1,5 +1,3 @@
-import React from "react";
-
 import {MenuItem} from "./AppMenu.style";
 import {initializeLogger, LOG_LEVEL_STORAGE_KEY, LogLevel} from "@stem/editor-oss/utils/Logger";
 

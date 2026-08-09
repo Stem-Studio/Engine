@@ -102,9 +102,11 @@ const (
 	RegistrationCollectionName string = "_Registration"
 	// ModelGenerationJobCollectionName is the collection name for background model generation jobs.
 	ModelGenerationJobCollectionName string = "_ModelGenerationJob"
-	// StripeProductsCollectionName is the collection name for Stripe product/pricing config.
+	// StripeProductsCollectionName is retained for legacy document compatibility.
+	// Deprecated: the open-source server does not implement billing handlers.
 	StripeProductsCollectionName string = "_StripeProducts"
-	// StripePurchasesCollectionName is the collection name for Stripe purchase records.
+	// StripePurchasesCollectionName is retained for legacy document compatibility.
+	// Deprecated: the open-source server does not implement billing handlers.
 	StripePurchasesCollectionName string = "_StripePurchases"
 	// RewardRulesCollectionName stores configurable event-to-reward mappings.
 	RewardRulesCollectionName string = "_RewardRule"

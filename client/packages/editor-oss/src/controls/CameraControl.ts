@@ -1,11 +1,10 @@
 import * as THREE from "three";
 import {Box3, Camera, MathUtils, Object3D, PerspectiveCamera, SkinnedMesh} from "three";
-import {ParticleEmitter} from "three.quarks";
 
 import {applyCameraProjectionSettings, getCameraControlSettings} from "@stem/editor-oss/camera/cameraSettings";
 import EngineRuntime from "@stem/editor-oss/EngineRuntime";
 import global from "@stem/editor-oss/global";
-import {PhysicsUtil} from "@stem/editor-oss/physics/PhysicsUtil";
+import {PhysicsRuntimeUtil as PhysicsUtil} from "@stem/editor-oss/physics/PhysicsRuntimeUtil";
 import {CAMERA_TYPES, CameraData, OCCLUSION_TYPES} from "@stem/editor-oss/types/editor";
 import {isSprite} from "@stem/editor-oss/utils/SpriteUtils";
 import {PointerEventManager, type PointerEventHandler} from "./input/PointerEventManager";
@@ -24,6 +23,7 @@ export interface ICameraControl {
 }
 
 const CAMERA_TOUCH_PRIORITY = 999; // This ensures camera controls are processed after any existing controls
+const isParticleEmitterObject = (object: Object3D | null | undefined): boolean => object?.type === "ParticleEmitter";
 
 class CameraControl implements ICameraControl {
     public camera: PerspectiveCamera;
@@ -35,7 +35,6 @@ class CameraControl implements ICameraControl {
     private pointerManager: PointerEventManager;
     private nearLimit: number;
     private farLimit: number;
-    private cameraLockPosition: boolean;
     private spherical: THREE.Spherical;
     private targetSpherical: THREE.Spherical;
     private angleLerpFactor: number = 0.25;
@@ -52,14 +51,11 @@ class CameraControl implements ICameraControl {
     private frontViewFlipTransitionSpeed: number = 0.3; // seconds - time to transition between front/back view
 
     // Camera follow runtime state
-    private lastManualCameraTime: number = 0;
     private lastCharacterRotation: number = 0;
     private characterRotationStartTime: number = 0;
     private characterRotationStartAngle: number = 0;
     private isInFrontView: boolean = false;
     private isReturningToCenter: boolean = false;
-    private targetThetaOffset: number = 0; // offset from character's back for smooth following
-    private currentThetaOffset: number = 0;
 
     //runtime values
     private isPointerLocked: boolean;
@@ -71,8 +67,10 @@ class CameraControl implements ICameraControl {
     //occlusion avoidance
     private targetDistance: number = 0;
     private distanceLerpSpeed = 0.1;
-    private zoomResetDistance = 2; //distance when zoom factor is reset to 1
     private raycaster: THREE.Raycaster;
+    private cameraSphere: THREE.Sphere = new THREE.Sphere();
+    private cameraCollisionIntersections: THREE.Intersection<THREE.Object3D>[] = [];
+    private transparencyIntersections: THREE.Intersection<THREE.Object3D>[] = [];
     //zooming
     private targetZoomFactor: number; //(0, 1]
     private zoomFactor: number; //(0, 1]
@@ -89,6 +87,11 @@ class CameraControl implements ICameraControl {
 
     private raycastCandidates: THREE.Object3D[] = [];
     private raycastDirection: THREE.Vector3 = new THREE.Vector3();
+    private occlusionRayOrigin: THREE.Vector3 = new THREE.Vector3();
+    private occlusionRayTarget: THREE.Vector3 = new THREE.Vector3();
+    private occlusionRayDirection: THREE.Vector3 = new THREE.Vector3();
+    private characterForward: THREE.Vector3 = new THREE.Vector3();
+    private currentOccludingObjects: Set<THREE.Object3D> = new Set();
     private boxTmp = new Box3();
 
     private mouseWheelHandler = (event: WheelEvent) => {
@@ -105,7 +108,7 @@ class CameraControl implements ICameraControl {
         scene: THREE.Scene,
         camera: THREE.PerspectiveCamera,
         pointerEventManager: PointerEventManager,
-        cameraLockPosition: boolean = false,
+        _cameraLockPosition: boolean = false,
         nearLimit: number = 7,
         farLimit: number = 16,
         fov: number = 70,
@@ -119,7 +122,6 @@ class CameraControl implements ICameraControl {
         this.camera.fov = fov;
         this.zoomFactor = zoomFactor;
         this.targetZoomFactor = zoomFactor;
-        this.cameraLockPosition = cameraLockPosition;
         this.spherical = new THREE.Spherical(this.nearLimit, Math.PI / 2, 0);
         this.targetSpherical = new THREE.Spherical(this.nearLimit, this.defaultPhi, -Math.PI / 2);
         this.usePointerLock = false;
@@ -265,7 +267,7 @@ class CameraControl implements ICameraControl {
 
     private initPointerLockEvents() {
         if (this.usePointerLock) {
-            document.addEventListener("pointerlockchange", this.pointerLockChangeHandler.bind(this));
+            document.addEventListener("pointerlockchange", this.pointerLockChangeHandler);
         }
     }
 
@@ -361,8 +363,6 @@ class CameraControl implements ICameraControl {
             console.error("Pointer Lock is not supported");
         }
 
-        console.error("Pointer Lock is not supported");
-
         return Promise.resolve();
     }
 
@@ -452,8 +452,6 @@ class CameraControl implements ICameraControl {
 
         this.targetSpherical.phi = THREE.MathUtils.clamp(this.targetSpherical.phi, 0.01, Math.PI * 0.99);
 
-        // Track manual camera movement for auto-return
-        this.lastManualCameraTime = performance.now() / 1000;
     }
 
     public update(deltaTime: number) {
@@ -471,7 +469,7 @@ class CameraControl implements ICameraControl {
         if (!this.character || this.controlType !== CAMERA_TYPES.THIRD_PERSON) return;
 
         const currentTime = performance.now() / 1000;
-        const characterForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.character.quaternion);
+        const characterForward = this.characterForward.set(0, 0, 1).applyQuaternion(this.character.quaternion);
         const currentCharacterAngle = Math.atan2(characterForward.z, characterForward.x);
 
         // Initialize tracking on first update
@@ -585,7 +583,6 @@ class CameraControl implements ICameraControl {
         z = radius * Math.sin(this.spherical.phi) * Math.sin(this.spherical.theta) + this.targetPosition.z;
 
         this.camera.position.set(x, y, z);
-        this.camera.lookAt(this.targetPosition);
 
         // handle fps no weapon until refactor is complete
         if (this.controlType === CAMERA_TYPES.FIRST_PERSON) {
@@ -617,11 +614,11 @@ class CameraControl implements ICameraControl {
         }
 
         // Create a sphere centered at targetPosition with radius = desiredDistance for culling
-        const cameraSphere = new THREE.Sphere(this.targetPosition, desiredDistance);
+        this.cameraSphere.set(this.targetPosition, desiredDistance);
 
         this.raycastCandidates.length = 0;
         for (const child of this.scene.children) {
-            if (!isSprite(child) && this.isObjectInCameraRadius(child, cameraSphere) && this.isValidIntersect(child)) {
+            if (!isSprite(child) && this.isObjectInCameraRadius(child, this.cameraSphere) && this.isValidIntersect(child)) {
                 this.raycastCandidates.push(child);
             }
         }
@@ -641,17 +638,18 @@ class CameraControl implements ICameraControl {
         // We use isValidIntersect in the filter to reduce the number of objects passed to the raycaster, improving performance.
         // However, since raycasting with recursive: true can return nested child objects (not just direct children),
         // we must check isValidIntersect again for each intersected object to ensure it is valid.
-        const intersects = this.raycaster.intersectObjects(this.raycastCandidates, true);
+        this.cameraCollisionIntersections.length = 0;
+        this.raycaster.intersectObjects(this.raycastCandidates, true, this.cameraCollisionIntersections);
 
         let obstacleDistance = this.farLimit;
 
         // We check isValidIntersect again here because intersectObjects with recursive: true
         // may return nested objects that were not filtered out at the top level.
-        intersects.forEach(intersect => {
+        for (const intersect of this.cameraCollisionIntersections) {
             if (this.isValidIntersect(intersect.object)) {
                 obstacleDistance = Math.min(obstacleDistance, intersect.distance);
             }
-        });
+        }
 
         // Clamp distance based on camera angle to prevent clipping through character
         const maxDistanceByAngle =
@@ -683,7 +681,7 @@ class CameraControl implements ICameraControl {
     private isValidIntersect(object: Object3D | null, hasEnabledPhysics = false): boolean {
         if (!this.character) return false;
         if (!object) return hasEnabledPhysics;
-        if (object instanceof ParticleEmitter) return false;
+        if (isParticleEmitterObject(object)) return false;
         return (
             object.uuid !== this.character.uuid &&
             !(object as SkinnedMesh).isSkinnedMesh &&
@@ -712,9 +710,9 @@ class CameraControl implements ICameraControl {
         if (!this.character) return;
 
         // Calculate the line of sight from camera to character head
-        const cameraPosition = this.camera.position.clone();
-        const targetPosition = this.targetPosition.clone();
-        const direction = new THREE.Vector3().subVectors(targetPosition, cameraPosition);
+        const cameraPosition = this.occlusionRayOrigin.copy(this.camera.position);
+        const targetPosition = this.occlusionRayTarget.copy(this.targetPosition);
+        const direction = this.occlusionRayDirection.subVectors(targetPosition, cameraPosition);
         const distance = direction.length();
         direction.normalize();
 
@@ -724,13 +722,14 @@ class CameraControl implements ICameraControl {
         this.raycaster.camera = this.camera;
 
         // Find all objects that intersect the line of sight
-        const intersects = this.raycaster.intersectObjects(this.scene.children, true);
-        const currentlyOccludingObjects = new Set<THREE.Object3D>();
+        this.transparencyIntersections.length = 0;
+        this.raycaster.intersectObjects(this.scene.children, true, this.transparencyIntersections);
+        this.currentOccludingObjects.clear();
 
         // Process intersections
-        for (const intersect of intersects) {
+        for (const intersect of this.transparencyIntersections) {
             if (this.isValidOcclusionObject(intersect.object)) {
-                currentlyOccludingObjects.add(intersect.object);
+                this.currentOccludingObjects.add(intersect.object);
 
                 // Make object transparent if not already
                 if (!this.occludedObjects.has(intersect.object)) {
@@ -742,7 +741,7 @@ class CameraControl implements ICameraControl {
 
         // Restore objects that are no longer occluding
         for (const obj of this.occludedObjects) {
-            if (!currentlyOccludingObjects.has(obj)) {
+            if (!this.currentOccludingObjects.has(obj)) {
                 this.restoreObjectMaterial(obj);
                 this.occludedObjects.delete(obj);
             }
@@ -759,7 +758,7 @@ class CameraControl implements ICameraControl {
         let parent: THREE.Object3D | null = object;
         while (parent) {
             if (parent.uuid === this.character.uuid) return false;
-            if (parent instanceof ParticleEmitter) return false;
+            if (isParticleEmitterObject(parent)) return false;
             parent = parent.parent;
         }
 
@@ -841,7 +840,7 @@ class CameraControl implements ICameraControl {
 
         this.calculateTargetPosition();
 
-        const lookDir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.character.quaternion);
+        const lookDir = this.characterForward.set(0, 0, 1).applyQuaternion(this.character.quaternion);
         const characterAngle = Math.atan2(lookDir.z, lookDir.x);
         this.targetSpherical.theta = characterAngle + Math.PI;
         this.targetSpherical.phi = this.defaultPhi;
@@ -851,10 +850,7 @@ class CameraControl implements ICameraControl {
         this.lastCharacterRotation = characterAngle;
         this.characterRotationStartAngle = characterAngle;
         this.characterRotationStartTime = performance.now() / 1000;
-        this.lastManualCameraTime = performance.now() / 1000;
         this.isInFrontView = false;
-        this.targetThetaOffset = 0;
-        this.currentThetaOffset = 0;
 
         this.updateCameraPosition(0.016);
     }

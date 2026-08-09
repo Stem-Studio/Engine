@@ -30,8 +30,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 1.0,
                     shadowQuality: 'ultra',
-                    shadowMapSize: 4096,
-                    shadowCascades: 4,
                     antialiasing: 'taa',
                     antialiasingQuality: 'high',
                     postProcessing: true,
@@ -52,11 +50,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 60,
                     substeps: 1,
-                    collisionQuality: 'high',
-                    maxActiveBodies: 1000,
-                    sleepThreshold: 0.1,
-                    continuousCollisionDetection: true,
-                    asyncComputation: true,
+                    maxStepsPerFrame: 3,
+                    solverIterations: 8,
                 },
                 behavior: {
                     updateRate: 60,
@@ -83,11 +78,10 @@ export class QualityPresets {
                     maxPlayers: 100,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 14,
                     fixedTimestepHz: 60,
                     maxFixedStepsPerFrame: 3,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 25,
                     renderPressureThreshold: 0.7,
                     deltaTimePressureThreshold: 1.5,
@@ -104,8 +98,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 1.0,
                     shadowQuality: 'high',
-                    shadowMapSize: 2048,
-                    shadowCascades: 3,
                     antialiasing: 'smaa',
                     antialiasingQuality: 'medium',
                     postProcessing: true,
@@ -126,11 +118,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 60,
                     substeps: 1,
-                    collisionQuality: 'medium',
-                    maxActiveBodies: 500,
-                    sleepThreshold: 0.2,
-                    continuousCollisionDetection: true,
-                    asyncComputation: true,
+                    maxStepsPerFrame: 3,
+                    solverIterations: 6,
                 },
                 behavior: {
                     updateRate: 60,
@@ -157,11 +146,10 @@ export class QualityPresets {
                     maxPlayers: 50,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 14,
                     fixedTimestepHz: 60,
                     maxFixedStepsPerFrame: 3,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 25,
                     renderPressureThreshold: 0.6,
                     deltaTimePressureThreshold: 1.35,
@@ -178,8 +166,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 0.9,
                     shadowQuality: 'medium',
-                    shadowMapSize: 1024,
-                    shadowCascades: 2,
                     antialiasing: 'fxaa',
                     antialiasingQuality: 'low',
                     postProcessing: true,
@@ -200,11 +186,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 30,
                     substeps: 1,
-                    collisionQuality: 'low',
-                    maxActiveBodies: 200,
-                    sleepThreshold: 0.5,
-                    continuousCollisionDetection: false,
-                    asyncComputation: false,
+                    maxStepsPerFrame: 3,
+                    solverIterations: 4,
                 },
                 behavior: {
                     updateRate: 30,
@@ -231,11 +214,10 @@ export class QualityPresets {
                     maxPlayers: 25,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 14,
                     fixedTimestepHz: 30,
                     maxFixedStepsPerFrame: 3,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 30,
                     renderPressureThreshold: 0.5,
                     deltaTimePressureThreshold: 1.25,
@@ -252,8 +234,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 0.75,
                     shadowQuality: 'low',
-                    shadowMapSize: 512,
-                    shadowCascades: 1,
                     antialiasing: 'none',
                     antialiasingQuality: 'low',
                     postProcessing: false,
@@ -274,11 +254,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 30,
                     substeps: 1,
-                    collisionQuality: 'low',
-                    maxActiveBodies: 100,
-                    sleepThreshold: 1.0,
-                    continuousCollisionDetection: false,
-                    asyncComputation: false,
+                    maxStepsPerFrame: 2,
+                    solverIterations: 3,
                 },
                 behavior: {
                     updateRate: 20,
@@ -305,11 +282,10 @@ export class QualityPresets {
                     maxPlayers: 10,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 12,
                     fixedTimestepHz: 30,
                     maxFixedStepsPerFrame: 2,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 40,
                     renderPressureThreshold: 0.4,
                     deltaTimePressureThreshold: 1.1,
@@ -326,8 +302,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 0.7,
                     shadowQuality: 'none',
-                    shadowMapSize: 256,
-                    shadowCascades: 0,
                     antialiasing: 'none',
                     antialiasingQuality: 'low',
                     postProcessing: false,
@@ -348,11 +322,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 30,
                     substeps: 1,
-                    collisionQuality: 'low',
-                    maxActiveBodies: 50,
-                    sleepThreshold: 2.0,
-                    continuousCollisionDetection: false,
-                    asyncComputation: false,
+                    maxStepsPerFrame: 2,
+                    solverIterations: 2,
                 },
                 behavior: {
                     updateRate: 15,
@@ -379,11 +350,10 @@ export class QualityPresets {
                     maxPlayers: 5,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 10,
                     fixedTimestepHz: 30,
                     maxFixedStepsPerFrame: 2,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 50,
                     renderPressureThreshold: 0.3,
                     deltaTimePressureThreshold: 1.0,
@@ -400,8 +370,6 @@ export class QualityPresets {
                 rendering: {
                     pixelRatio: 0.7,
                     shadowQuality: 'none',
-                    shadowMapSize: 256,
-                    shadowCascades: 0,
                     antialiasing: 'none',
                     antialiasingQuality: 'low',
                     postProcessing: false,
@@ -422,11 +390,8 @@ export class QualityPresets {
                 physics: {
                     updateRate: 30,
                     substeps: 1,
-                    collisionQuality: 'low',
-                    maxActiveBodies: 10,
-                    sleepThreshold: 2.0,
-                    continuousCollisionDetection: false,
-                    asyncComputation: false,
+                    maxStepsPerFrame: 2,
+                    solverIterations: 2,
                 },
                 behavior: {
                     updateRate: 10,
@@ -453,11 +418,10 @@ export class QualityPresets {
                     maxPlayers: 5,
                 },
                 scheduler: {
-                    enabled: true,
+                    enabled: false,
                     frameBudgetMs: 10,
                     fixedTimestepHz: 30,
                     maxFixedStepsPerFrame: 2,
-                    enableTimeSlicing: true,
                     spatialGridCellSize: 50,
                     renderPressureThreshold: 0.3,
                     deltaTimePressureThreshold: 1.0,
@@ -477,7 +441,6 @@ export class QualityPresets {
                 rendering: {
                     ...mediumPreset.settings.rendering,
                     pixelRatio: 0.75,
-                    shadowMapSize: 512,        // Reduced from 1024 → saves ~75% shadow map memory
                     textureQuality: 'low',     // Reduced from 'medium' → saves ~75% texture memory
                 },
                 behavior: {

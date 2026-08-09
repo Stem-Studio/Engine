@@ -1,6 +1,6 @@
 /// <reference no-default-lib="true"/>
 /// <reference lib="webworker" />
-import {Quaternion, Vector3} from "three";
+import {Vector3} from "three";
 
 import {
     AddBodyEvent,
@@ -16,7 +16,6 @@ import {
     ConcaveHullData,
     ConvexHullData,
     IPhysics,
-    ModelData,
     SphereData,
     TerrainData,
 } from "../common/types";
@@ -28,12 +27,14 @@ interface WorkerEventStat {
     totalMs: number;
 }
 
-class PhysicsWorker {
+export class PhysicsWorker {
+    private static readonly MAX_DEBUG_VERTICES = 100_000;
     private physics: IPhysics | null = null;
     private dispatcher = new Dispatcher();
     private requestAnimationFrameId = -1;
     private isPaused = false;
     private isStarting = false;
+    private debugEnabled = false;
     /**
      * Per-event handler-time accumulator. Sent back to the main thread on
      * PING so `SceneLoadProfiler` can show which event types dominate the
@@ -102,17 +103,67 @@ class PhysicsWorker {
         try {
         switch (data.event) {
             case PHYSICS_EVENTS.SIMULATE: {
-                if (!this.isPaused) {
-                    const {deltaTime} = data;
-                    this.physics.simulate(deltaTime);
+                this.dispatcher.beginBodyUpdateBatch();
+                try {
+                    if (!this.isPaused) {
+                        const {deltaTime} = data;
+                        const substeps = Math.min(16, Math.max(1, Math.floor(data.substeps ?? 1)));
+                        const substepDeltaTime = deltaTime / substeps;
+                        for (let substep = 0; substep < substeps; substep++) {
+                            this.physics.simulate(substepDeltaTime);
+                        }
+                    }
+                } finally {
+                    // Worker messages are delivered in post order, so the proxy always
+                    // consumes this step's transforms before it clears back-pressure.
+                    this.dispatcher.flushBodyUpdateBatch();
+                    if (this.debugEnabled) {
+                        const debug = this.physics.getDebugRenderData?.();
+                        if (debug) {
+                            const drawCount = Math.max(
+                                0,
+                                Math.min(
+                                    PhysicsWorker.MAX_DEBUG_VERTICES,
+                                    Math.floor(debug.drawCount),
+                                    Math.floor(debug.vertices.length / 3),
+                                ),
+                            );
+                            const colorItemSize = drawCount > 0 && debug.colors.length % debug.drawCount === 0
+                                ? Math.max(3, Math.min(4, Math.floor(debug.colors.length / debug.drawCount)))
+                                : 4;
+                            const vertices = debug.vertices.slice(0, drawCount * 3);
+                            const colors = debug.colors.slice(0, drawCount * colorItemSize);
+                            postMessage({
+                                event: PHYSICS_EVENTS.DEBUG.FRAME,
+                                vertices,
+                                colors,
+                                drawCount,
+                            }, [vertices.buffer, colors.buffer]);
+                        }
+                    }
+                    // Always ack so the main-side back-pressure unblocks, including
+                    // paused steps and engines that throw during a simulation.
+                    postMessage({
+                        event: PHYSICS_EVENTS.SIMULATE_DONE,
+                        authoritativeFixedStep: data.authoritativeFixedStep === true,
+                        deltaTime: data.deltaTime,
+                    });
                 }
-                // Always ack so the main-side back-pressure unblocks even when paused.
-                postMessage({event: PHYSICS_EVENTS.SIMULATE_DONE});
                 break;
             }
+
+            case PHYSICS_EVENTS.DEBUG.ENABLE:
+                this.physics.initDebug();
+                this.debugEnabled = true;
+                break;
+
+            case PHYSICS_EVENTS.SET.SOLVER_ITERATIONS:
+                this.physics.setSolverIterations?.(data.solverIterations);
+                break;
             
             case PHYSICS_EVENTS.TERMINATE:
                 this.physics.terminate();
+                this.debugEnabled = false;
                 cancelAnimationFrame(this.requestAnimationFrameId);
                 break;
 
@@ -190,10 +241,6 @@ class PhysicsWorker {
                 this.physics.addCapsuleShape(null, data as CapsuleData);
                 break;
             
-            case PHYSICS_EVENTS.ADD.MODEL:
-                this.physics.addModel(null, data as ModelData);
-                break;
-            
             case PHYSICS_EVENTS.ADD.TERRAIN:
                 this.physics.addTerrain(null, data as TerrainData);
                 break;
@@ -220,6 +267,10 @@ class PhysicsWorker {
                 break;
             }
 
+            case PHYSICS_EVENTS.APPLY.KICK_NEARBY_OBJECTS:
+                this.physics.kickNearbyObjects(data.uuid, Number(data.kickImpulse));
+                break;
+
             case PHYSICS_EVENTS.SET.ORIGIN: {
                 const {uuid, x, y, z} = data;
                 this.physics.setOrigin(uuid, {x, y, z});
@@ -235,6 +286,12 @@ class PhysicsWorker {
             case PHYSICS_EVENTS.SET.SCALE: {
                 const {uuid, x, y, z} = data;
                 this.physics.setScale(uuid, {x, y, z});
+                break;
+            }
+
+            case PHYSICS_EVENTS.SET.SHAPE: {
+                const {uuid, newShapeUuid} = data;
+                this.physics.setRigidBodyShape(uuid, newShapeUuid);
                 break;
             }
 

@@ -15,23 +15,35 @@ export interface ComponentFieldSchema {
 }
 
 type TypedArray = Float32Array | Int32Array | Uint8Array;
+type ComponentDataRecord = Record<string, any>;
 
 export class ComponentStore {
     private fields: Map<string, TypedArray> = new Map();
+    private fieldArrays: TypedArray[] = [];
     private entityToIndex: Map<string, number> = new Map();
     private indexToEntity: string[] = [];
     private objectRefs: (Object3D | null)[] = [];
+    private dataRefs: (ComponentDataRecord | null)[] = [];
     private _count: number = 0;
     private _capacity: number;
     private schema: ComponentFieldSchema[];
 
     constructor(schema: ComponentFieldSchema[], initialCapacity: number = 256) {
         this.schema = schema;
-        this._capacity = initialCapacity;
+        this._capacity = ComponentStore.normalizeCapacity(initialCapacity);
         for (const field of schema) {
-            this.fields.set(field.name, this.allocateArray(field.type, initialCapacity));
+            const array = this.allocateArray(field.type, this._capacity);
+            this.fields.set(field.name, array);
+            this.fieldArrays.push(array);
         }
-        this.objectRefs = new Array(initialCapacity).fill(null);
+        this.objectRefs = new Array(this._capacity).fill(null);
+        this.dataRefs = new Array(this._capacity).fill(null);
+    }
+
+    private static normalizeCapacity(capacity: number): number {
+        return Number.isFinite(capacity) && capacity > 0
+            ? Math.max(1, Math.floor(capacity))
+            : 1;
     }
 
     get count(): number {
@@ -42,7 +54,7 @@ export class ComponentStore {
         return this._capacity;
     }
 
-    addEntity(uuid: string, object: Object3D, data: Record<string, any>): number {
+    addEntity(uuid: string, object: Object3D, data: ComponentDataRecord): number {
         if (this.entityToIndex.has(uuid)) {
             return this.entityToIndex.get(uuid)!;
         }
@@ -55,9 +67,11 @@ export class ComponentStore {
         this.entityToIndex.set(uuid, index);
         this.indexToEntity[index] = uuid;
         this.objectRefs[index] = object;
+        this.dataRefs[index] = data;
 
-        for (const field of this.schema) {
-            this.fields.get(field.name)![index] = data[field.name] ?? field.default ?? 0;
+        for (let i = 0; i < this.schema.length; i++) {
+            const field = this.schema[i]!;
+            this.fieldArrays[i]![index] = data[field.name] ?? field.default ?? 0;
         }
 
         return index;
@@ -76,16 +90,19 @@ export class ComponentStore {
         if (index !== lastIndex) {
             // Swap with last element
             const lastUuid = this.indexToEntity[lastIndex]!;
-            for (const [, arr] of this.fields) {
+            for (const arr of this.fieldArrays) {
                 arr[index] = arr[lastIndex]!;
             }
             this.objectRefs[index] = this.objectRefs[lastIndex] ?? null;
+            this.dataRefs[index] = this.dataRefs[lastIndex] ?? null;
             this.indexToEntity[index] = lastUuid;
             this.entityToIndex.set(lastUuid, index);
         }
 
         this.entityToIndex.delete(uuid);
         this.objectRefs[lastIndex] = null;
+        this.dataRefs[lastIndex] = null;
+        this.indexToEntity.length = lastIndex;
         this._count--;
     }
 
@@ -103,6 +120,24 @@ export class ComponentStore {
 
     getObject(index: number): Object3D | null {
         return index < this._count ? this.objectRefs[index] ?? null : null;
+    }
+
+    getObjectRefs(): readonly (Object3D | null)[] {
+        return this.objectRefs;
+    }
+
+    getData(index: number): ComponentDataRecord | null {
+        return index < this._count ? this.dataRefs[index] ?? null : null;
+    }
+
+    getDataRefs(): readonly (ComponentDataRecord | null)[] {
+        return this.dataRefs;
+    }
+
+    setEntityData(uuid: string, data: ComponentDataRecord): void {
+        const index = this.entityToIndex.get(uuid);
+        if (index === undefined) return;
+        this.dataRefs[index] = data;
     }
 
     /**
@@ -130,19 +165,23 @@ export class ComponentStore {
     }
 
     private grow(): void {
-        const newCap = this._capacity * 2;
-        for (const field of this.schema) {
-            const oldArr = this.fields.get(field.name)!;
+        const newCap = Math.max(1, this._capacity * 2);
+        const nextFieldArrays: TypedArray[] = [];
+        for (let i = 0; i < this.schema.length; i++) {
+            const field = this.schema[i]!;
+            const oldArr = this.fieldArrays[i]!;
             const newArr = this.allocateArray(field.type, newCap);
             newArr.set(oldArr);
             this.fields.set(field.name, newArr);
+            nextFieldArrays.push(newArr);
         }
-        // Extend object refs array
-        const newRefs = new Array(newCap).fill(null);
-        for (let i = 0; i < this._count; i++) {
-            newRefs[i] = this.objectRefs[i];
-        }
-        this.objectRefs = newRefs;
+        this.fieldArrays = nextFieldArrays;
+        // Preserve array identity: hot SoA loops may retain getObjectRefs().
+        const oldCapacity = this.objectRefs.length;
+        this.objectRefs.length = newCap;
+        this.objectRefs.fill(null, oldCapacity);
+        this.dataRefs.length = newCap;
+        this.dataRefs.fill(null, oldCapacity);
         this._capacity = newCap;
     }
 
@@ -156,9 +195,11 @@ export class ComponentStore {
 
     dispose(): void {
         this.fields.clear();
+        this.fieldArrays = [];
         this.entityToIndex.clear();
         this.indexToEntity = [];
         this.objectRefs = [];
+        this.dataRefs = [];
         this._count = 0;
     }
 }

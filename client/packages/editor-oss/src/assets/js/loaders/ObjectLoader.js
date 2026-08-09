@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 import BaseLoader from "./BaseLoader";
+import {traverseObjectDepthFirst} from "../../../utils/SceneTraverser";
 
 /**
  * ObjectLoader - JSON File Loader
@@ -14,76 +15,81 @@ class ObjectLoader extends BaseLoader {
 
     load(url, options) {
         return new Promise(resolve => {
-            this.require(["LegacyJSONLoader"]).then(() => {
-                var loader = new THREE.ObjectLoader();
+            const loader = new THREE.ObjectLoader();
 
-                loader.load(
-                    url,
-                    obj => {
-                        if (obj.traverse) {
-                            obj.traverse(n => {
-                                // Fix: JSON model files may contain Server: true metadata,
-                                // which can cause the same model to be downloaded twice.
-                                // Remove this metadata to prevent duplicate downloads.
-                                if (n.userData && n.userData.Server === true) {
-                                    delete n.userData.Server;
-                                    delete n.userData.Url;
-                                }
-                            });
-                        }
+            loader.load(
+                url,
+                obj => {
+                    const firstSkinnedMesh = this.prepareLoadedObject(obj);
 
-                        if (
-                            obj instanceof THREE.Scene &&
-                            obj.children.length > 0 &&
-                            obj.children[0] instanceof THREE.SkinnedMesh
-                        ) {
-                            resolve(this.loadSkinnedMesh(obj, options));
-                        } else {
-                            resolve(obj);
-                        }
-                    },
-                    undefined,
-                    () => {
-                        resolve(null);
-                    },
-                );
-            });
+                    if (
+                        obj instanceof THREE.Scene &&
+                        obj.children.length > 0 &&
+                        obj.children[0] instanceof THREE.SkinnedMesh
+                    ) {
+                        resolve(this.loadSkinnedMesh(firstSkinnedMesh, options));
+                    } else {
+                        resolve(obj);
+                    }
+                },
+                undefined,
+                () => {
+                    resolve(null);
+                },
+            );
         });
+    }
+
+    prepareLoadedObject(object) {
+        if (!object?.isObject3D) {
+            return null;
+        }
+
+        let firstSkinnedMesh = null;
+        traverseObjectDepthFirst(object, child => {
+            // Fix: JSON model files may contain Server: true metadata,
+            // which can cause the same model to be downloaded twice.
+            // Remove this metadata to prevent duplicate downloads.
+            if (child.userData?.Server === true) {
+                delete child.userData.Server;
+                delete child.userData.Url;
+            }
+
+            if (!firstSkinnedMesh && child instanceof THREE.SkinnedMesh) {
+                firstSkinnedMesh = child;
+            }
+        });
+
+        return firstSkinnedMesh;
     }
 
     /**
      * Handle skinned mesh loading, including animation setup
-     * @param {THREE.Scene} scene - The scene containing the skinned mesh
+     * @param {THREE.SkinnedMesh|null} mesh - The first skinned mesh in the loaded scene
      * @param {Object} options - Loading options including Name property
-     * @returns {THREE.SkinnedMesh} The processed skinned mesh
+     * @returns {THREE.SkinnedMesh|null} The processed skinned mesh
      */
-    loadSkinnedMesh(scene, options) {
-        var mesh = null;
+    loadSkinnedMesh(mesh, options = {}) {
+        if (!mesh) {
+            return null;
+        }
 
-        scene.traverse(child => {
-            if (child instanceof THREE.SkinnedMesh) {
-                mesh = child;
-            }
-        });
-
-        var animations = mesh.geometry.animations;
+        const animations = mesh.geometry?.animations;
 
         if (options.Name && animations && animations.length > 0) {
-            var names = animations.map(n => n.name);
+            const names = animations.map(n => n.name);
 
-            var source1 = `var mesh = this.getObjectByName('${options.Name}');\nvar mixer = new THREE.AnimationMixer(mesh);\n\n`;
+            const source1 = `var mesh = this.getObjectByName('${options.Name}');\nvar mixer = new THREE.AnimationMixer(mesh);\n\n`;
 
-            var source2 = ``;
+            const source2 = names
+                .map(n => `var ${n}Animation = mixer.clipAction('${n}');`)
+                .join("\n");
 
-            names.forEach(n => {
-                source2 += `var ${n}Animation = mixer.clipAction('${n}');\n`;
-            });
+            const source3 = `\n${names[0]}Animation.play();\n\n`;
 
-            var source3 = `\n${names[0]}Animation.play();\n\n`;
+            const source4 = `function update(clock, deltaTime) { \n    mixer.update(deltaTime); \n}`;
 
-            var source4 = `function update(clock, deltaTime) { \n    mixer.update(deltaTime); \n}`;
-
-            var source = source1 + source2 + source3 + source4;
+            const source = source1 + source2 + source3 + source4;
 
             mesh.userData.scripts = [
                 {

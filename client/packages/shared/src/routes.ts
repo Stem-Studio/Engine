@@ -21,6 +21,10 @@ export enum ROUTES {
     REGISTER = "/register",
     CREATE_PROJECT = "/create/project",
     CREATE_PROJECT_WITH_ID = "/create/project/:projectID",
+    CREATE_PROJECT_WITH_MODE = "/create/project/:projectID/:mode",
+    // Backward-compatible Playground route. New links use CREATE_PROJECT_WITH_MODE
+    // and carry the readable scene slug in the `scene` query parameter.
+    CREATE_PROJECT_WITH_SCENE_MODE = "/create/project/:projectID/:sceneName/:mode",
     TERMS_OF_SERVICE = "/legal/terms-of-service",
     PRIVACY_POLICY = "/legal/privacy-policy",
     THIRD_PARTY_ATTRIBUTIONS = "/3rd-party-attributions",

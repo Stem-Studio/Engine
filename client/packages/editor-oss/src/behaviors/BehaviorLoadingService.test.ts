@@ -22,6 +22,7 @@ vi.mock("@stem/network/api/asset", async (importOriginal) => {
 const mockGetBehaviorBundle = vi.fn();
 const mockGetBehaviorsListForScene = vi.fn();
 const mockGetBehaviorsFromAssets = vi.fn();
+const mockGetScriptRevisionData = vi.fn();
 vi.mock("@stem/network/api/behavior", () => ({
     getBehaviorBundle: (...args: unknown[]) => mockGetBehaviorBundle(...args),
     getBehaviorsFromScriptBundle: (bundle: ScriptBundle | null) => {
@@ -72,6 +73,10 @@ vi.mock("@stem/network/api/behavior", () => ({
     },
     getBehaviorsListForScene: (...args: unknown[]) => mockGetBehaviorsListForScene(...args),
     getBehaviorsFromAssets: (...args: unknown[]) => mockGetBehaviorsFromAssets(...args),
+}));
+
+vi.mock("@stem/network/api/script", () => ({
+    getScriptRevisionData: (...args: unknown[]) => mockGetScriptRevisionData(...args),
 }));
 
 vi.mock("../editor/behaviors/LegacyBehaviorMigration", () => ({
@@ -152,6 +157,7 @@ describe("BehaviorLoadingService", () => {
         mockGetBehaviorBundle.mockResolvedValue(null);
         mockGetBehaviorsListForScene.mockResolvedValue([]);
         mockGetBehaviorsFromAssets.mockResolvedValue([]);
+        mockGetScriptRevisionData.mockResolvedValue({code: ""});
     });
 
     describe("prefetchBehaviorBundle", () => {
@@ -350,6 +356,118 @@ describe("BehaviorLoadingService", () => {
             service.clearSceneConfigsCache();
             await service.loadSceneConfigs(scene, {assetSource});
             expect(mockGetBehaviorsListForScene).toHaveBeenCalledTimes(2);
+        });
+
+        it("reuses cached file behavior classes across loadClasses calls", async () => {
+            class TestBehavior {}
+            const loadBehaviorsBatch = vi.fn().mockResolvedValue([TestBehavior]);
+            (service as any).fileLoader = {loadBehaviorsBatch};
+            const configs = [
+                {
+                    id: "test-file-behavior",
+                    main: "TestBehavior.ts",
+                    isScript: false,
+                },
+            ] as any;
+
+            const first = await service.loadClasses(configs, {});
+            const second = await service.loadClasses(configs, {});
+
+            expect(first.get("test-file-behavior")).toBe(TestBehavior);
+            expect(second.get("test-file-behavior")).toBe(TestBehavior);
+            expect(loadBehaviorsBatch).toHaveBeenCalledTimes(1);
+        });
+
+        it("caches resolved script import revision maps", async () => {
+            mockGetScriptRevisionData.mockResolvedValue({
+                code: "function helperValue() { return 1; }",
+            });
+            const context = {
+                logicalIdToAssetId: {helper: "helper-asset"},
+                assetIdToRevisionId: {"helper-asset": "helper-rev"},
+            };
+            const source = '@import "helper" as helper\nthis.value = helper.helperValue();';
+
+            const first = await service.resolveScriptImportRevisionMap(source, context);
+            const second = await service.resolveScriptImportRevisionMap(source, context);
+
+            expect(second).toBe(first);
+            expect(mockGetScriptRevisionData).toHaveBeenCalledTimes(1);
+            expect(first).toMatchObject({
+                "helper-asset:helper-rev": {
+                    assetId: "helper-asset",
+                    revisionId: "helper-rev",
+                    code: "function helperValue() { return 1; }",
+                },
+            });
+        });
+
+        it("reuses resolved script imports across repeated script class loads", async () => {
+            class TestBehavior {}
+            mockGetScriptRevisionData.mockResolvedValue({
+                code: "function helperValue() { return 1; }",
+            });
+            const parse = vi.fn(() => TestBehavior);
+            const configs = [
+                {
+                    id: "script-a",
+                    name: "script-a",
+                    isScript: true,
+                },
+            ];
+            const scripts = {
+                "script-a": '@import "helper" as helper\nthis.value = helper.helperValue();',
+            };
+            const context = {
+                logicalIdToAssetId: {helper: "helper-asset"},
+                assetIdToRevisionId: {"helper-asset": "helper-rev"},
+            };
+
+            await service.loadClasses(configs as any, scripts, {parse} as any, {context});
+            await service.loadClasses(configs as any, scripts, {parse} as any, {context});
+
+            expect(mockGetScriptRevisionData).toHaveBeenCalledTimes(1);
+            expect(parse).toHaveBeenCalledTimes(2);
+            expect(parse).toHaveBeenCalledWith(
+                "script-a",
+                scripts["script-a"],
+                "script-a",
+                expect.objectContaining({
+                    context,
+                    importRevisionMap: expect.objectContaining({
+                        "helper-asset:helper-rev": expect.objectContaining({
+                            assetId: "helper-asset",
+                            revisionId: "helper-rev",
+                        }),
+                    }),
+                }),
+            );
+        });
+
+        it("yields between script class parses when configured for play startup", async () => {
+            class TestBehavior {}
+            const parse = vi.fn(() => TestBehavior);
+            const yieldToFrame = vi.fn(async () => {});
+            const configs = ["script-a", "script-b", "script-c"].map(id => ({
+                id,
+                name: id,
+                isScript: true,
+            }));
+            const scripts = Object.fromEntries(configs.map(config => [config.id, "this.update = function() {};"]));
+
+            const loaded = await service.loadClasses(configs as any, scripts, {parse} as any, {
+                progress: {
+                    batchSize: 1,
+                    frameBudgetMs: 9999,
+                    yieldToFrame,
+                },
+            });
+
+            expect(parse).toHaveBeenCalledTimes(3);
+            expect(yieldToFrame).toHaveBeenCalledTimes(3);
+            expect(loaded.get("script-a")).toBe(TestBehavior);
+            expect(loaded.get("script-b")).toBe(TestBehavior);
+            expect(loaded.get("script-c")).toBe(TestBehavior);
         });
     });
 });

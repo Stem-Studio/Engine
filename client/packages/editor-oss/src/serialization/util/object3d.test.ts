@@ -1,7 +1,17 @@
 import { Object3D } from "three";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 import { applyToObject3d, extractFromObject3d } from "./object3d";
+
+function addDeepChain(root: Object3D, depth = 12_000): Object3D {
+    let cursor = root;
+    for (let i = 0; i < depth; i++) {
+        const child = new Object3D();
+        cursor.add(child);
+        cursor = child;
+    }
+    return cursor;
+}
 
 describe("applyToObject3d", () => {
     let obj: Object3D;
@@ -70,6 +80,22 @@ describe("applyToObject3d", () => {
         applyToObject3d(obj, json as any);
 
         expect(obj.receiveShadow).toBe(true);
+        expect(meshChild.receiveShadow).toBe(true);
+    });
+
+    it("should apply shadow flags in deep hierarchies without Three recursive traversal", () => {
+        const leaf = addDeepChain(obj);
+        const meshChild = new Object3D();
+        (meshChild as any).isMesh = true;
+        leaf.add(meshChild);
+        const traverse = vi.spyOn(obj, "traverse");
+
+        applyToObject3d(obj, {castShadow: true, receiveShadow: true} as any);
+
+        expect(traverse).not.toHaveBeenCalled();
+        expect(obj.castShadow).toBe(true);
+        expect(obj.receiveShadow).toBe(true);
+        expect(meshChild.castShadow).toBe(true);
         expect(meshChild.receiveShadow).toBe(true);
     });
 

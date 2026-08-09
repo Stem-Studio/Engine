@@ -5,8 +5,7 @@
  */
 
 
-import * as THREE from "three";
-
+import {Object3D, Vector3} from "three";
 import BaseControls from "./BaseControls";
 import EditorControls from "./EditorControls";
 import FirstPersonControls from "./FirstPersonControls";
@@ -29,16 +28,18 @@ class ControlsManager extends BaseControls {
 
         this.handleUpdate = this.handleUpdate.bind(this);
         this.handleEnd = this.handleEnd.bind(this);
+        this.boundUpdate = this.update.bind(this);
+        this.boundGPUPick = this.onGPUPick.bind(this);
 
         const mode = global.app.storage.controlMode;
         this.changeMode(mode);
 
         this.lastControl = this.current;
 
-        this.lastCamera = new THREE.Object3D();
+        this.lastCamera = new Object3D();
 
-        global.app.on(`animate.${this.id}`, this.update.bind(this));
-        global.app.on(`gpuPick.${this.id}`, this.onGPUPick.bind(this));
+        global.app.on(`animate.${this.id}`, this.boundUpdate);
+        global.app.on(`gpuPick.${this.id}`, this.boundGPUPick);
     }
 
     // CHECK: do we need to save the camera state in localStorage?
@@ -47,7 +48,7 @@ class ControlsManager extends BaseControls {
     saveCamera() {
         const camera = global.app.editor.camera;
         const controls = this.current?.controls;
-        const target = controls?.target || new THREE.Vector3(0, 0, 0);
+        const target = controls?.target || new Vector3(0, 0, 0);
         const sceneId = global.app.editor.sceneID;
 
         let allData;
@@ -147,31 +148,52 @@ class ControlsManager extends BaseControls {
             console.warn(`ControlsManager: ${modeName} is not defined.`);
             return;
         }
+        if (this.current?.constructor?.name === modeName) {
+            return;
+        }
         this.changeControl(new Controls[modeName](this.camera, this.domElement));
     }
 
     changeControl(control) {
-        console.log(`ControlsManager: is already enabled.`);
+        if (!control || this.current === control) {
+            return;
+        }
+
         if (this.current) {
             let camera = global.app.editor.camera;
+            const previous = this.current;
+            const preservePrevious = control instanceof FirstPersonControls && !(previous instanceof FirstPersonControls);
+            const staleLastControl = previous instanceof FirstPersonControls && this.lastControl !== control
+                ? this.lastControl
+                : null;
 
-            if (!(this.current instanceof FirstPersonControls)) {
-                this.lastControl = this.current;
+            if (preservePrevious) {
+                this.lastControl = previous;
                 this.lastCamera.position.copy(camera.position);
                 this.lastCamera.rotation.copy(camera.rotation);
                 this.lastCamera.scale.copy(camera.scale);
             }
 
-            this.current.disable();
-            this.current.on(`update.${this.id}`, null);
-            this.current.on(`end.${this.id}`, null);
-            this.call("change", this, false, this.current.constructor.name, this.current); // enabled, controlName, control
+            previous.disable();
+            previous.on(`update.${this.id}`, null);
+            previous.on(`end.${this.id}`, null);
+            this.call("change", this, false, previous.constructor.name, previous); // enabled, controlName, control
+
+            if (!preservePrevious) {
+                previous.dispose();
+            }
+            if (staleLastControl) {
+                staleLastControl.dispose();
+            }
         }
 
         this.current = control;
         this.current.enable();
         this.current.on(`update.${this.id}`, this.handleUpdate);
         this.current.on(`end.${this.id}`, this.handleEnd);
+        if (!(this.current instanceof FirstPersonControls)) {
+            this.lastControl = this.current;
+        }
         this.call("change", this, true, this.current.constructor.name, this.current);
     }
 
@@ -190,7 +212,16 @@ class ControlsManager extends BaseControls {
     }
 
     update(clock, deltaTime) {
-        if (this.current) this.current.update(clock, deltaTime);
+        if (!this.current) {
+            return false;
+        }
+
+        const changed = this.current.update(clock, deltaTime) === true;
+        if (changed) {
+            this.handleUpdate();
+        }
+
+        return changed;
     }
 
     setPickPosition(position) {
@@ -204,8 +235,7 @@ class ControlsManager extends BaseControls {
     }
 
     handleUpdate() {
-        // TODO
-        // global.app.call('cameraChanged', this, global.app.editor.camera);
+        global.app.call("cameraChanged", this, global.app.editor.camera);
     }
 
     
@@ -221,7 +251,13 @@ class ControlsManager extends BaseControls {
 
     dispose() {
         global.app.on(`animate.${this.id}`, null);
-        if (this.current) this.current.dispose();
+        global.app.on(`gpuPick.${this.id}`, null);
+        const controls = new Set([this.current, this.lastControl]);
+        controls.forEach(control => {
+            control?.dispose();
+        });
+        this.current = null;
+        this.lastControl = null;
     }
 }
 

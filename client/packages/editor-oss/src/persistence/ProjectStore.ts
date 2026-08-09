@@ -12,15 +12,15 @@ import type {
  * project storage backend.
  *
  * Implementations:
- *   - RemoteProjectStore     ← HTTP-backed, the current cloud behavior.
- *   - IndexedDBProjectStore  ← OSS default. Browser-local persistence.
- *   - FileSystemProjectStore ← OSS opt-in. Chromium-only. Project lives in a
+ *   - RemoteProjectStore     ← HTTP-backed storage for self-hosted backends.
+ *   - IndexedDBProjectStore  ← Default browser-local persistence.
+ *   - FileSystemProjectStore ← Chromium-only. Project lives in a
  *                              user-picked folder as a `.stemscript` file.
  *
  * The interface is intentionally minimal. It does NOT cover community gallery,
  * collaborative sessions, share-link generation, archived/restored flows, or
- * any cloud-only concept — those stay in the cloud-only code paths and are
- * hidden in OSS mode via `IS_OSS`.
+ * hosted-gallery concepts. Those features are outside this repository's
+ * open-source storage contract.
  */
 export interface ProjectStore {
     readonly kind: ProjectStoreKind;
@@ -30,6 +30,13 @@ export interface ProjectStore {
     load(id: string): Promise<ProjectBody>;
 
     save(body: ProjectBody): Promise<ProjectMeta>;
+
+    /**
+     * Atomically publish a scene snapshot and its complete binary-asset set.
+     * Local implementations must keep the previously loadable generation
+     * intact until the new generation is durable.
+     */
+    commitProject?(body: ProjectBody, assets: StoredAsset[]): Promise<ProjectMeta>;
 
     delete(id: string): Promise<void>;
 
@@ -49,14 +56,14 @@ export interface ProjectStore {
     /**
      * Persist the binary assets (models, images, audio) a project depends
      * on. Called after `save()`; replaces the project's stored asset set.
-     * In OSS these payloads have no asset service to live in, so the
+     * These payloads have no hosted asset service to live in, so the
      * project store is their only durable home.
      */
     saveAssets(projectId: string, assets: StoredAsset[]): Promise<void>;
 
     /**
      * Load every binary asset previously persisted for a project. Used on
-     * scene load to re-seed the in-memory OSS asset registry so model /
+     * scene load to re-seed the in-memory local asset registry so model /
      * image / audio references resolve.
      */
     loadAssets(projectId: string): Promise<StoredAsset[]>;

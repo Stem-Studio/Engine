@@ -43,6 +43,7 @@ export const getPhysics = (physics: any, object?: Object3D): PhysicsConfig => {
         spinningFriction,
         contactStiffness,
         contactDamping,
+        ccd,
         ctype,
         position,
         scale,
@@ -83,6 +84,7 @@ export const getPhysics = (physics: any, object?: Object3D): PhysicsConfig => {
         spinningFriction: spinningFriction || 0,
         contactStiffness: contactStiffness || 0,
         contactDamping: contactDamping || 0,
+        ccd: ccd === true,
         ctype: newCType,
         position: {
             x: position?.x || 0,

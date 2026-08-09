@@ -34,7 +34,7 @@
 import {reversePainterSortStable} from "@ni2khanna/uikit";
 import {forwardHtmlEvents} from "@pmndrs/pointer-events";
 import {Vector2} from "three";
-import type {Camera, OrthographicCamera, PerspectiveCamera, Scene} from "three";
+import type {Camera, Object3D, OrthographicCamera, PerspectiveCamera, Scene} from "three";
 
 // UIKit Component interface (minimal typing for what we need)
 interface UIKitComponent {
@@ -43,20 +43,31 @@ interface UIKitComponent {
     removeFromParent?: () => void;
 }
 
+interface UIKitClickEvent {
+    target?: Object3D;
+    nativeEvent?: PointerEvent;
+}
+
 interface GameManagerLike {
     scene?: Scene;
     camera?: Camera;
     uiCamera?: Camera;
+    ensureUICamera?: () => Camera;
     renderer?: {
         domElement?: HTMLCanvasElement;
         setTransparentSort?: (method: (a: unknown, b: unknown) => number) => void;
     };
 }
 
-function asUIKitCamera(camera: Camera | undefined): PerspectiveCamera | OrthographicCamera | undefined {
+function asUIKitCamera(camera: Camera | unknown): PerspectiveCamera | OrthographicCamera | undefined {
     if (!camera) return undefined;
-    const c = camera as PerspectiveCamera | OrthographicCamera;
-    return "isPerspectiveCamera" in c || "isOrthographicCamera" in c ? c : undefined;
+    const c = camera as {
+        isPerspectiveCamera?: boolean;
+        isOrthographicCamera?: boolean;
+    };
+    return c.isPerspectiveCamera === true || c.isOrthographicCamera === true
+        ? (camera as PerspectiveCamera | OrthographicCamera)
+        : undefined;
 }
 
 interface PointerEventsInstance {
@@ -69,7 +80,47 @@ let pointerEventsInstance: PointerEventsInstance | null = null;
 let gameRef: GameManagerLike | null = null;
 let initRefCount = 0;
 const activeRoots = new Set<UIKitComponent>();
+const legacyClickHandlers = new WeakMap<UIKitComponent, (event: UIKitClickEvent) => void>();
 let hasConfiguredTransparentSort = false;
+
+function registerLegacyUserDataClickBridge(component: UIKitComponent): void {
+    const eventful = component as unknown as {
+        addEventListener?: (type: string, listener: (event: UIKitClickEvent) => void) => void;
+    };
+    if (legacyClickHandlers.has(component) || !eventful.addEventListener) {
+        return;
+    }
+
+    const handler = (event: UIKitClickEvent) => {
+        const root = component as unknown as Object3D;
+        let current = event.target;
+        while (current) {
+            const onClick = current.userData?.onClick;
+            if (typeof onClick === "function") {
+                onClick(event.nativeEvent ?? event);
+                return;
+            }
+            if (current === root) {
+                return;
+            }
+            current = current.parent ?? undefined;
+        }
+    };
+    legacyClickHandlers.set(component, handler);
+    eventful.addEventListener("click", handler);
+}
+
+function unregisterLegacyUserDataClickBridge(component: UIKitComponent): void {
+    const handler = legacyClickHandlers.get(component);
+    if (!handler) {
+        return;
+    }
+    const eventful = component as unknown as {
+        removeEventListener?: (type: string, listener: (event: UIKitClickEvent) => void) => void;
+    };
+    eventful.removeEventListener?.("click", handler);
+    legacyClickHandlers.delete(component);
+}
 
 // Diagnostic logging for UIKit layout/sizing issues. OFF by default — this is
 // developer instrumentation that emits per-frame `[UIKitDiag]` snapshots for the
@@ -190,6 +241,53 @@ function logRootDiag(label: string, component: UIKitComponent): void {
     });
 }
 
+function isFullscreenLike(component: UIKitComponent): component is UIKitComponent & FullscreenLike {
+    const fs = component as unknown as FullscreenLike;
+    return (
+        typeof fs.renderer?.getSize === "function" &&
+        !!fs.sizeX &&
+        !!fs.sizeY &&
+        !!fs.pixelSize
+    );
+}
+
+function isFullscreenCameraError(error: unknown): boolean {
+    const message =
+        error && typeof error === "object" && "message" in error
+            ? String((error as {message?: unknown}).message)
+            : String(error);
+    return message.includes("fullscreen can only be added to a camera");
+}
+
+function ensureFullscreenRootCamera(component: UIKitComponent): boolean {
+    if (!isFullscreenLike(component)) {
+        return true;
+    }
+
+    if (asUIKitCamera(component.parent)) {
+        return true;
+    }
+
+    let camera: PerspectiveCamera | OrthographicCamera | undefined;
+    try {
+        camera = asUIKitCamera(gameRef?.ensureUICamera?.());
+    } catch {
+        camera = undefined;
+    }
+
+    camera =
+        camera ??
+        asUIKitCamera(gameRef?.uiCamera) ??
+        asUIKitCamera(gameRef?.camera) ??
+        asUIKitCamera((globalThis as {app?: {camera?: Camera}}).app?.camera);
+    if (!camera) {
+        return false;
+    }
+
+    camera.add(component as unknown as Object3D);
+    return true;
+}
+
 /**
  * Ensures UIKit transparent objects use stable painter sorting.
  *
@@ -222,11 +320,7 @@ export function initialize(game: GameManagerLike): void {
     initRefCount++;
 
     ensureTransparentSort(game);
-
-    // Only set gameRef on first init, or if it was cleared
-    if (!gameRef) {
-        gameRef = game;
-    }
+    gameRef = game;
 }
 
 /**
@@ -254,6 +348,7 @@ export function deinitialize(): void {
  */
 export function registerRoot(component: UIKitComponent): void {
     activeRoots.add(component);
+    registerLegacyUserDataClickBridge(component);
 
     // Initialize pointer events if this is the first root
     if (activeRoots.size === 1 && !pointerEventsInstance && gameRef) {
@@ -275,7 +370,9 @@ export function registerRoot(component: UIKitComponent): void {
     logRootDiag("registerRoot.before-warmup", component);
     diagFramesRemaining.set(component, DIAG_MAX_FRAMES);
     try {
-        component.update(0);
+        if (ensureFullscreenRootCamera(component)) {
+            component.update(0);
+        }
         logRootDiag("registerRoot.after-warmup", component);
     } catch (err) {
         // Fullscreen.update throws if the component isn't parented to a
@@ -300,6 +397,7 @@ export function unregisterRoot(component: UIKitComponent): void {
 
     activeRoots.delete(component);
     diagFramesRemaining.delete(component);
+    unregisterLegacyUserDataClickBridge(component);
 
     // Clean up pointer events if no roots remain
     if (activeRoots.size === 0) {
@@ -332,7 +430,18 @@ export function update(deltaTime: number = 0): void {
         if (wantLog) {
             logRootDiag(`update.before-frame${DIAG_MAX_FRAMES - framesLeft + 1}`, root);
         }
-        root.update(deltaTime);
+        if (!ensureFullscreenRootCamera(root)) {
+            continue;
+        }
+        try {
+            root.update(deltaTime);
+        } catch (error) {
+            if (isFullscreenCameraError(error)) {
+                ensureFullscreenRootCamera(root);
+                continue;
+            }
+            throw error;
+        }
         if (wantLog) {
             logRootDiag(`update.after-frame${DIAG_MAX_FRAMES - framesLeft + 1}`, root);
             const next = framesLeft - 1;
@@ -349,6 +458,7 @@ export function update(deltaTime: number = 0): void {
  */
 export function forceDispose(): void {
     for (const root of activeRoots) {
+        unregisterLegacyUserDataClickBridge(root);
         try {
             root.removeFromParent?.();
         } catch (error) {
@@ -417,7 +527,8 @@ function initializePointerEvents(): void {
     }
 
     const scene = gameRef.scene;
-    const camera = asUIKitCamera(gameRef.uiCamera) ?? asUIKitCamera(gameRef.camera);
+    const camera: PerspectiveCamera | OrthographicCamera | undefined =
+        asUIKitCamera(gameRef.uiCamera) ?? asUIKitCamera(gameRef.camera);
     const canvas = gameRef.renderer?.domElement ?? window.document.querySelector<HTMLCanvasElement>("canvas");
 
     if (!scene || !camera || !canvas) {

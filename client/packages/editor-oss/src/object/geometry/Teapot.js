@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TeapotGeometry } from "three/examples/jsm/geometries/TeapotGeometry.js";
+import { TeapotGeometry } from "three/addons/geometries/TeapotGeometry.js";
 
 /**
  * Teapot Mesh Object

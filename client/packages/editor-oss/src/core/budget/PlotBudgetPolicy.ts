@@ -1,15 +1,24 @@
-import * as THREE from "three";
-
+import {Box3, BufferGeometry, Camera, Frustum, LOD, Material, MathUtils, Matrix4, Mesh, Object3D, Scene, Sphere, Texture, Vector3} from "three";
 import {DetectDevice} from "@stem/editor-oss/utils/DetectDevice";
+import {traverseObjectDepthFirst} from "@stem/editor-oss/utils/SceneTraverser";
+import {
+    createProgressiveYieldController,
+    type ProgressiveYieldOptions,
+} from "@stem/editor-oss/utils/progressiveYield";
 import {getRuntimeBudgetCoordinatorFromEngine, type RuntimeBudgetPressure} from "./RuntimeBudgetCoordinator";
 import type {IQualitySettings} from "../quality/interfaces/IQualityManager";
+import {
+    RuntimeLodController,
+    type RuntimeLodDiagnostics,
+    type RuntimeLodGroupHandle,
+} from "../lod";
 
 export type PlotBudgetState = "near" | "mid" | "far" | "culled";
 
 export interface PlotBudgetStats {
     triangles: number;
     drawCalls: number;
-    bounds: THREE.Vector3;
+    bounds: Vector3;
     textureBytes: number;
     textureCount: number;
 }
@@ -42,11 +51,15 @@ export interface PlotBudgetPolicyOptions {
     cullDistance?: number;
     offscreenCullDistance?: number;
     lodDistanceMultiplier?: number;
+    lodTransitionBudget?: number;
+    lodHysteresisRatio?: number;
     batchSize?: number;
     heavyTriangleLimit?: number;
     heavyDrawCallLimit?: number;
     heavyTextureBytesLimit?: number;
 }
+
+export type PlotBudgetRebuildProgressOptions = ProgressiveYieldOptions;
 
 type TextureSlot =
     | "alphaMap"
@@ -73,13 +86,39 @@ type TextureSlot =
     | "transmissionMap";
 
 interface ManagedLod {
-    lod: THREE.LOD;
+    lod: LOD;
     baseDistances: number[];
     originalAutoUpdate?: boolean;
+    originalLevelVisibility: boolean[];
+    runtimeGroupId: string;
+    runtimeHandle?: RuntimeLodGroupHandle;
+    runtimeRegistered: boolean;
+    scaledThresholds: number[];
 }
 
 interface ManagedPlot {
-    root: THREE.Object3D;
+    root: Object3D;
+    lods: ManagedLod[];
+}
+
+interface PlotBudgetProgressiveProfile {
+    hasRenderable: boolean;
+    hasRuntimeMetadata: boolean;
+    stats: PlotBudgetStats;
+    lods: ManagedLod[];
+}
+
+interface PlotBudgetStatsCollection {
+    geometries: Set<string>;
+    textures: Set<string>;
+    bounds: Vector3;
+    box: Box3;
+    geometryBox: Box3;
+    stats: PlotBudgetStats;
+}
+
+interface PlotBudgetRegistrationProfile {
+    stats: PlotBudgetStats;
     lods: ManagedLod[];
 }
 
@@ -111,15 +150,20 @@ const TEXTURE_SLOTS: TextureSlot[] = [
 const BYTES_PER_RGBA_PIXEL = 4;
 const MIP_CHAIN_MULTIPLIER = 4 / 3;
 const DEFAULT_BOUNDS_RADIUS = 2;
+const PLOT_BUDGET_REBUILD_BATCH_SIZE = 32;
+const PLOT_BUDGET_REBUILD_FRAME_BUDGET_MS = 4;
+const LOD_REGISTRATION_BOUNDS = new Box3();
 
 export class PlotBudgetPolicy {
     private options: Required<PlotBudgetPolicyOptions>;
     private configuredOverrides: PlotBudgetPolicyOptions;
-    private readonly frustum = new THREE.Frustum();
-    private readonly frustumMatrix = new THREE.Matrix4();
-    private readonly objectWorldPosition = new THREE.Vector3();
-    private readonly cameraWorldPosition = new THREE.Vector3();
-    private readonly visibilitySphere = new THREE.Sphere();
+    private readonly frustum = new Frustum();
+    private readonly frustumMatrix = new Matrix4();
+    private readonly objectWorldPosition = new Vector3();
+    private readonly cameraWorldPosition = new Vector3();
+    private readonly visibilitySphere = new Sphere();
+    private preparedCamera: Camera | null = null;
+    private preparedCameraLocked = false;
 
     constructor(options: PlotBudgetPolicyOptions = {}) {
         this.configuredOverrides = {...options};
@@ -147,6 +191,8 @@ export class PlotBudgetPolicy {
             cullDistance: options.cullDistance ?? (isMobile ? 220 : 700),
             offscreenCullDistance: options.offscreenCullDistance ?? (isMobile ? 90 : 220),
             lodDistanceMultiplier: options.lodDistanceMultiplier ?? (isMobile ? 0.75 : 1),
+            lodTransitionBudget: options.lodTransitionBudget ?? (isMobile ? 4 : 12),
+            lodHysteresisRatio: options.lodHysteresisRatio ?? 0.12,
             batchSize: options.batchSize ?? (isMobile ? 24 : 64),
             heavyTriangleLimit: options.heavyTriangleLimit ?? (isMobile ? 30000 : 120000),
             heavyDrawCallLimit: options.heavyDrawCallLimit ?? (isMobile ? 24 : 80),
@@ -161,10 +207,33 @@ export class PlotBudgetPolicy {
         return this.options.batchSize;
     }
 
-    decide(object: THREE.Object3D, camera: THREE.Camera): PlotBudgetDecision {
+    getLodDistanceScale(): number {
+        return this.options.lodDistanceMultiplier * this.options.runtimeLodDistanceScale;
+    }
+
+    getLodTransitionBudget(): number {
+        return this.options.lodTransitionBudget;
+    }
+
+    getLodHysteresisRatio(): number {
+        return this.options.lodHysteresisRatio;
+    }
+
+    beginFrame(camera: Camera): void {
+        this.prepareCamera(camera);
+        this.preparedCameraLocked = true;
+    }
+
+    endFrame(): void {
+        this.preparedCamera = null;
+        this.preparedCameraLocked = false;
+    }
+
+    decide(object: Object3D, camera: Camera): PlotBudgetDecision {
+        this.ensureCameraPrepared(camera);
         const metadata = ensurePlotBudgetMetadata(object);
-        const distanceSq = this.getDistanceSq(object, camera);
-        const visible = this.isVisible(object, camera);
+        const distanceSq = this.getDistanceSq(object);
+        const visible = this.isVisibleAtPreparedPosition(object);
         const thresholds = this.getCostAdjustedThresholds(object);
         const distance = Math.sqrt(distanceSq);
         let state: PlotBudgetState = "near";
@@ -194,7 +263,7 @@ export class PlotBudgetPolicy {
         return decision;
     }
 
-    applyVisibilityState(object: THREE.Object3D, decision: PlotBudgetDecision): void {
+    applyVisibilityState(object: Object3D, decision: PlotBudgetDecision): void {
         const metadata = ensurePlotBudgetMetadata(object);
 
         if (!decision.shouldRender) {
@@ -213,42 +282,43 @@ export class PlotBudgetPolicy {
         }
     }
 
-    applyLods(lods: ManagedLod[], camera: THREE.Camera): void {
+    applyLods(lods: ManagedLod[], camera: Camera): void {
         for (const managed of lods) {
-            const lod = managed.lod;
-            for (let i = 0; i < lod.levels.length; i++) {
-                const level = lod.levels[i];
-                if (!level) continue;
-                level.distance =
-                    managed.baseDistances[i]! *
-                    this.options.lodDistanceMultiplier *
-                    this.options.runtimeLodDistanceScale;
+            applyScaledLodDistances(managed, this.getLodDistanceScale());
+            if (!managed.runtimeRegistered) {
+                managed.lod.update(camera);
             }
-            lod.update(camera);
         }
     }
 
-    private getDistanceSq(object: THREE.Object3D, camera: THREE.Camera): number {
+    private getDistanceSq(object: Object3D): number {
         object.getWorldPosition(this.objectWorldPosition);
-        camera.getWorldPosition(this.cameraWorldPosition);
         return this.objectWorldPosition.distanceToSquared(this.cameraWorldPosition);
     }
 
-    private isVisible(object: THREE.Object3D, camera: THREE.Camera): boolean {
+    private isVisibleAtPreparedPosition(object: Object3D): boolean {
         const metadata = ensurePlotBudgetMetadata(object);
         if (!object.visible && !metadata.visibilityManaged) return false;
 
-        camera.updateMatrixWorld();
-        this.frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-        this.frustum.setFromProjectionMatrix(this.frustumMatrix);
-
-        object.getWorldPosition(this.objectWorldPosition);
         this.visibilitySphere.center.copy(this.objectWorldPosition);
         this.visibilitySphere.radius = getPlotBoundsRadius(object);
         return this.frustum.intersectsSphere(this.visibilitySphere);
     }
 
-    private getCostAdjustedThresholds(object: THREE.Object3D) {
+    private ensureCameraPrepared(camera: Camera): void {
+        if (this.preparedCameraLocked && this.preparedCamera === camera) return;
+        this.prepareCamera(camera);
+    }
+
+    private prepareCamera(camera: Camera): void {
+        camera.updateMatrixWorld();
+        camera.getWorldPosition(this.cameraWorldPosition);
+        this.frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        this.frustum.setFromProjectionMatrix(this.frustumMatrix);
+        this.preparedCamera = camera;
+    }
+
+    private getCostAdjustedThresholds(object: Object3D) {
         const stats = getPlotBudgetMetadata(object)?.stats;
         const isHeavy =
             !!stats &&
@@ -256,7 +326,7 @@ export class PlotBudgetPolicy {
                 stats.drawCalls > this.options.heavyDrawCallLimit ||
                 stats.textureBytes > this.options.heavyTextureBytesLimit);
         const multiplier = isHeavy ? 0.85 : 1;
-        const runtimeScale = THREE.MathUtils.clamp(this.options.runtimeDistanceScale, 0.3, 1.25);
+        const runtimeScale = MathUtils.clamp(this.options.runtimeDistanceScale, 0.3, 1.25);
         const midDistance = Math.max(this.options.nearDistance, this.options.midDistance * multiplier * runtimeScale);
         const farDistance = Math.max(midDistance + 1, this.options.farDistance * multiplier * runtimeScale);
         const cullDistance = Math.max(farDistance + 1, this.options.cullDistance * (isHeavy ? 0.9 : 1) * runtimeScale);
@@ -276,12 +346,17 @@ export class PlotBudgetPolicy {
 
 export class PlotBudgetManager {
     private readonly policy: PlotBudgetPolicy;
+    private readonly lodController: RuntimeLodController;
     private readonly plots: ManagedPlot[] = [];
     private readonly plotIndexes = new Map<string, number>();
     private cursor = 0;
 
-    constructor(scene?: THREE.Scene, options: PlotBudgetPolicyOptions = {}) {
+    constructor(scene?: Scene, options: PlotBudgetPolicyOptions = {}) {
         this.policy = new PlotBudgetPolicy(options);
+        this.lodController = new RuntimeLodController({
+            maxTransitionsPerFrame: this.policy.getLodTransitionBudget(),
+            hysteresisRatio: this.policy.getLodHysteresisRatio(),
+        });
         if (scene) {
             this.rebuild(scene);
         }
@@ -289,48 +364,111 @@ export class PlotBudgetManager {
 
     configure(options: PlotBudgetPolicyOptions = {}): void {
         this.policy.configure(options);
+        this.configureLodController();
     }
 
     configureFromQuality(settings: IQualitySettings | null | undefined, overrides: PlotBudgetPolicyOptions = {}): void {
         this.policy.configureFromQuality(settings, overrides);
+        this.configureLodController();
     }
 
-    rebuild(scene: THREE.Scene): void {
+    rebuild(scene: Scene): void {
         this.clear();
         for (const child of scene.children) {
             this.registerObjectTree(child);
         }
     }
 
-    registerObjectTree(root: THREE.Object3D): void {
-        this.walkAndRegister(root, false);
+    async rebuildProgressive(scene: Scene, options: PlotBudgetRebuildProgressOptions = {}): Promise<void> {
+        this.clear();
+        const maybeYield = createProgressiveYieldController(options, {
+            batchSize: PLOT_BUDGET_REBUILD_BATCH_SIZE,
+            frameBudgetMs: PLOT_BUDGET_REBUILD_FRAME_BUDGET_MS,
+        });
+        const stack: Object3D[] = [];
+
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child) stack.push(child);
+        }
+
+        while (stack.length > 0) {
+            const object = stack.pop();
+            if (!object || isPlotBudgetExplicitlyDisabled(object)) {
+                await maybeYield();
+                continue;
+            }
+
+            if (shouldInspectPlotBudgetCandidate(object)) {
+                const registered = await this.registerProgressive(object, options);
+                if (registered) {
+                    await maybeYield(true);
+                    continue;
+                }
+            }
+
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                const child = object.children[i];
+                if (child) stack.push(child);
+            }
+
+            await maybeYield();
+        }
     }
 
-    unregisterObjectTree(root: THREE.Object3D): void {
-        root.traverse(object => {
+    registerObjectTree(root: Object3D): void {
+        this.walkAndRegister(root);
+    }
+
+    /**
+     * Register a single node during a shared post-initialization walk.
+     * Returning false preserves plot candidate short-circuiting: once a root
+     * owns a plot, descendants are part of that root's managed profile and do
+     * not need to be considered as independent plots.
+     */
+    registerObjectNode(object: Object3D): boolean {
+        if (isPlotBudgetExplicitlyDisabled(object)) return false;
+        if (isPlotBudgetCandidate(object)) {
+            this.register(object);
+            return false;
+        }
+        return true;
+    }
+
+    unregisterObjectTree(root: Object3D): void {
+        traverseObjectDepthFirst(root, object => {
             this.unregister(object);
         });
     }
 
-    update(camera: THREE.Camera | null | undefined): void {
+    update(camera: Camera | null | undefined): void {
         if (!camera || this.plots.length === 0) return;
 
         const count = Math.min(this.policy.getBatchSize(), this.plots.length);
-        for (let i = 0; i < count; i++) {
-            const index = (this.cursor + i) % this.plots.length;
-            const plot = this.plots[index];
-            if (!plot) continue;
-            if (!plot.root.parent) {
-                this.unregister(plot.root);
-                continue;
-            }
+        this.policy.beginFrame(camera);
+        try {
+            for (let i = 0; i < count; i++) {
+                const index = (this.cursor + i) % this.plots.length;
+                const plot = this.plots[index];
+                if (!plot) continue;
+                if (!plot.root.parent) {
+                    this.unregister(plot.root);
+                    continue;
+                }
 
-            const decision = this.policy.decide(plot.root, camera);
-            this.policy.applyVisibilityState(plot.root, decision);
-            if (decision.shouldRender) {
-                this.policy.applyLods(plot.lods, camera);
+                const decision = this.policy.decide(plot.root, camera);
+                this.policy.applyVisibilityState(plot.root, decision);
+                if (decision.shouldRender) {
+                    this.updatePlotLods(plot, camera, true);
+                } else {
+                    this.updatePlotLods(plot, camera, false);
+                }
             }
+        } finally {
+            this.policy.endFrame();
         }
+
+        this.lodController.update(camera, {maxTransitions: this.policy.getLodTransitionBudget()});
 
         if (this.plots.length > 0) {
             this.cursor = (this.cursor + count) % this.plots.length;
@@ -343,12 +481,17 @@ export class PlotBudgetManager {
         return this.plots.length;
     }
 
+    getLodDiagnostics(): RuntimeLodDiagnostics {
+        return this.lodController.getDiagnostics();
+    }
+
     clear(): void {
         for (const plot of this.plots) {
             for (const managed of plot.lods) {
-                restoreLodAutoUpdate(managed);
+                restoreManagedLod(managed);
             }
         }
+        this.lodController.dispose();
         this.plots.length = 0;
         this.plotIndexes.clear();
         this.cursor = 0;
@@ -358,51 +501,126 @@ export class PlotBudgetManager {
         this.clear();
     }
 
-    private walkAndRegister(object: THREE.Object3D, _insideManagedRoot: boolean): void {
-        if (isPlotBudgetExplicitlyDisabled(object)) return;
+    private walkAndRegister(root: Object3D): void {
+        const stack: Object3D[] = [root];
 
-        if (!_insideManagedRoot && isPlotBudgetCandidate(object)) {
-            this.register(object);
-            return;
-        }
+        while (stack.length > 0) {
+            const object = stack.pop();
+            if (!object || !this.registerObjectNode(object)) continue;
 
-        for (const child of object.children) {
-            this.walkAndRegister(child, _insideManagedRoot);
+            for (let i = object.children.length - 1; i >= 0; i--) {
+                const child = object.children[i];
+                if (child) stack.push(child);
+            }
         }
     }
 
-    private register(root: THREE.Object3D): void {
+    private register(root: Object3D): void {
         if (this.plotIndexes.has(root.uuid)) return;
-        markObjectForPlotBudget(root, {enabled: true});
+        const profile = collectPlotBudgetRegistrationProfile(root);
+        markObjectForPlotBudget(root, {enabled: true, stats: profile.stats});
 
+        this.addManagedPlot(root, profile.lods);
+    }
+
+    private async registerProgressive(root: Object3D, options: PlotBudgetRebuildProgressOptions): Promise<boolean> {
+        if (this.plotIndexes.has(root.uuid)) return true;
+
+        const metadata = getPlotBudgetMetadata(root);
+        if (metadata?.enabled === false) return false;
+
+        const explicit = metadata?.enabled === true;
+        if (!explicit && !root.userData?.isStemObject) return false;
+
+        const profile = await collectPlotBudgetProfileProgressive(root, options, {
+            abortOnRuntimeMetadata: !explicit,
+        });
+        if (!explicit && (!profile.hasRenderable || profile.hasRuntimeMetadata)) {
+            return false;
+        }
+
+        markObjectForPlotBudget(root, {enabled: true, stats: profile.stats});
+        this.addManagedPlot(root, profile.lods);
+        return true;
+    }
+
+    private addManagedPlot(root: Object3D, lods: ManagedLod[]): void {
         const managed: ManagedPlot = {
             root,
-            lods: collectManagedLods(root),
+            lods,
         };
         for (const lod of managed.lods) {
-            (lod.lod as THREE.LOD & {autoUpdate?: boolean}).autoUpdate = false;
+            this.registerRuntimeLod(lod);
         }
 
         this.plotIndexes.set(root.uuid, this.plots.length);
         this.plots.push(managed);
     }
 
-    private unregister(root: THREE.Object3D): void {
+    private unregister(root: Object3D): void {
         const index = this.plotIndexes.get(root.uuid);
         if (index === undefined) return;
 
-        const [removed] = this.plots.splice(index, 1);
-        if (removed) {
-            for (const managed of removed.lods) {
-                restoreLodAutoUpdate(managed);
-            }
+        const removed = this.plots[index];
+        if (!removed) return;
+
+        const lastIndex = this.plots.length - 1;
+        const last = this.plots[lastIndex];
+        if (index !== lastIndex && last) {
+            this.plots[index] = last;
+            this.plotIndexes.set(last.root.uuid, index);
         }
 
-        this.plotIndexes.clear();
-        for (let i = 0; i < this.plots.length; i++) {
-            this.plotIndexes.set(this.plots[i]!.root.uuid, i);
+        this.plots.pop();
+        this.plotIndexes.delete(root.uuid);
+
+        for (const managed of removed.lods) {
+            restoreManagedLod(managed);
         }
+
         this.cursor = this.plots.length > 0 ? this.cursor % this.plots.length : 0;
+    }
+
+    private configureLodController(): void {
+        this.lodController.setMaxTransitionsPerFrame(this.policy.getLodTransitionBudget());
+        this.lodController.setHysteresisRatio(this.policy.getLodHysteresisRatio());
+    }
+
+    private registerRuntimeLod(managed: ManagedLod): void {
+        if (!hasUsableLodBounds(managed.lod)) {
+            restoreManagedLod(managed);
+            return;
+        }
+
+        applyScaledLodDistances(managed, this.policy.getLodDistanceScale());
+        try {
+            managed.runtimeHandle = this.lodController.registerGroup({
+                id: managed.runtimeGroupId,
+                root: managed.lod,
+                levels: managed.lod.levels.map((level, index) => ({
+                    id: `${managed.runtimeGroupId}:${index}`,
+                    object: level.object,
+                    maxDistance: managed.baseDistances[index + 1],
+                })),
+            });
+            managed.runtimeRegistered = true;
+            (managed.lod as LOD & {autoUpdate?: boolean}).autoUpdate = false;
+        } catch {
+            managed.runtimeRegistered = false;
+            restoreManagedLod(managed);
+        }
+    }
+
+    private updatePlotLods(plot: ManagedPlot, camera: Camera, enabled: boolean): void {
+        for (const managed of plot.lods) {
+            applyScaledLodDistances(managed, this.policy.getLodDistanceScale());
+            if (managed.runtimeRegistered) {
+                this.lodController.setGroupEnabled(managed.runtimeGroupId, enabled);
+                this.lodController.setGroupThresholds(managed.runtimeGroupId, getScaledLodThresholds(managed));
+            } else if (enabled) {
+                managed.lod.update(camera);
+            }
+        }
     }
 }
 
@@ -428,7 +646,7 @@ export function getPlotBudgetOptionsFromQuality(
     const scene = settings.scene;
     const lodDistances = scene?.lodDistances ?? [];
     const pressure = getQualityPressure(settings, isMobile);
-    const distanceScale = THREE.MathUtils.clamp(1 - pressure * 0.45, 0.45, 1.05);
+    const distanceScale = MathUtils.clamp(1 - pressure * 0.45, 0.45, 1.05);
     const viewDistance = scene?.viewDistance && scene.viewDistance > 0 ? scene.viewDistance : base.cullDistance;
 
     return {
@@ -438,7 +656,9 @@ export function getPlotBudgetOptionsFromQuality(
         farDistance: Math.max(32, Math.round((lodDistances[2] ?? base.farDistance) * distanceScale)),
         cullDistance: Math.max(48, Math.round(viewDistance * distanceScale)),
         offscreenCullDistance: Math.max(24, Math.round(base.offscreenCullDistance * distanceScale)),
-        lodDistanceMultiplier: THREE.MathUtils.clamp(1 - pressure * 0.5, 0.4, 1),
+        lodDistanceMultiplier: MathUtils.clamp(1 - pressure * 0.5, 0.4, 1),
+        lodTransitionBudget: isMobile ? 4 : 12,
+        lodHysteresisRatio: 0.12,
         batchSize: isMobile ? 16 : 48,
         heavyTriangleLimit: Math.floor(base.heavyTriangleLimit * (1 - pressure * 0.25)),
         heavyDrawCallLimit: Math.max(8, Math.floor(base.heavyDrawCallLimit * (1 - pressure * 0.25))),
@@ -447,7 +667,7 @@ export function getPlotBudgetOptionsFromQuality(
     };
 }
 
-export function markObjectForPlotBudget(object: THREE.Object3D, metadata: PlotBudgetMetadata = {}): void {
+export function markObjectForPlotBudget(object: Object3D, metadata: PlotBudgetMetadata = {}): void {
     const current = ensurePlotBudgetMetadata(object);
     Object.assign(current, metadata);
     if (metadata.enabled === undefined) {
@@ -456,128 +676,299 @@ export function markObjectForPlotBudget(object: THREE.Object3D, metadata: PlotBu
     current.stats = metadata.stats ?? current.stats ?? collectPlotBudgetStats(object);
 }
 
-export function getPlotBudgetMetadata(object: THREE.Object3D): PlotBudgetMetadata | undefined {
+export function getPlotBudgetMetadata(object: Object3D): PlotBudgetMetadata | undefined {
     return (object.userData as {plotBudget?: PlotBudgetMetadata}).plotBudget;
 }
 
-export function ensurePlotBudgetMetadata(object: THREE.Object3D): PlotBudgetMetadata {
+export function ensurePlotBudgetMetadata(object: Object3D): PlotBudgetMetadata {
     const data = object.userData as {plotBudget?: PlotBudgetMetadata};
     data.plotBudget ??= {};
     return data.plotBudget;
 }
 
-export function isPlotBudgetCandidate(object: THREE.Object3D): boolean {
+export function isPlotBudgetCandidate(object: Object3D): boolean {
     const metadata = getPlotBudgetMetadata(object);
     if (metadata?.enabled === true) return true;
     if (metadata?.enabled === false) return false;
     if (!object.userData?.isStemObject) return false;
-    if (!hasRenderableDescendant(object)) return false;
-    if (hasRuntimeMetadataInTree(object)) return false;
-    return true;
+    const tree = inspectPlotBudgetCandidateTree(object);
+    return tree.hasRenderable && !tree.hasRuntimeMetadata;
 }
 
-export function collectPlotBudgetStats(root: THREE.Object3D): PlotBudgetStats {
-    const geometries = new Set<string>();
-    const textures = new Set<string>();
-    const bounds = new THREE.Vector3();
-    const box = new THREE.Box3();
-    const stats: PlotBudgetStats = {
-        triangles: 0,
-        drawCalls: 0,
-        bounds,
-        textureBytes: 0,
-        textureCount: 0,
-    };
+export function collectPlotBudgetStats(root: Object3D): PlotBudgetStats {
+    const collection = createPlotBudgetStatsCollection();
 
-    root.traverse(child => {
-        const mesh = child as THREE.Mesh;
-        const geometry = mesh.geometry;
-        const material = mesh.material;
-
-        if (geometry && !geometries.has(geometry.uuid)) {
-            geometries.add(geometry.uuid);
-            stats.triangles += getGeometryTriangleCount(geometry);
-        }
-
-        if (material) {
-            const materials = Array.isArray(material) ? material : [material];
-            stats.drawCalls += Math.max(1, materials.length);
-            for (const item of materials) {
-                addMaterialTextureBytes(item, textures, stats);
-            }
-        }
+    traverseObjectDepthFirst(root, child => {
+        collectPlotBudgetStatsForObject(collection, child);
     });
 
-    box.setFromObject(root);
-    if (!box.isEmpty()) {
-        box.getSize(bounds);
-    }
-    stats.textureCount = textures.size;
-    return stats;
+    return finalizePlotBudgetStatsCollection(collection);
 }
 
-function collectManagedLods(root: THREE.Object3D): ManagedLod[] {
+function collectPlotBudgetRegistrationProfile(root: Object3D): PlotBudgetRegistrationProfile {
+    const collection = createPlotBudgetStatsCollection();
     const lods: ManagedLod[] = [];
-    root.traverse(child => {
-        if (!(child instanceof THREE.LOD)) return;
-        lods.push({
-            lod: child,
-            baseDistances: child.levels.map(level => level.distance),
-            originalAutoUpdate: (child as THREE.LOD & {autoUpdate?: boolean}).autoUpdate,
-        });
+
+    traverseObjectDepthFirst(root, child => {
+        collectPlotBudgetStatsForObject(collection, child);
+        collectManagedLodForObject(lods, child);
     });
-    return lods;
+
+    return {
+        stats: finalizePlotBudgetStatsCollection(collection),
+        lods,
+    };
 }
 
-function restoreLodAutoUpdate(managed: ManagedLod): void {
-    const lod = managed.lod as THREE.LOD & {autoUpdate?: boolean};
+function createPlotBudgetStatsCollection(): PlotBudgetStatsCollection {
+    const bounds = new Vector3();
+    return {
+        geometries: new Set<string>(),
+        textures: new Set<string>(),
+        bounds,
+        box: new Box3(),
+        geometryBox: new Box3(),
+        stats: {
+            triangles: 0,
+            drawCalls: 0,
+            bounds,
+            textureBytes: 0,
+            textureCount: 0,
+        },
+    };
+}
+
+function collectPlotBudgetStatsForObject(collection: PlotBudgetStatsCollection, child: Object3D): void {
+    updateMatrixWorldForPlotStats(child);
+    const mesh = child as Mesh;
+    const geometry = mesh.geometry;
+    const material = mesh.material;
+
+    if (geometry) {
+        if (!collection.geometries.has(geometry.uuid)) {
+            collection.geometries.add(geometry.uuid);
+            collection.stats.triangles += getGeometryTriangleCount(geometry);
+        }
+        if (!geometry.boundingBox) {
+            geometry.computeBoundingBox();
+        }
+        if (geometry.boundingBox) {
+            collection.geometryBox.copy(geometry.boundingBox).applyMatrix4(child.matrixWorld);
+            collection.box.union(collection.geometryBox);
+        }
+    }
+
+    if (material) {
+        if (Array.isArray(material)) {
+            collection.stats.drawCalls += Math.max(1, material.length);
+            for (const item of material) {
+                addMaterialTextureBytes(item, collection.textures, collection.stats);
+            }
+        } else {
+            collection.stats.drawCalls++;
+            addMaterialTextureBytes(material, collection.textures, collection.stats);
+        }
+    }
+}
+
+function finalizePlotBudgetStatsCollection(collection: PlotBudgetStatsCollection): PlotBudgetStats {
+    if (!collection.box.isEmpty()) {
+        collection.box.getSize(collection.bounds);
+    }
+    collection.stats.textureCount = collection.textures.size;
+    return collection.stats;
+}
+
+async function collectPlotBudgetProfileProgressive(
+    root: Object3D,
+    options: PlotBudgetRebuildProgressOptions = {},
+    {
+        abortOnRuntimeMetadata = false,
+    }: {
+        abortOnRuntimeMetadata?: boolean;
+    } = {},
+): Promise<PlotBudgetProgressiveProfile> {
+    const maybeYield = createProgressiveYieldController(options, {
+        batchSize: PLOT_BUDGET_REBUILD_BATCH_SIZE,
+        frameBudgetMs: PLOT_BUDGET_REBUILD_FRAME_BUDGET_MS,
+    });
+    const collection = createPlotBudgetStatsCollection();
+    const profile: PlotBudgetProgressiveProfile = {
+        hasRenderable: false,
+        hasRuntimeMetadata: false,
+        stats: collection.stats,
+        lods: [],
+    };
+    const stack: Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const child = stack.pop();
+        if (!child) {
+            await maybeYield();
+            continue;
+        }
+
+        updatePlotBudgetCandidateFlags(profile, child);
+        if (abortOnRuntimeMetadata && profile.hasRuntimeMetadata) {
+            await maybeYield();
+            break;
+        }
+
+        collectPlotBudgetStatsForObject(collection, child);
+        collectManagedLodForObject(profile.lods, child);
+
+        for (let i = child.children.length - 1; i >= 0; i--) {
+            const nested = child.children[i];
+            if (nested) stack.push(nested);
+        }
+
+        await maybeYield();
+    }
+
+    finalizePlotBudgetStatsCollection(collection);
+    return profile;
+}
+
+function updateMatrixWorldForPlotStats(object: Object3D): void {
+    if (object.matrixAutoUpdate) {
+        object.updateMatrix();
+    }
+    if (object.matrixWorldAutoUpdate !== true) {
+        return;
+    }
+
+    if (object.parent === null) {
+        object.matrixWorld.copy(object.matrix);
+    } else {
+        object.matrixWorld.multiplyMatrices(object.parent.matrixWorld, object.matrix);
+    }
+}
+
+function collectManagedLodForObject(lods: ManagedLod[], child: Object3D): void {
+    if (!(child instanceof LOD)) return;
+    lods.push({
+        lod: child,
+        baseDistances: child.levels.map(level => level.distance),
+        originalAutoUpdate: (child as LOD & {autoUpdate?: boolean}).autoUpdate,
+        originalLevelVisibility: child.levels.map(level => level.object.visible),
+        runtimeGroupId: `plot-lod:${child.uuid}`,
+        runtimeRegistered: false,
+        scaledThresholds: [],
+    });
+}
+
+function restoreManagedLod(managed: ManagedLod): void {
+    managed.runtimeHandle?.unregister();
+    managed.runtimeHandle = undefined;
+    managed.runtimeRegistered = false;
+    const lod = managed.lod as LOD & {autoUpdate?: boolean};
     if (managed.originalAutoUpdate !== undefined) {
         lod.autoUpdate = managed.originalAutoUpdate;
     }
+    for (let index = 0; index < managed.lod.levels.length; index++) {
+        const level = managed.lod.levels[index];
+        if (!level) continue;
+        level.distance = managed.baseDistances[index] ?? level.distance;
+        level.object.visible = managed.originalLevelVisibility[index] ?? true;
+    }
 }
 
-function isPlotBudgetExplicitlyDisabled(object: THREE.Object3D): boolean {
+function applyScaledLodDistances(managed: ManagedLod, scale: number): void {
+    for (let index = 0; index < managed.lod.levels.length; index++) {
+        const level = managed.lod.levels[index];
+        if (!level) continue;
+        level.distance = (managed.baseDistances[index] ?? level.distance) * scale;
+    }
+}
+
+function getScaledLodThresholds(managed: ManagedLod): number[] {
+    const thresholds = managed.scaledThresholds;
+    thresholds.length = 0;
+    for (let index = 1; index < managed.lod.levels.length; index++) {
+        thresholds.push(managed.lod.levels[index]?.distance ?? managed.baseDistances[index] ?? 0);
+    }
+    return thresholds;
+}
+
+function hasUsableLodBounds(lod: LOD): boolean {
+    LOD_REGISTRATION_BOUNDS.setFromObject(lod);
+    return !LOD_REGISTRATION_BOUNDS.isEmpty();
+}
+
+function isPlotBudgetExplicitlyDisabled(object: Object3D): boolean {
     return getPlotBudgetMetadata(object)?.enabled === false;
 }
 
-function hasRenderableDescendant(root: THREE.Object3D): boolean {
-    let found = false;
-    root.traverse(child => {
-        const renderable = child as THREE.Object3D & {isMesh?: boolean; isLOD?: boolean; isSprite?: boolean};
-        if (renderable.isMesh || renderable.isLOD || renderable.isSprite) {
-            found = true;
+function shouldInspectPlotBudgetCandidate(object: Object3D): boolean {
+    const metadata = getPlotBudgetMetadata(object);
+    if (metadata?.enabled === true) return true;
+    if (metadata?.enabled === false) return false;
+    return object.userData?.isStemObject === true;
+}
+
+function inspectPlotBudgetCandidateTree(root: Object3D): {hasRenderable: boolean; hasRuntimeMetadata: boolean} {
+    let hasRenderable = false;
+    let hasRuntimeMetadata = false;
+    const stack: Object3D[] = [root];
+
+    while (stack.length > 0) {
+        const object = stack.pop();
+        if (!object) continue;
+
+        if (!hasRenderable) {
+            const renderable = object as Object3D & {isMesh?: boolean; isLOD?: boolean; isSprite?: boolean};
+            hasRenderable = !!(renderable.isMesh || renderable.isLOD || renderable.isSprite);
         }
-    });
-    return found;
+
+        if (!hasRuntimeMetadata) {
+            hasRuntimeMetadata = hasRuntimeBudgetMetadata(object);
+        }
+
+        if (hasRenderable && hasRuntimeMetadata) break;
+
+        for (let i = object.children.length - 1; i >= 0; i--) {
+            const child = object.children[i];
+            if (child) stack.push(child);
+        }
+    }
+
+    return {hasRenderable, hasRuntimeMetadata};
 }
 
-function hasRuntimeMetadataInTree(root: THREE.Object3D): boolean {
-    let found = false;
-    root.traverse(child => {
-        if (found) return;
-        const data = child.userData ?? {};
-        const physics = data.physics as {enabled?: boolean; type?: string} | undefined;
-        found =
-            data.isRuntimeOnly === true ||
-            data.isBillboard === true ||
-            data.avatarBudget !== undefined ||
-            data.player !== undefined ||
-            data.animation !== undefined ||
-            Array.isArray(data.behaviors) && data.behaviors.length > 0 ||
-            Array.isArray(data.lambdaComponents) && data.lambdaComponents.length > 0 ||
-            !!physics && physics.enabled !== false && physics.type !== "static";
-    });
-    return found;
+function updatePlotBudgetCandidateFlags(profile: PlotBudgetProgressiveProfile, object: Object3D): void {
+    if (!profile.hasRenderable) {
+        const renderable = object as Object3D & {isMesh?: boolean; isLOD?: boolean; isSprite?: boolean};
+        profile.hasRenderable = !!(renderable.isMesh || renderable.isLOD || renderable.isSprite);
+    }
+
+    if (!profile.hasRuntimeMetadata) {
+        profile.hasRuntimeMetadata = hasRuntimeBudgetMetadata(object);
+    }
 }
 
-function getPlotBoundsRadius(object: THREE.Object3D): number {
+function hasRuntimeBudgetMetadata(object: Object3D): boolean {
+    const data = object.userData ?? {};
+    const physics = data.physics as {enabled?: boolean; type?: string} | undefined;
+    return (
+        data.isRuntimeOnly === true ||
+        data.isBillboard === true ||
+        data.avatarBudget !== undefined ||
+        data.player !== undefined ||
+        data.animation !== undefined ||
+        (Array.isArray(data.behaviors) && data.behaviors.length > 0) ||
+        (Array.isArray(data.lambdaComponents) && data.lambdaComponents.length > 0) ||
+        (!!physics && physics.enabled !== false && physics.type !== "static")
+    );
+}
+
+function getPlotBoundsRadius(object: Object3D): number {
     const metadata = ensurePlotBudgetMetadata(object);
     metadata.stats ??= collectPlotBudgetStats(object);
     const radius = metadata.stats.bounds.length() / 2;
     return radius > 0 ? radius : DEFAULT_BOUNDS_RADIUS;
 }
 
-function getGeometryTriangleCount(geometry: THREE.BufferGeometry): number {
+function getGeometryTriangleCount(geometry: BufferGeometry): number {
     if (geometry.index) {
         return Math.floor(geometry.index.count / 3);
     }
@@ -587,11 +978,11 @@ function getGeometryTriangleCount(geometry: THREE.BufferGeometry): number {
 }
 
 function addMaterialTextureBytes(
-    material: THREE.Material,
+    material: Material,
     textureIds: Set<string>,
     stats: PlotBudgetStats,
 ): void {
-    const texturedMaterial = material as THREE.Material & Partial<Record<TextureSlot, THREE.Texture | null>>;
+    const texturedMaterial = material as Material & Partial<Record<TextureSlot, Texture | null>>;
 
     for (const slot of TEXTURE_SLOTS) {
         const texture = texturedMaterial[slot];
@@ -601,14 +992,14 @@ function addMaterialTextureBytes(
     }
 }
 
-function estimateTextureBytes(texture: THREE.Texture): number {
+function estimateTextureBytes(texture: Texture): number {
     const {width, height} = getTextureDimensions(texture);
     if (width <= 0 || height <= 0) return 0;
     const baseBytes = width * height * BYTES_PER_RGBA_PIXEL;
     return Math.ceil(texture.generateMipmaps ? baseBytes * MIP_CHAIN_MULTIPLIER : baseBytes);
 }
 
-function getTextureDimensions(texture: THREE.Texture): {width: number; height: number} {
+function getTextureDimensions(texture: Texture): {width: number; height: number} {
     const image = texture.image as
         | {width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; videoWidth?: number; videoHeight?: number}
         | undefined;
@@ -623,8 +1014,8 @@ function getQualityPressure(settings: IQualitySettings, isMobile: boolean): numb
     const rendering = settings.rendering;
     const scene = settings.scene;
     const textureTier = getTextureQualityTier(rendering?.textureQuality);
-    const lodBias = THREE.MathUtils.clamp(rendering?.lodBias ?? 0, 0, 3);
-    const cullingAggressiveness = THREE.MathUtils.clamp(scene?.cullingAggressiveness ?? 0.5, 0, 1);
+    const lodBias = MathUtils.clamp(rendering?.lodBias ?? 0, 0, 3);
+    const cullingAggressiveness = MathUtils.clamp(scene?.cullingAggressiveness ?? 0.5, 0, 1);
     let pressure = 0;
 
     pressure += (4 - textureTier) * 0.12;
@@ -633,7 +1024,7 @@ function getQualityPressure(settings: IQualitySettings, isMobile: boolean): numb
     if ((rendering?.pixelRatio ?? 1) <= 0.75) pressure += 0.08;
     if (isMobile) pressure += 0.12;
 
-    return THREE.MathUtils.clamp(pressure, 0, 0.8);
+    return MathUtils.clamp(pressure, 0, 0.8);
 }
 
 function getTextureQualityTier(quality: IQualitySettings["rendering"]["textureQuality"] | undefined): number {

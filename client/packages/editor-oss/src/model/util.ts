@@ -2,6 +2,8 @@ import { Object3D } from 'three';
 
 import { ModelFormat, SUPPORTED_MODEL_FORMATS } from '@stem/network/api/asset';
 
+export {LOD_LEVEL_DESKTOP, LOD_LEVEL_MOBILE} from "./lodLevels";
+
 export {
     getModelId,
     setModelId,
@@ -9,9 +11,6 @@ export {
     setModelRevisionId,
     isModelAssetInstance,
 } from './userData';
-
-export const LOD_LEVEL_DESKTOP = 1;
-export const LOD_LEVEL_MOBILE = 2;
 
 export const isSupportedModelFormat = (format: string): format is ModelFormat => {
     const supportedModelFormatStrs: readonly string[] = SUPPORTED_MODEL_FORMATS;

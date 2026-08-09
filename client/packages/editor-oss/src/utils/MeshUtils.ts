@@ -1,15 +1,24 @@
-import { 
-    Mesh, 
-    Object3D,
-    InstancedMesh, 
-    BufferAttribute, 
+import {
+    BufferAttribute,
+    InstancedMesh,
     InterleavedBufferAttribute,
-    Renderer,
-} from "three/webgpu";
+    Mesh,
+    Object3D,
+} from "three";
+import type {Renderer} from "three/webgpu";
 
 import global from "../global";
-import MaterialUtils from "./MaterialUtils";
-import { isPrefab, isPrefabUnlocked } from '@stem/editor-oss/prefab/util';
+import {isPrefab, isPrefabUnlocked} from '@stem/editor-oss/prefab/metadata';
+import {
+    ManagedGpuResource,
+    collectMaterialGpuResources,
+    hardDisposeUnmanagedGpuResource,
+    isGpuResourceManaged,
+    isManagedGpuResource,
+    releaseGpuResourcesForOwner,
+    wasManagedGpuResourceDisposed,
+} from "../core/resources/GpuResourceOwnership";
+import {resolvePlanCadSelectionTarget} from "./PlanCadSelectionMetadata";
 
 interface UUIDNode {
     uuid: string;
@@ -153,19 +162,29 @@ const MeshUtils = {
      * @param list - Array to store UUID nodes
      */
     traverseUUID(children: Object3D[], list: UUIDNode[]): void {
-        for (let i = 0; i < children.length; i++) {
-            const child = children[i]!;
+        const stack: Array<{children: Object3D[]; index: number; out: UUIDNode[]}> = [
+            {children, index: 0, out: list},
+        ];
 
-            let list1: UUIDNode[] = [];
-
-            if (child.children && child.children.length > 0) {
-                this.traverseUUID(child.children, list1);
+        while (stack.length > 0) {
+            const frame = stack[stack.length - 1]!;
+            if (frame.index >= frame.children.length) {
+                stack.pop();
+                continue;
             }
 
-            list.push({
+            const child = frame.children[frame.index++];
+            if (!child) continue;
+
+            const childList: UUIDNode[] = [];
+            frame.out.push({
                 uuid: child.uuid,
-                children: list1,
+                children: childList,
             });
+
+            if (child.children && child.children.length > 0) {
+                stack.push({children: child.children, index: 0, out: childList});
+            }
         }
     },
 
@@ -183,6 +202,11 @@ const MeshUtils = {
         if (obj === scene || obj.userData && obj.userData.Server === true) {
             // Scene or server-side model
             return obj;
+        }
+
+        const planCadTarget = resolvePlanCadSelectionTarget(obj, scene);
+        if (planCadTarget) {
+            return planCadTarget;
         }
 
         // Check if obj is part of a prefab. If so, get the top-most prefab
@@ -234,48 +258,57 @@ const MeshUtils = {
      * @param {THREE.Object3D} mesh - The object whose GPU resources (and those of its children) will be freed.
      */
     dispose(mesh: Object3D): void {
-        if (!this.isMesh(mesh)) {
-            (mesh as any).dispose?.();
+        const releasedManaged = releaseGpuResourcesForOwner(mesh).disposed;
+        const seenResources = new Set<ManagedGpuResource>();
+        const stack: Object3D[] = [mesh];
 
-            // @ts-expect-error Dispatch dispose event just in case some class has dispose but do not properly dispatches the event
-            mesh.dispatchEvent( { type: 'dispose' } );
-            return;
-        }
+        while (stack.length > 0) {
+            const current = stack.pop()!;
 
-        // Dispose geometry and GPU buffers
-        if (mesh.geometry) {
-            const geom = mesh.geometry;
-            // BVH from three-mesh-bvh
-            geom.disposeBoundsTree?.();
-            geom.dispose();
-        }
+            if (!this.isMesh(current)) {
+                (current as any).dispose?.();
 
-        // Dispose materials and textures
-        const materials = Array.isArray(mesh.material)
-            ? mesh.material
-            : mesh.material
-            ? [mesh.material]
-            : [];
-        for (const material of materials) {
-            if (!material?.dispose) continue;
-            // Standard texture slots
-            [
-                'map', 'lightMap', 'aoMap', 'emissiveMap', 'bumpMap', 'normalMap',
-                'displacementMap', 'roughnessMap', 'metalnessMap', 'alphaMap',
-                'envMap', 'specularMap', 'gradientMap',
-            ].forEach(slot => {
-                const texture = (material as any)[slot];
-                if (MaterialUtils.isTexture(texture)) {
-                    texture.dispose();
+                // @ts-expect-error Dispatch dispose event just in case some class has dispose but do not properly dispatches the event
+                current.dispatchEvent( { type: 'dispose' } );
+            } else {
+                if (current.geometry) {
+                    seenResources.add(current.geometry);
                 }
-            });
-            material.dispose();
+
+                const materials = Array.isArray(current.material)
+                    ? current.material
+                    : current.material
+                    ? [current.material]
+                    : [];
+                for (const material of materials) {
+                    if (material) {
+                        collectMaterialGpuResources(material, seenResources);
+                    }
+                }
+
+                (current as any).dispose?.();
+
+                // @ts-expect-error Dispatch dispose event just in case some class has dispose but do not properly dispatches the event
+                current.dispatchEvent( { type: 'dispose' } );
+            }
+
+            const children = current.children;
+            for (let i = children.length - 1; i >= 0; i--) {
+                stack.push(children[i]!);
+            }
         }
 
-        (mesh as any).dispose?.();
-
-        // @ts-expect-error Dispatch dispose event just in case some class has dispose but do not properly dispatches the event
-        mesh.dispatchEvent( { type: 'dispose' } );
+        for (const resource of seenResources) {
+            if (
+                !isManagedGpuResource(resource)
+                || releasedManaged.has(resource)
+                || isGpuResourceManaged(resource)
+                || wasManagedGpuResourceDisposed(resource)
+            ) {
+                continue;
+            }
+            hardDisposeUnmanagedGpuResource(resource);
+        }
     },
 };
 

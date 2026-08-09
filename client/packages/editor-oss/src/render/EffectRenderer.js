@@ -14,33 +14,31 @@ import {ssr} from "three/addons/tsl/display/SSRNode.js";
 import {
     pass,
     mrt,
-    emissive,
     metalness,
     normalView,
     roughness,
     uniform,
     time,
     oscSine,
-    toneMapping,
     builtinAOContext,
     screenUV,
     perspectiveDepthToViewZ,
     orthographicDepthToViewZ,
-    positionView,
     float,
     vec2,
     vec4,
     texture,
 } from "three/tsl";
-import {Color, RenderPipeline, NoToneMapping} from "three/webgpu";
+import {Color} from "three";
+import {RenderPipeline} from "three/webgpu";
 
 import BaseRenderer from "./BaseRenderer";
+import {isGaussianSplatObject} from "../model/gaussianSplats";
 import {POST_PROCESSING_DEFAULTS as PP_DEFAULTS} from "./postprocessing/defaults";
+import {normalizePostProcessingConfig} from "./postprocessing/normalizePostProcessingConfig";
 import {patchPassNode} from "./postprocessing/patchPassNode";
 import {patchShadowNode} from "./postprocessing/patchShadowNode";
 import {outline} from "./postprocessing/SharedDepthOutlineNode";
-import {disposeSparkComposite, ensureSparkComposite} from "./SparkCompositeBridge";
-import {createSparkSceneLightingBridge} from "./SparkLightingBridge";
 // TODO(@stem/editor-oss migration): these subsystems still live in
 // @web-shared. They will move into editor-oss in a follow-up sub-step; the
 // @web-shared alias is allowed during the migration window.
@@ -48,36 +46,409 @@ import {QualityManager} from "@web-shared/core/quality/QualityManager";
 import PackageManager from "../package/PackageManager";
 import BatchManager from "@web-shared/utils/BatchManager";
 import {isBatchManagerSupported} from "@web-shared/utils/BatchManagerSupport";
-import SceneTraverser from "@web-shared/utils/SceneTraverser";
+import SceneTraverser, {findObjectDepthFirst, traverseObjectDepthFirst} from "@web-shared/utils/SceneTraverser";
+import {shouldCollectCSS3DTraversal} from "./css3DTraversalPolicy";
 
 // Guard against Three.js ShadowNode accessing a null shadowMap during updateBefore.
 patchShadowNode();
 
-/**
- * Reapply a small view-space bias to OutlineNode's private prepare-mask material.
- * OutlineNode.setup() rebuilds this material before rendering, so the override must
- * be installed after each setup call.
- * @param {any} outlinePass
- */
-function applyOutlineMaskBias(outlinePass) {
-    const prepareMaskMaterial = outlinePass._prepareMaskMaterial;
-    if (!prepareMaskMaterial) return;
+const POST_PROCESSING_CONFIG_KEYS = [
+    "ao",
+    "ssao",
+    "bloom",
+    "ssr",
+    "outline",
+    "dof",
+    "lut",
+    "film",
+    "chromaticAberration",
+];
+const RUNTIME_SCENE_REVEAL_ACTIVE_KEY = "_runtimeSceneRevealActive";
+const RENDER_SUBSTAGE_DIAG_ENABLED_KEY = "__STEM_RENDER_SUBSTAGE_DIAG_ENABLED__";
+const RENDER_SUBSTAGE_DIAG_KEY = "__STEM_RENDER_SUBSTAGE_DIAGNOSTICS__";
+const RENDER_SUBSTAGE_PHASES = [
+    "sparkLighting",
+    "sceneMatrices",
+    "sceneMeshSync",
+    "resize",
+    "updateBatches",
+    "cssSync",
+    "hideOriginalMeshes",
+    "pipelineRender",
+    "directRender",
+    "showOriginalMeshes",
+];
 
-    const prepareMask = () => {
-        const depth = outlinePass._depthTextureUniform.sample(screenUV);
+const isRenderSubstageDiagnosticsEnabled = () =>
+    globalThis?.[RENDER_SUBSTAGE_DIAG_ENABLED_KEY] === true;
 
-        const viewZNode = outlinePass.camera.isPerspectiveCamera
-            ? perspectiveDepthToViewZ(depth, outlinePass._cameraNear, outlinePass._cameraFar)
-            : orthographicDepthToViewZ(depth, outlinePass._cameraNear, outlinePass._cameraFar);
-
-        const biasedPositionViewZ = positionView.z.add(float(0.01));
-        const depthTest = biasedPositionViewZ.lessThanEqual(viewZNode).select(1, 0);
-
-        return vec4(0.0, depthTest, 1.0, 1.0);
+const beginRenderSubstageDiagnostics = () => {
+    if (!isRenderSubstageDiagnosticsEnabled()) return null;
+    const startedAt = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    return {
+        startedAt,
+        phases: Object.create(null),
     };
+};
 
-    prepareMaskMaterial.fragmentNode = prepareMask();
-    prepareMaskMaterial.needsUpdate = true;
+const withRenderSubstage = (trace, phase, callback) => {
+    if (!trace || !RENDER_SUBSTAGE_PHASES.includes(phase)) return callback();
+    const startedAt = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    try {
+        return callback();
+    } finally {
+        const endedAt = typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        trace.phases[phase] = (trace.phases[phase] || 0) + Math.max(0, endedAt - startedAt);
+    }
+};
+
+const finishRenderSubstageDiagnostics = (trace, renderer, scene) => {
+    if (!trace) return;
+    const now = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const phases = {};
+    for (const phase of RENDER_SUBSTAGE_PHASES) {
+        const value = trace.phases[phase];
+        if (Number.isFinite(value) && value > 0) phases[phase] = Number(value.toFixed(3));
+    }
+    const entry = {
+        startedAt: Number(trace.startedAt.toFixed(3)),
+        endedAt: Number(now.toFixed(3)),
+        totalMs: Number(Math.max(0, now - trace.startedAt).toFixed(3)),
+        phases,
+        mode: globalThis?.app?.mode ?? null,
+        isPlaying: globalThis?.app?.isPlaying === true,
+        sceneName: scene?.name ?? null,
+        renderer: renderer?.constructor?.name ?? null,
+        backend: renderer?.backend?.constructor?.name ?? null,
+    };
+    const previous = globalThis?.[RENDER_SUBSTAGE_DIAG_KEY];
+    const diagnostics = previous && typeof previous === "object"
+        ? previous
+        : {sampleCount: 0, frames: [], phaseTotals: {}, phaseMax: {}, latest: null};
+    diagnostics.sampleCount += 1;
+    diagnostics.latest = entry;
+    diagnostics.frames = Array.isArray(diagnostics.frames) ? diagnostics.frames : [];
+    diagnostics.frames.push(entry);
+    if (diagnostics.frames.length > 120) diagnostics.frames.splice(0, diagnostics.frames.length - 120);
+    for (const phase of RENDER_SUBSTAGE_PHASES) {
+        const value = entry.phases[phase] ?? 0;
+        diagnostics.phaseTotals[phase] = (diagnostics.phaseTotals[phase] ?? 0) + value;
+        diagnostics.phaseMax[phase] = Math.max(diagnostics.phaseMax[phase] ?? 0, value);
+    }
+    globalThis[RENDER_SUBSTAGE_DIAG_KEY] = diagnostics;
+};
+
+const finiteUnsignedDrawValue = (value, fallback = 0) => {
+    if (!Number.isFinite(value) || value < 0) return fallback;
+    return Math.floor(value);
+};
+
+const isRecoverableNonFiniteDrawError = error => {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return /infinite/i.test(message) && /(unsigned long|drawIndexed)/i.test(message);
+};
+
+const inferInstanceCount = (renderObject, value) => {
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+
+    const object = renderObject?.object;
+    const geometry = object?.geometry;
+    let inferred = 0;
+    for (const attribute of Object.values(geometry?.attributes ?? {})) {
+        if (attribute?.isInstancedBufferAttribute === true && Number.isFinite(attribute.count)) {
+            inferred = Math.max(inferred, attribute.count);
+        }
+    }
+    if (Number.isFinite(object?.instanceMatrix?.count)) {
+        inferred = Math.max(inferred, object.instanceMatrix.count);
+    }
+    if (Number.isFinite(object?.count)) {
+        inferred = Math.max(inferred, object.count);
+    }
+    return Math.max(0, Math.floor(inferred));
+};
+
+const inferVertexCount = (renderObject, value) => {
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+
+    const geometry = renderObject?.object?.geometry;
+    if (!geometry) return 0;
+
+    const available = Number.isFinite(geometry.index?.count)
+        ? geometry.index.count
+        : geometry.attributes?.position?.count;
+    if (!Number.isFinite(available) || available < 0) return 0;
+
+    const start = Number.isFinite(geometry.drawRange?.start) && geometry.drawRange.start >= 0
+        ? Math.floor(geometry.drawRange.start)
+        : 0;
+    const rangeCount = geometry.drawRange?.count;
+    const count = Number.isFinite(rangeCount) && rangeCount >= 0
+        ? Math.floor(rangeCount)
+        : Math.max(0, Math.floor(available) - start);
+    return Math.max(0, Math.min(count, Math.floor(available) - start));
+};
+
+const guardedRenderObjects = new WeakSet();
+const normalizedBatchedMeshes = new WeakMap();
+
+const normalizeBatchedMeshDrawArrays = object => {
+    if (!object || object.isBatchedMesh !== true) return;
+
+    const starts = object._multiDrawStarts;
+    const counts = object._multiDrawCounts;
+    const drawCount = object._multiDrawCount;
+    const previous = normalizedBatchedMeshes.get(object);
+    if (
+        previous?.starts === starts &&
+        previous?.counts === counts &&
+        previous?.drawCount === drawCount
+    ) {
+        return;
+    }
+
+    const sanitizeArray = (values, fallback) => {
+        if (!values || typeof values.length !== "number") return;
+        for (let i = 0; i < values.length; i += 1) {
+            values[i] = finiteUnsignedDrawValue(values[i], fallback);
+        }
+    };
+    sanitizeArray(starts, 0);
+    sanitizeArray(counts, 0);
+    if (drawCount !== undefined) {
+        object._multiDrawCount = Math.min(
+            finiteUnsignedDrawValue(drawCount, 0),
+            counts?.length ?? 0,
+        );
+    }
+    normalizedBatchedMeshes.set(object, {
+        starts,
+        counts,
+        drawCount: object._multiDrawCount,
+    });
+};
+
+const installRenderObjectDrawParametersGuard = renderObject => {
+    if (
+        !renderObject ||
+        typeof renderObject.getDrawParameters !== "function" ||
+        guardedRenderObjects.has(renderObject)
+    ) {
+        return;
+    }
+
+    const getDrawParameters = renderObject.getDrawParameters;
+    renderObject.getDrawParameters = function guardedGetDrawParameters() {
+        const params = getDrawParameters.call(this);
+        if (!params) return params;
+
+        // Keep the steady-state path allocation-free: RenderObject caches this
+        // object, so repair it in place only when a non-finite value appears.
+        const safeVertexCount = inferVertexCount(this, params.vertexCount);
+        const safeInstanceCount = inferInstanceCount(this, params.instanceCount);
+        const safeFirstVertex = finiteUnsignedDrawValue(params.firstVertex, 0);
+        const safeFirstInstance = finiteUnsignedDrawValue(params.firstInstance, 0);
+
+        if (
+            params.vertexCount !== safeVertexCount ||
+            params.instanceCount !== safeInstanceCount ||
+            params.firstVertex !== safeFirstVertex ||
+            params.firstInstance !== safeFirstInstance
+        ) {
+            params.vertexCount = safeVertexCount;
+            params.instanceCount = safeInstanceCount;
+            params.firstVertex = safeFirstVertex;
+            params.firstInstance = safeFirstInstance;
+        }
+
+        return params.vertexCount === 0 || params.instanceCount === 0 ? null : params;
+    };
+    guardedRenderObjects.add(renderObject);
+};
+
+/**
+ * Keep invalid scene metadata from crossing the WebGPU API boundary.
+ *
+ * Three's RenderObject calculates draw parameters lazily, after the scene has
+ * been assembled. Runtime reveal and behavior code can add an instanced mesh
+ * after EffectRenderer.create(), so scene-wide normalization alone is not a
+ * sufficient safety boundary. This wrapper sanitizes the exact parameters
+ * immediately before WebGPUBackend.draw() consumes them.
+ */
+export function installFiniteDrawGuard(renderer) {
+    const backend = renderer?.backend;
+    // WebGL accepts the legacy Infinity instance-count sentinel and never
+    // crosses the WebGPU unsigned draw-count boundary this guard protects.
+    // Avoid wrapping every WebGLBackend draw in Playground/headless fallback
+    // sessions; keep the safety boundary for actual WebGPU backends only.
+    if (
+        !backend ||
+        backend.isWebGLBackend === true ||
+        typeof backend.draw !== "function" ||
+        backend.__stemFiniteDrawGuardInstalled === true
+    ) {
+        return false;
+    }
+
+    const originalDraw = backend.draw;
+    backend.draw = function guardedDraw(renderObject, info) {
+        const object = renderObject?.object;
+        normalizeBatchedMeshDrawArrays(object);
+        installRenderObjectDrawParametersGuard(renderObject);
+        try {
+            return originalDraw.call(this, renderObject, info);
+        } catch (error) {
+            // A stale Three.js RenderObject can still cross the boundary after
+            // scene normalization (for example, when an instanced attribute is
+            // populated between render traversal and backend submission). Do
+            // not let one malformed object abort the complete scene render.
+            // Keep this recovery narrowly matched so unrelated backend errors
+            // retain their normal propagation and diagnostics.
+            if (!isRecoverableNonFiniteDrawError(error)) throw error;
+
+            const normalized = normalizeNonFiniteInstanceCounts(object);
+            const stats = backend.__stemFiniteDrawGuardStats ?? {
+                skippedNonFiniteDraws: 0,
+                normalizedValues: 0,
+            };
+            stats.skippedNonFiniteDraws += 1;
+            stats.normalizedValues += normalized;
+            backend.__stemFiniteDrawGuardStats = stats;
+            if (stats.skippedNonFiniteDraws === 1) {
+                console.warn("[EffectRenderer] Skipped a non-finite WebGPU draw; the object will retry on the next frame.");
+            }
+            return undefined;
+        }
+    };
+    backend.__stemFiniteDrawGuardInstalled = true;
+    return true;
+}
+
+/**
+ * WebGPU requires finite unsigned draw counts. Three's generic
+ * InstancedBufferGeometry intentionally defaults `instanceCount` to Infinity,
+ * which WebGL accepts but WebGPU rejects at drawIndexed time. Normalize that
+ * default from the actual instanced attributes before the first render.
+ */
+export function normalizeNonFiniteInstanceCounts(scene) {
+    if (!scene) return 0;
+
+    let normalized = 0;
+    traverseObjectDepthFirst(scene, object => {
+        const geometry = object.geometry;
+
+        if (geometry?.drawRange) {
+            if (!Number.isFinite(geometry.drawRange.start) || geometry.drawRange.start < 0) {
+                geometry.drawRange.start = 0;
+                normalized += 1;
+            }
+            if (Number.isNaN(geometry.drawRange.count) || geometry.drawRange.count < 0) {
+                geometry.drawRange.count = Infinity;
+                normalized += 1;
+            }
+        }
+        if (Array.isArray(geometry?.groups)) {
+            for (const group of geometry.groups) {
+                if (!Number.isFinite(group.start) || group.start < 0) {
+                    group.start = 0;
+                    normalized += 1;
+                }
+                if (!Number.isFinite(group.count) || group.count < 0) {
+                    group.count = Infinity;
+                    normalized += 1;
+                }
+            }
+        }
+
+        if (geometry?.isInstancedBufferGeometry === true && !Number.isFinite(geometry.instanceCount)) {
+            let inferredCount = 0;
+            for (const attribute of Object.values(geometry.attributes ?? {})) {
+                if (attribute?.isInstancedBufferAttribute === true && Number.isFinite(attribute.count)) {
+                    inferredCount = Math.max(inferredCount, attribute.count);
+                }
+            }
+            // Leave the Three.js default (Infinity) untouched when runtime
+            // instance attributes have not arrived yet. The draw-boundary
+            // guard infers the count lazily, preserving the reveal pipeline.
+            if (inferredCount > 0) {
+                geometry.instanceCount = Math.floor(inferredCount);
+                normalized += 1;
+            }
+        }
+
+        if (object.isInstancedMesh === true && object.count !== undefined && !Number.isFinite(object.count)) {
+            const inferredCount = object.instanceMatrix?.count;
+            if (Number.isFinite(inferredCount)) {
+                object.count = Math.max(0, Math.floor(inferredCount));
+                normalized += 1;
+            }
+        }
+
+        if (object.isBatchedMesh === true) {
+            // Three's BatchedMesh stores these as typed arrays in current
+            // releases (older builds used plain arrays), so use the common
+            // indexed-array contract rather than Array.isArray().
+            const multiDrawCounts = object._multiDrawCounts;
+            if (multiDrawCounts && typeof multiDrawCounts.length === "number") {
+                for (let i = 0; i < multiDrawCounts.length; i += 1) {
+                    if (!Number.isFinite(multiDrawCounts[i])) {
+                        multiDrawCounts[i] = 0;
+                        normalized += 1;
+                    }
+                }
+            }
+
+            const multiDrawStarts = object._multiDrawStarts;
+            if (multiDrawStarts && typeof multiDrawStarts.length === "number") {
+                for (let i = 0; i < multiDrawStarts.length; i += 1) {
+                    if (!Number.isFinite(multiDrawStarts[i])) {
+                        multiDrawStarts[i] = 0;
+                        normalized += 1;
+                    }
+                }
+            }
+            if (
+                object._multiDrawCount !== undefined
+                && (!Number.isFinite(object._multiDrawCount) || object._multiDrawCount < 0)
+            ) {
+                object._multiDrawCount = 0;
+                normalized += 1;
+            }
+        }
+    });
+
+    return normalized;
+}
+
+export {normalizePostProcessingConfig};
+
+export function getPostProcessingPrepassRequirements(postProcessing) {
+    const normalized = normalizePostProcessingConfig(postProcessing);
+    const aoEnabled = normalized.ao.enabled;
+    const ssrEnabled = normalized.ssr.enabled;
+    const dofEnabled = normalized.dof.enabled;
+
+    return {
+        depth: aoEnabled || ssrEnabled || dofEnabled,
+        normal: aoEnabled || ssrEnabled,
+        ssrMask: ssrEnabled,
+        roughness: ssrEnabled && normalized.ssr.blur !== false,
+    };
+}
+
+function hasActivePostProcessingFeature(postProcessing) {
+    const normalized = normalizePostProcessingConfig(postProcessing);
+    return POST_PROCESSING_CONFIG_KEYS
+        .filter(key => key !== "ssao")
+        .some(key => normalized[key].enabled === true);
 }
 
 /**
@@ -87,8 +458,8 @@ class EffectRenderer extends BaseRenderer {
     constructor() {
         super();
 
-        this.packageManager = new PackageManager();
-        this.require = this.packageManager.require.bind(this.packageManager);
+        this._packageManager = null;
+        this.require = names => this.packageManager.require(names);
 
         this.ready = false;
 
@@ -104,6 +475,7 @@ class EffectRenderer extends BaseRenderer {
 
         // Node handles so we can tweak at runtime
         this.nodes = {
+            prePass: null,
             scenePass: null,
             sceneColor: null,
             sceneDepth: null,
@@ -163,9 +535,13 @@ class EffectRenderer extends BaseRenderer {
         this.qualityManager.on("qualityChanged", this.onQualityChanged);
 
         this.sceneTraverser = null;
+        this.sceneTraverserScene = null;
+        this._normalizedInstanceCountScenes = new WeakSet();
         this.meshHandler = null;
-        this.primitivesHandler = null;
         this.cssHandler = null;
+        this.hasCSS3DObjects = false;
+        this.lastCSS3DObjectScanTime = 0;
+        this.css3DObjectScanIntervalMs = 1000;
 
         // Dimensions
         this.width = 0;
@@ -173,6 +549,39 @@ class EffectRenderer extends BaseRenderer {
         this.pixelRatio = 1;
         this.sparkComposite = null;
         this.sparkLighting = null;
+        this.sparkModules = null;
+        this.sparkModulesPromise = null;
+        this.sparkLoadFailed = false;
+        this.sparkLoadGeneration = 0;
+        this.nextSparkScanTime = 0;
+        this.sparkScanIntervalMs = 2000;
+        this.sparkScene = null;
+        this._buildingPipeline = false;
+        this.onSparkSceneChildAdded = event => {
+            if (this.sparkComposite || this.sparkModulesPromise || this.sparkLoadFailed) {
+                return;
+            }
+
+            const child = event?.child;
+            if (child && isGaussianSplatObject(child)) {
+                this.ensureSparkRuntimeIfNeeded(true);
+            }
+        };
+        this.onNonFiniteDrawObjectAdded = event => {
+            if (event?.child) normalizeNonFiniteInstanceCounts(event.child);
+        };
+    }
+
+    get packageManager() {
+        if (this._packageManager === null) {
+            this._packageManager = new PackageManager();
+        }
+
+        return this._packageManager;
+    }
+
+    set packageManager(packageManager) {
+        this._packageManager = packageManager;
     }
 
     /**
@@ -193,62 +602,35 @@ class EffectRenderer extends BaseRenderer {
      */
     create(scene, camera, renderer, rendererCSS, helperRoot = null) {
         // Core refs — set these first so _standardRender() works even without post-processing
+        if (this.scene && this.scene !== scene) {
+            this.scene.removeEventListener?.("childadded", this.onNonFiniteDrawObjectAdded);
+        }
         this.scene = scene;
+        if (!this._normalizedInstanceCountScenes.has(scene)) {
+            normalizeNonFiniteInstanceCounts(scene);
+            this._normalizedInstanceCountScenes.add(scene);
+        }
+        scene.addEventListener?.("childadded", this.onNonFiniteDrawObjectAdded);
         this.helperRoot = helperRoot;
         this.camera = camera;
         this.renderer = renderer;
+        installFiniteDrawGuard(renderer);
         /** @type {any} */
         this.rendererCSS = rendererCSS; // Kept for backwards compatibility
-
-        // Post-processing requires WebGPU; skip pipeline setup on WebGL fallback
-        const isWebGPU = renderer && (renderer.isWebGPURenderer || renderer.constructor?.name === "WebGPURenderer");
-        if (!isWebGPU) {
-            console.warn("[EffectRenderer] WebGPU not available — post-processing disabled, using standard rendering.");
-            this.ready = false;
-            return;
-        }
+        this.sparkLoadGeneration++;
+        this.sparkLoadFailed = false;
+        this.nextSparkScanTime = 0;
+        this.sparkLighting?.dispose();
+        this.sparkLighting = null;
+        this.sparkModules?.disposeSparkComposite?.(this.sparkComposite);
+        this.sparkComposite = null;
+        this.sparkScene?.removeEventListener?.("childadded", this.onSparkSceneChildAdded);
+        this.sparkScene = null;
+        this.hasCSS3DObjects = this.sceneHasCSS3DObjects(scene);
+        this.lastCSS3DObjectScanTime = this.getNow();
 
         // Initialize cached canvas size synchronously before the first render
         const canvas = this.renderer && this.renderer.domElement ? this.renderer.domElement : renderer?.domElement;
-        this.sparkComposite = ensureSparkComposite(scene, renderer, helperRoot || scene);
-        this.sparkLighting?.dispose();
-        this.sparkLighting = createSparkSceneLightingBridge(scene);
-        try {
-            const splatSettings = this.scene?.userData?.rendering?.splat || {};
-            if (typeof this.sparkComposite?.setSparkOptions === "function") {
-                this.sparkComposite.setSparkOptions({
-                    maxStdDev: Number.isFinite(splatSettings.maxStdDev) ? splatSettings.maxStdDev : Math.sqrt(8),
-                    minPixelRadius: Number.isFinite(splatSettings.minPixelRadius) ? splatSettings.minPixelRadius : 2,
-                    maxPixelRadius: Number.isFinite(splatSettings.maxPixelRadius) ? splatSettings.maxPixelRadius : 512,
-                    sortRadial: typeof splatSettings.sortRadial === "boolean" ? splatSettings.sortRadial : true,
-                    minSortIntervalMs: Number.isFinite(splatSettings.minSortIntervalMs) ? splatSettings.minSortIntervalMs : 0,
-                    enableLod: typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true,
-                    enableDriveLod: typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true,
-                });
-                if (splatSettings.sparkOptions && typeof splatSettings.sparkOptions === "object") {
-                    this.sparkComposite.setSparkOptions(splatSettings.sparkOptions);
-                }
-            } else if (this.sparkComposite?.spark) {
-                this.sparkComposite.spark.maxStdDev = Number.isFinite(splatSettings.maxStdDev) ? splatSettings.maxStdDev : Math.sqrt(8);
-                this.sparkComposite.spark.minPixelRadius = Number.isFinite(splatSettings.minPixelRadius) ? splatSettings.minPixelRadius : 2;
-                this.sparkComposite.spark.maxPixelRadius = Number.isFinite(splatSettings.maxPixelRadius) ? splatSettings.maxPixelRadius : 512;
-                this.sparkComposite.spark.sortRadial = typeof splatSettings.sortRadial === "boolean" ? splatSettings.sortRadial : true;
-                this.sparkComposite.spark.minSortIntervalMs = Number.isFinite(splatSettings.minSortIntervalMs) ? splatSettings.minSortIntervalMs : 0;
-                this.sparkComposite.spark.enableLod = typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true;
-                this.sparkComposite.spark.enableDriveLod = this.sparkComposite.spark.enableLod;
-                this.sparkComposite.spark.dirty = true;
-            }
-
-            const pixelRatioFactor = Number.isFinite(splatSettings.pixelRatioFactor)
-                ? Math.min(1, Math.max(0.5, splatSettings.pixelRatioFactor))
-                : 0.75;
-
-            if (typeof this.sparkComposite?.setPixelRatioFactor === "function") {
-                this.sparkComposite.setPixelRatioFactor(pixelRatioFactor);
-            }
-        } catch {
-            // ignore
-        }
         if (canvas) {
             const rect = typeof canvas.getBoundingClientRect === "function" ? canvas.getBoundingClientRect() : null;
             const initialWidth = rect && rect.width ? rect.width : (canvas.clientWidth || canvas.width || 0);
@@ -280,6 +662,17 @@ class EffectRenderer extends BaseRenderer {
             this._resizeObserver.observe(canvas);
         }
 
+        // Post-processing requires WebGPU; skip pipeline setup on WebGL fallback.
+        // SceneTraverser still runs in fallback mode because RenderEvent disables
+        // Three's scene.matrixWorldAutoUpdate and expects this renderer to update matrices.
+        const isWebGPU = renderer && (renderer.isWebGPURenderer || renderer.constructor?.name === "WebGPURenderer");
+        if (!isWebGPU) {
+            this.initializeSceneTraverser(this.scene);
+            console.warn("[EffectRenderer] WebGPU not available — post-processing disabled, using standard rendering.");
+            this.ready = false;
+            return;
+        }
+
         // Honor scene flag for batching (default true)
         try {
             const enableDynamic = !(this.scene?.userData?.rendering?.batching?.enableDynamic === false);
@@ -293,10 +686,42 @@ class EffectRenderer extends BaseRenderer {
             this.initializeBatchManager(this.scene);
         }
 
-        // Initialize SceneTraverser for the main scene
+        this.initializeSceneTraverser(this.scene);
+
+        this.sparkScene = scene;
+        this.sparkScene?.addEventListener?.("childadded", this.onSparkSceneChildAdded);
+        this.ensureSparkRuntimeIfNeeded(true);
+
+        if (!this.shouldUsePostProcessingPipeline()) {
+            if (this.renderPipeline && typeof this.renderPipeline.dispose === "function") {
+                try {
+                    this.renderPipeline.dispose();
+                } catch {
+                    // ignore
+                }
+            }
+            this.renderPipeline = null;
+            this.ready = false;
+            return;
+        }
+
+        // Build node post-processing pipeline
+        this._createNodePipeline();
+
+        this.ready = true;
+    }
+
+    shouldUsePostProcessingPipeline(postProcessing = this.scene?.userData?.postProcessing) {
+        return hasActivePostProcessingFeature(postProcessing);
+    }
+
+    initializeSceneTraverser(scene = this.scene) {
+        if (!scene) return false;
+        if (this.sceneTraverser && this.sceneTraverserScene === scene) return true;
+
         try {
-            const mainScene = this.scene;
-            this.sceneTraverser = new SceneTraverser(mainScene);
+            this.sceneTraverser = new SceneTraverser(scene);
+            this.sceneTraverserScene = scene;
 
             // Skip batch root during traversal
             if (this.batchManager && this.batchManager.getBatchRoot()) {
@@ -310,27 +735,233 @@ class EffectRenderer extends BaseRenderer {
             };
             this.sceneTraverser.addHandler(this.meshHandler);
 
-            // Primitives handler — collects Lines and Points for SSAOPass
-            this.primitivesHandler = {
-                test: (obj) => obj.isLine === true || obj.isPoints === true,
-                results: [],
-            };
-            this.sceneTraverser.addHandler(this.primitivesHandler);
-
             // CSS3D handler — collects CSS3DObject nodes for CSS renderer
             this.cssHandler = {
-                test: (obj) => obj.isCSS3DObject === true,
+                test: (obj) => {
+                    const isCSS3DObject = obj.isCSS3DObject === true || obj.isCSS3DSprite === true;
+                    if (isCSS3DObject) {
+                        this.hasCSS3DObjects = true;
+                    }
+                    return isCSS3DObject;
+                },
                 results: [],
             };
             this.sceneTraverser.addHandler(this.cssHandler);
+
+            return true;
         } catch (e) {
             console.warn("EffectRenderer: failed to initialize SceneTraverser", e);
+            this.sceneTraverser = null;
+            this.sceneTraverserScene = null;
+            this.meshHandler = null;
+            this.cssHandler = null;
+            return false;
+        }
+    }
+
+    updateSceneMatricesForRender(collectTraversalResults = true) {
+        if (this.sceneTraverser || this.initializeSceneTraverser(this.scene)) {
+            this.sceneTraverser.update({collectHandlers: collectTraversalResults});
+            return true;
         }
 
-        // Build node post-processing pipeline
-        this._createNodePipeline();
+        this.scene?.updateMatrixWorld(true);
+        return false;
+    }
 
-        this.ready = true;
+    getNow() {
+        return typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+    }
+
+    sceneHasCSS3DObjects(scene = this.scene) {
+        if (!scene) {
+            return false;
+        }
+        return findObjectDepthFirst(
+            scene,
+            object => object.isCSS3DObject === true || object.isCSS3DSprite === true,
+        ) !== null;
+    }
+
+    shouldSyncCSS3DObjects(_runtimeRevealActive) {
+        if (!this.rendererCSS || typeof this.rendererCSS.setExternalCSSObjects !== "function") {
+            return false;
+        }
+
+        const now = this.getNow();
+        if (!shouldCollectCSS3DTraversal(
+            this.hasCSS3DObjects,
+            now,
+            this.lastCSS3DObjectScanTime,
+            this.css3DObjectScanIntervalMs,
+        )) {
+            return false;
+        }
+
+        if (!this.hasCSS3DObjects) {
+            this.lastCSS3DObjectScanTime = now;
+        }
+        return true;
+    }
+
+    syncCSS3DObjects(didUpdateSceneMatrices, runtimeRevealActive) {
+        if (!this.rendererCSS || typeof this.rendererCSS.setExternalCSSObjects !== "function") {
+            return;
+        }
+
+        const externalCSSObjects = didUpdateSceneMatrices && this.cssHandler ? this.cssHandler.results : [];
+        if (externalCSSObjects.length > 0) {
+            this.hasCSS3DObjects = true;
+        } else if (!runtimeRevealActive) {
+            this.hasCSS3DObjects = false;
+        }
+        this.rendererCSS.setExternalCSSObjects(externalCSSObjects);
+    }
+
+    shouldRenderCSS3D(_runtimeRevealActive) {
+        if (!this.rendererCSS || !this.scene || !this.camera) {
+            return false;
+        }
+
+        // CSS3DRenderer has no useful work when the scene contains no
+        // CSS3DObject/CSS3DSprite nodes.  The discovery scan already keeps
+        // `hasCSS3DObjects` current (and polls empty scenes periodically), so
+        // avoid submitting a DOM/CSS render on every WebGL/WebGPU frame just
+        // because the optional renderer was created.  During a progressive
+        // reveal, the same cached presence check prevents hidden empty CSS
+        // scenes from becoming part of the reveal hot path.
+        return this.hasCSS3DObjects === true;
+    }
+
+    async loadSparkModules() {
+        if (this.sparkModules) {
+            return this.sparkModules;
+        }
+
+        if (!this.sparkModulesPromise) {
+            this.sparkModulesPromise = Promise.all([
+                import("./SparkCompositeBridge"),
+                import("./SparkLightingBridge"),
+            ]).then(([compositeBridge, lightingBridge]) => {
+                this.sparkModules = {
+                    ensureSparkComposite: compositeBridge.ensureSparkComposite,
+                    disposeSparkComposite: compositeBridge.disposeSparkComposite,
+                    createSparkSceneLightingBridge: lightingBridge.createSparkSceneLightingBridge,
+                };
+                return this.sparkModules;
+            }).catch(error => {
+                this.sparkLoadFailed = true;
+                console.warn("[EffectRenderer] Failed to load Spark renderer support", error);
+                throw error;
+            }).finally(() => {
+                this.sparkModulesPromise = null;
+            });
+        }
+
+        return this.sparkModulesPromise;
+    }
+
+    applySparkSettings() {
+        const composite = this.sparkComposite;
+        if (!composite) {
+            return;
+        }
+
+        try {
+            const splatSettings = this.scene?.userData?.rendering?.splat || {};
+            if (typeof composite.setSparkOptions === "function") {
+                composite.setSparkOptions({
+                    maxStdDev: Number.isFinite(splatSettings.maxStdDev) ? splatSettings.maxStdDev : Math.sqrt(8),
+                    minPixelRadius: Number.isFinite(splatSettings.minPixelRadius) ? splatSettings.minPixelRadius : 2,
+                    maxPixelRadius: Number.isFinite(splatSettings.maxPixelRadius) ? splatSettings.maxPixelRadius : 512,
+                    sortRadial: typeof splatSettings.sortRadial === "boolean" ? splatSettings.sortRadial : true,
+                    minSortIntervalMs: Number.isFinite(splatSettings.minSortIntervalMs) ? splatSettings.minSortIntervalMs : 0,
+                    enableLod: typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true,
+                    enableDriveLod: typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true,
+                });
+                if (splatSettings.sparkOptions && typeof splatSettings.sparkOptions === "object") {
+                    composite.setSparkOptions(splatSettings.sparkOptions);
+                }
+            } else if (composite.spark) {
+                composite.spark.maxStdDev = Number.isFinite(splatSettings.maxStdDev) ? splatSettings.maxStdDev : Math.sqrt(8);
+                composite.spark.minPixelRadius = Number.isFinite(splatSettings.minPixelRadius) ? splatSettings.minPixelRadius : 2;
+                composite.spark.maxPixelRadius = Number.isFinite(splatSettings.maxPixelRadius) ? splatSettings.maxPixelRadius : 512;
+                composite.spark.sortRadial = typeof splatSettings.sortRadial === "boolean" ? splatSettings.sortRadial : true;
+                composite.spark.minSortIntervalMs = Number.isFinite(splatSettings.minSortIntervalMs) ? splatSettings.minSortIntervalMs : 0;
+                composite.spark.enableLod = typeof splatSettings.enableLod === "boolean" ? splatSettings.enableLod : true;
+                composite.spark.enableDriveLod = composite.spark.enableLod;
+                composite.spark.dirty = true;
+            }
+
+            const pixelRatioFactor = Number.isFinite(splatSettings.pixelRatioFactor)
+                ? Math.min(1, Math.max(0.5, splatSettings.pixelRatioFactor))
+                : 0.75;
+
+            if (typeof composite.setPixelRatioFactor === "function") {
+                composite.setPixelRatioFactor(pixelRatioFactor);
+            }
+        } catch {
+            // ignore invalid scene-level splat settings
+        }
+    }
+
+    ensureSparkRuntimeIfNeeded(force = false) {
+        if (
+            !this.scene ||
+            !this.renderer ||
+            this.sparkComposite ||
+            this.sparkModulesPromise ||
+            this.sparkLoadFailed
+        ) {
+            return;
+        }
+
+        const isWebGPU = this.renderer.isWebGPURenderer || this.renderer.constructor?.name === "WebGPURenderer";
+        if (!isWebGPU) {
+            return;
+        }
+
+        if (!force && this.isRuntimeSceneRevealActive()) {
+            return;
+        }
+
+        const now = typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+
+        if (!force && now < this.nextSparkScanTime) {
+            return;
+        }
+        this.nextSparkScanTime = now + this.sparkScanIntervalMs;
+
+        if (!isGaussianSplatObject(this.scene)) {
+            return;
+        }
+
+        const generation = this.sparkLoadGeneration;
+        void this.loadSparkModules().then(modules => {
+            if (
+                generation !== this.sparkLoadGeneration ||
+                !this.scene ||
+                !this.renderer ||
+                this.sparkComposite
+            ) {
+                return;
+            }
+
+            this.sparkComposite = modules.ensureSparkComposite(
+                this.scene,
+                this.renderer,
+                this.helperRoot || this.scene,
+            );
+            this.sparkLighting?.dispose();
+            this.sparkLighting = modules.createSparkSceneLightingBridge(this.scene);
+            this.applySparkSettings();
+        }).catch(() => {
+            // loadSparkModules already logged the failure.
+        });
     }
 
     /**
@@ -358,6 +989,7 @@ class EffectRenderer extends BaseRenderer {
      * Build the node-based pipeline for AO (GTAO), Bloom, Outline
      */
     _createNodePipeline() {
+        this._buildingPipeline = true;
         if (this.nodes?.ssrPass && typeof this.nodes.ssrPass.dispose === "function") {
             try {
                 this.nodes.ssrPass.dispose();
@@ -376,6 +1008,18 @@ class EffectRenderer extends BaseRenderer {
         }
 
         try {
+            if (
+                this.nodes &&
+                this.nodes.prePass &&
+                this.nodes.prePass.renderTarget &&
+                typeof this.nodes.prePass.renderTarget.dispose === "function"
+            ) {
+                try {
+                    this.nodes.prePass.renderTarget.dispose();
+                } catch {
+                    // ignore
+                }
+            }
             if (
                 this.nodes &&
                 this.nodes.scenePass &&
@@ -402,43 +1046,7 @@ class EffectRenderer extends BaseRenderer {
         // the primary pass' renderTarget to avoid extra GPU allocations.
         // Combine (add) color outputs from all scenes into a single color node.
         const postProcessing = scene && scene.userData && scene.userData.postProcessing || {};
-        // Merge defaults with scene overrides; deep-merge for ao/bloom/outline so missing values use defaults
-        const mergedPP = {
-            ...PP_DEFAULTS,
-            ...postProcessing,
-            ao: {
-                ...PP_DEFAULTS.ao,
-                ...postProcessing.ao ?? postProcessing.ssao ?? {},
-            },
-            bloom: {
-                ...PP_DEFAULTS.bloom,
-                ...postProcessing.bloom ?? {},
-            },
-            ssr: {
-                ...PP_DEFAULTS.ssr,
-                ...postProcessing.ssr ?? {},
-            },
-            outline: {
-                ...PP_DEFAULTS.outline,
-                ...postProcessing.outline ?? {},
-            },
-            dof: {
-                ...PP_DEFAULTS.dof,
-                ...postProcessing.dof ?? {},
-            },
-            lut: {
-                ...PP_DEFAULTS.lut,
-                ...postProcessing.lut ?? {},
-            },
-            film: {
-                ...PP_DEFAULTS.film,
-                ...postProcessing.film ?? {},
-            },
-            chromaticAberration: {
-                ...PP_DEFAULTS.chromaticAberration,
-                ...postProcessing.chromaticAberration ?? {},
-            },
-        };
+        const mergedPP = normalizePostProcessingConfig(postProcessing);
 
         // Seed the enable flags + uniforms from scene-persisted settings so
         // a freshly-loaded scene renders with the saved post config.
@@ -459,26 +1067,56 @@ class EffectRenderer extends BaseRenderer {
         } else if (!mergedPP.lut.enabled) {
             this.nodes.loadedLut = null;
         }
-        // FIXME: implement emissive handling if PP settings require it
-        const includeEmissive = !true;
+        const prepassRequirements = getPostProcessingPrepassRequirements(mergedPP);
+        const needsPrePass = prepassRequirements.depth;
 
-        // Pre-pass for AO (opaque only, main scene)
-        const prePass = pass(scene, camera);
-        patchPassNode(prePass, false, true, true, true, false, {
-            shouldHideObject: object => object.isLine === true || object.isPoints === true || object.isSprite === true,
-        });
+        // Geometry inputs are expensive on tiled and integrated GPUs. Only
+        // allocate the opaque prepass and its MRT attachments for effects that
+        // consume them; bloom/LUT/film/chromatic/outline use the beauty pass.
+        let prePass = null;
+        let sceneDepth = null;
+        let sceneNormal = null;
+        let sceneSSRMask = null;
+        let sceneRoughness = null;
 
-        const mrtDesc = {
-            output: vec4(0, 0, 0, 0),
-            normal: normalView, // view-space normals
-            // Feed SSR a scalar reflectance mask instead of pure metalness.
-            // Metals stay near 1.0 while dielectrics get a small smoothness-weighted
-            // base reflectance so polished non-metals can contribute to SSR too.
-            ssrMask: metalness.oneMinus().mul(roughness.oneMinus().mul(float(0.04))).add(metalness),
-            roughness,
-        };
-        if (includeEmissive) mrtDesc.emissive = emissive;
-        prePass.setMRT(mrt(mrtDesc));
+        if (needsPrePass) {
+            prePass = pass(scene, camera);
+            patchPassNode(prePass, false, true, true, true, false, {
+                shouldHideObject: object => object.isLine === true || object.isPoints === true || object.isSprite === true,
+            });
+
+            const mrtDesc = {
+                // PassNode requires a color attachment alongside its depth
+                // texture. Keep it minimal and add only demanded G-buffer data.
+                output: vec4(0, 0, 0, 0),
+            };
+            if (prepassRequirements.normal) {
+                mrtDesc.normal = normalView;
+            }
+            if (prepassRequirements.ssrMask) {
+                // Feed SSR a scalar reflectance mask instead of pure metalness.
+                // Metals stay near 1.0 while polished dielectrics retain their
+                // physically plausible base reflectance.
+                mrtDesc.ssrMask = metalness.oneMinus()
+                    .mul(roughness.oneMinus().mul(float(0.04)))
+                    .add(metalness);
+            }
+            if (prepassRequirements.roughness) {
+                mrtDesc.roughness = roughness;
+            }
+            prePass.setMRT(mrt(mrtDesc));
+
+            sceneDepth = prePass.getTextureNode("depth");
+            if (prepassRequirements.normal) {
+                sceneNormal = prePass.getTextureNode("normal");
+            }
+            if (prepassRequirements.ssrMask) {
+                sceneSSRMask = prePass.getTextureNode("ssrMask");
+            }
+            if (prepassRequirements.roughness) {
+                sceneRoughness = prePass.getTextureNode("roughness");
+            }
+        }
 
         const primaryPass = pass(scene, camera);
         patchPassNode(primaryPass, true, true, false, true);
@@ -487,19 +1125,6 @@ class EffectRenderer extends BaseRenderer {
 
         // Use firstSceneColor for post-processing effects
         let sceneColor = firstSceneColor;
-
-        // Use depth/normal/emissive from the prePass for AO/bloom/outline
-        const sceneDepth = prePass.getTextureNode("depth");
-        const sceneNormal = prePass.getTextureNode("normal");
-        const sceneSSRMask = prePass.getTextureNode("ssrMask");
-        const sceneRoughness = prePass.getTextureNode("roughness");
-        // If emissive was disabled in postProcessing, primaryPass may not expose an emissive texture
-        let sceneEmissive = null;
-        try {
-            if (includeEmissive) sceneEmissive = prePass.getTextureNode("emissive");
-        } catch {
-            sceneEmissive = null;
-        }
 
         this.nodes.sceneRoughness = sceneRoughness;
 
@@ -511,12 +1136,9 @@ class EffectRenderer extends BaseRenderer {
         if (aoCfg.enabled) {
             aoPass = ao(sceneDepth, sceneNormal, camera);
 
-            // Map old parameters when present
-            // Original (WebGL AO) had: kernelRadius, minDistance, maxDistance.
-            // GTAO Node expects: distanceExponent, distanceFallOff, radius, scale, thickness.
-            // We'll do a light mapping—fallbacks chosen to be sensible:
-            aoPass.distanceExponent.value = aoCfg.distanceExponent;
-            aoPass.distanceFallOff.value = aoCfg.distanceFallOff;
+            // Map old parameters when present. Original WebGL AO used kernelRadius,
+            // minDistance, and maxDistance; GTAO's supported r185 controls are
+            // radius, scale, thickness, resolutionScale, and samples.
             // Use kernelRadius as the canonical radius parameter (map legacy radius if present elsewhere)
             aoPass.radius.value = aoCfg.kernelRadius;
             aoPass.scale.value = aoCfg.scale;
@@ -546,7 +1168,7 @@ class EffectRenderer extends BaseRenderer {
         let ssrPass = null;
 
         if (ssrCfg.enabled) {
-            const roughnessNode = ssrCfg.blur === false ? null : sceneRoughness.sample(screenUV).r;
+            const roughnessNode = ssrCfg.blur === false ? null : sceneRoughness?.sample(screenUV).r;
 
             ssrPass = ssr(
                 sceneColor,
@@ -627,8 +1249,6 @@ class EffectRenderer extends BaseRenderer {
                 selectedObjects: this.selectedObjects,
                 edgeGlow,
                 edgeThickness,
-                depthNode: sceneDepth,
-                depthTexture: prePass.renderTarget?.depthTexture ?? null,
             });
 
             const originalOutlineUpdateBefore = outlinePass.updateBefore.bind(outlinePass);
@@ -649,15 +1269,6 @@ class EffectRenderer extends BaseRenderer {
                 }
             };
 
-            const originalOutlineSetup = outlinePass.setup.bind(outlinePass);
-            outlinePass.setup = (...args) => {
-                const result = originalOutlineSetup(...args);
-                applyOutlineMaskBias(outlinePass);
-                return result;
-            };
-
-            applyOutlineMaskBias(outlinePass);
-
             // Recreate the demo's pulsing/strength/color mix
             const {visibleEdge, hiddenEdge} = outlinePass;
             const period = time.div(pulsePeriod).mul(2.0);
@@ -668,13 +1279,14 @@ class EffectRenderer extends BaseRenderer {
         }
 
         // Bind nodes for later updates
+        this.nodes.prePass = prePass;
         this.nodes.scenePass = primaryPass;
         this.nodes.sceneColor = firstSceneColor;
         this.nodes.sceneDepth = sceneDepth;
         this.nodes.sceneNormal = sceneNormal;
         this.nodes.sceneSSRMask = sceneSSRMask;
         this.nodes.sceneRoughness = sceneRoughness;
-        this.nodes.sceneEmissive = sceneEmissive;
+        this.nodes.sceneEmissive = null;
 
         this.nodes.aoPass = aoPass;
 
@@ -701,8 +1313,11 @@ class EffectRenderer extends BaseRenderer {
         this.renderPipeline = new RenderPipeline(this.renderer);
         this.renderPipeline._quadMesh.name = "EffectRendererPostProcessing";
 
-        // this.renderPipeline.outputColorTransform = false;
+        // RenderPipeline owns the one and only final tone-map + output color
+        // conversion. All effect nodes above operate in the working color space.
+        this.renderPipeline.outputColorTransform = true;
         this.updatePipelineOutput();
+        this._buildingPipeline = false;
     }
 
     updatePipelineOutput() {
@@ -784,15 +1399,6 @@ class EffectRenderer extends BaseRenderer {
         // a graded vec4.
         if (this.nodes.filmEnabled) {
             finalOutput = film(finalOutput, this.nodes.filmIntensity);
-        }
-
-        // Apply tone mapping at the end of the chain
-        if (this.renderer.toneMapping !== NoToneMapping) {
-            finalOutput = toneMapping(
-                this.renderer.toneMapping,
-                uniform(this.renderer.toneMappingExposure),
-                finalOutput,
-            );
         }
 
         this.renderPipeline.outputNode = finalOutput;
@@ -974,10 +1580,29 @@ class EffectRenderer extends BaseRenderer {
      * @param {object} postProcessing
      */
     updatePostProcessingFromScene(postProcessing) {
-        if (!postProcessing) return;
+        postProcessing = normalizePostProcessingConfig(postProcessing);
 
         // AO mapping + dynamic creation/removal
         try {
+            if (!this._buildingPipeline && !this.shouldUsePostProcessingPipeline(postProcessing)) {
+                if (this.renderPipeline && typeof this.renderPipeline.dispose === "function") {
+                    try {
+                        this.renderPipeline.dispose();
+                    } catch {
+                        // ignore
+                    }
+                }
+                this.renderPipeline = null;
+                this.ready = false;
+                return;
+            }
+
+            if (!this._buildingPipeline && !this.renderPipeline) {
+                this._createNodePipeline();
+                this.ready = true;
+                return;
+            }
+
             // Prefer `postProcessing.ao`, fallback to old key `ssao` for compatibility
             const aoCfg = postProcessing.ao ?? postProcessing.ssao ?? {};
             const aoEnabled = aoCfg.enabled ?? true;
@@ -1006,10 +1631,6 @@ class EffectRenderer extends BaseRenderer {
             // Apply parameter mapping if AO node exists
             const aoPass = this.nodes.aoPass;
             if (aoPass) {
-                if (typeof aoCfg.distanceExponent === "number" && aoPass.distanceExponent)
-                    aoPass.distanceExponent.value = aoCfg.distanceExponent;
-                if (typeof aoCfg.distanceFallOff === "number" && aoPass.distanceFallOff)
-                    aoPass.distanceFallOff.value = aoCfg.distanceFallOff;
                 // Only accept kernelRadius; legacy min/max mapping handled below
                 if (typeof aoCfg.kernelRadius === "number" && aoPass.radius) aoPass.radius.value = aoCfg.kernelRadius;
                 if (typeof aoCfg.scale === "number" && aoPass.scale) aoPass.scale.value = aoCfg.scale;
@@ -1017,17 +1638,6 @@ class EffectRenderer extends BaseRenderer {
                 if (typeof aoCfg.resolutionScale === "number") aoPass.resolutionScale = aoCfg.resolutionScale;
                 if (typeof aoCfg.samples === "number" && aoPass.samples)
                     aoPass.samples.value = Math.max(1, Math.round(aoCfg.samples));
-
-                // Map legacy min/max distance into GTAO params
-                const minD = typeof aoCfg.minDistance === "number" ? aoCfg.minDistance : null;
-                const maxD = typeof aoCfg.maxDistance === "number" ? aoCfg.maxDistance : null;
-                if (minD !== null || maxD !== null) {
-                    const mapping = this._mapMinMaxToGTAO(minD, maxD);
-                    if (mapping.distanceExponent !== null && aoPass.distanceExponent)
-                        aoPass.distanceExponent.value = mapping.distanceExponent;
-                    if (mapping.distanceFallOff !== null && aoPass.distanceFallOff)
-                        aoPass.distanceFallOff.value = mapping.distanceFallOff;
-                }
             }
         } catch (e) {
             void e; // non-fatal
@@ -1401,10 +2011,19 @@ class EffectRenderer extends BaseRenderer {
         }
     }
 
+    isRuntimeSceneRevealActive() {
+        return this.scene?.userData?.[RUNTIME_SCENE_REVEAL_ACTIVE_KEY] === true;
+    }
+
     /**
      * Keep batches hot
      */
     updateBatches() {
+        if (this.isRuntimeSceneRevealActive()) {
+            this.batchManager?.showOriginalMeshes?.();
+            return;
+        }
+
         try {
             const enableDynamic =
                 !(this.scene?.userData?.rendering?.batching?.enableDynamic === false) && isBatchManagerSupported();
@@ -1436,7 +2055,7 @@ class EffectRenderer extends BaseRenderer {
         if (!this.batchEnabled || !this.batchManager) return;
 
         this.batchManager.updateBatchesForSceneChanges();
-        this.batchManager.updateBatchedMeshes(this.camera, this.renderer);
+        this.batchManager.updateBatchedMeshes();
     }
 
     hideOriginalMeshes() {
@@ -1453,15 +2072,22 @@ class EffectRenderer extends BaseRenderer {
      * Render
      */
     render() {
-        this.sparkLighting?.update();
+        const substageTrace = beginRenderSubstageDiagnostics();
+        // Renderer backends are populated during init; retry here as well so
+        // a renderer created during a mode transition cannot miss the guard.
+        installFiniteDrawGuard(this.renderer);
+        this.ensureSparkRuntimeIfNeeded();
+        withRenderSubstage(substageTrace, "sparkLighting", () => this.sparkLighting?.update());
 
         if (!this.ready || !this.renderPipeline) {
-            // If background is set, we need to clear buffers manually
-            if (this.scene.background) {
-                this.renderer.clear();
-            }
+            // The shared renderer has autoClear disabled so compositing passes can
+            // control their buffers. Every top-level frame must still begin clean,
+            // including editor scenes that use the canvas background instead of
+            // Scene.background.
+            this.renderer.clear();
 
-            this._standardRender();
+            this._standardRender(substageTrace);
+            finishRenderSubstageDiagnostics(substageTrace, this.renderer, this.scene);
             return;
         }
 
@@ -1474,90 +2100,139 @@ class EffectRenderer extends BaseRenderer {
 
         const effectivePixelRatio = this.renderer.getPixelRatio();
 
-        this.sceneTraverser?.update();
-
-        if (this.batchManager && this.meshHandler) {
-            this.batchManager.setSceneMeshes(this.meshHandler.results);
+        const runtimeRevealActive = this.isRuntimeSceneRevealActive();
+        const wantsDynamicBatching =
+            !runtimeRevealActive &&
+            (this.batchEnabled ||
+                !!this.batchManager ||
+                (!(this.scene?.userData?.rendering?.batching?.enableDynamic === false) && isBatchManagerSupported()));
+        const shouldSyncCSSObjects = this.shouldSyncCSS3DObjects(runtimeRevealActive);
+        const needsTraversalResults = wantsDynamicBatching || shouldSyncCSSObjects;
+        const didUpdateSceneMatrices = withRenderSubstage(
+            substageTrace,
+            "sceneMatrices",
+            () => this.updateSceneMatricesForRender(needsTraversalResults),
+        );
+        const hasTraversalResults = didUpdateSceneMatrices && this.sceneTraverser;
+        if (this.batchManager && this.meshHandler && wantsDynamicBatching && hasTraversalResults) {
+            withRenderSubstage(
+                substageTrace,
+                "sceneMeshSync",
+                () => this.batchManager.setSceneMeshes(this.meshHandler.results, this.meshHandler.revision),
+            );
         }
 
         // Use cached CSS size from ResizeObserver — avoids forced reflow each frame
         const cssW = this._canvasSize.w || window.innerWidth;
         const cssH = this._canvasSize.h || window.innerHeight;
-        this.resize(cssW, cssH, effectivePixelRatio);
+        withRenderSubstage(substageTrace, "resize", () => this.resize(cssW, cssH, effectivePixelRatio));
 
         // batching + render
-        this.updateBatches();
-        if (this.rendererCSS && typeof this.rendererCSS.setExternalCSSObjects === "function") {
-            const externalCSSObjects = this.cssHandler ? this.cssHandler.results : [];
-            this.rendererCSS.setExternalCSSObjects(externalCSSObjects);
+        withRenderSubstage(substageTrace, "updateBatches", () => this.updateBatches());
+        if (shouldSyncCSSObjects) {
+            withRenderSubstage(
+                substageTrace,
+                "cssSync",
+                () => this.syncCSS3DObjects(didUpdateSceneMatrices, runtimeRevealActive),
+            );
         }
-        if (this.batchEnabled) this.hideOriginalMeshes();
-
-        // Project objects and update frustums
-
-        // const camera = this.camera;
-        // if (this.renderer._frustumArray ) {
-
-        //     for (const scene of [this.scene]) {
-
-        //         const frustum = camera.isArrayCamera ? this.renderer._frustumArray : this.renderer._frustum;
-
-        //         if ( ! camera.isArrayCamera ) {
-
-        //             this.renderer._projScreenMatrix.multiplyMatrices( camera.projectionMatrix, camera.matrixWorldInverse );
-        //             frustum.setFromProjectionMatrix( this.renderer._projScreenMatrix, camera.coordinateSystem, camera.reversedDepth );
-
-        //         }
-
-        //         if (!this.renderer.clippingContext) this.renderer.clippingContext = new ClippingContext();
-        //         this.renderer.clippingContext.updateGlobal( scene, camera );
-
-        //         const renderList = this.renderer._renderLists.get( scene, camera );
-        //         renderList.begin();
-
-        //         this.renderer._projectObject( scene, camera, 0, renderList, this.renderer.clippingContext );
-
-        //         renderList.finish();
-
-        //         if ( this.renderer.sortObjects === true ) {
-
-        //             renderList.sort( this.renderer._opaqueSort, this.renderer._transparentSort );
-
-        //         }
-
-        //         camera.isManualUpdateRenderList = true;
-        //         scene.isManualUpdateRenderList = true;
-
-        //     }
-        // }
+        if (this.batchEnabled && !runtimeRevealActive) {
+            withRenderSubstage(substageTrace, "hideOriginalMeshes", () => this.hideOriginalMeshes());
+        }
 
         try {
-            // If background is set, we need to clear buffers manually or ensure autoClear is handled
-            // For WebGPU post-processing, it's safer to clear before rendering if we have a background
-            if (this.scene.background) {
+            withRenderSubstage(substageTrace, "pipelineRender", () => {
                 this.renderer.clear();
-            }
-            this.renderPipeline.render();
+                this.renderPipeline.render();
+            });
         } finally {
-            if (this.batchEnabled) this.showOriginalMeshes();
+            if (this.batchEnabled && !runtimeRevealActive) {
+                withRenderSubstage(substageTrace, "showOriginalMeshes", () => this.showOriginalMeshes());
+            }
         }
 
-        if (this.rendererCSS && this.scene && this.camera) {
-            this.rendererCSS.render(this.scene, this.camera);
+        if (this.shouldRenderCSS3D(runtimeRevealActive)) {
+            withRenderSubstage(substageTrace, "cssSync", () => this.rendererCSS.render(this.scene, this.camera));
         }
+        finishRenderSubstageDiagnostics(substageTrace, this.renderer, this.scene);
     }
 
     /**
      * Fallback direct render (no post)
      */
-    _standardRender() {
+    _standardRender(substageTrace = null) {
+        const ownsSubstageTrace = !substageTrace;
+        const trace = substageTrace || beginRenderSubstageDiagnostics();
         try {
-            this.scene?.updateMatrixWorld(true);
+            const runtimeRevealActive = this.isRuntimeSceneRevealActive();
+            const wantsDynamicBatching =
+                !runtimeRevealActive &&
+                (this.batchEnabled ||
+                    !!this.batchManager ||
+                    (!(this.scene?.userData?.rendering?.batching?.enableDynamic === false) && isBatchManagerSupported()));
+            const shouldSyncCSSObjects = this.shouldSyncCSS3DObjects(runtimeRevealActive);
+            const needsTraversalResults = wantsDynamicBatching || shouldSyncCSSObjects;
+            const didUpdateSceneMatrices = withRenderSubstage(
+                trace,
+                "sceneMatrices",
+                () => this.updateSceneMatricesForRender(needsTraversalResults),
+            );
+            const hasTraversalResults = didUpdateSceneMatrices && this.sceneTraverser;
+            if (this.batchManager && this.meshHandler && wantsDynamicBatching && hasTraversalResults) {
+                withRenderSubstage(
+                    trace,
+                    "sceneMeshSync",
+                    () => this.batchManager.setSceneMeshes(this.meshHandler.results, this.meshHandler.revision),
+                );
+            }
+
+            withRenderSubstage(trace, "updateBatches", () => this.updateBatches());
+            if (shouldSyncCSSObjects) {
+                withRenderSubstage(
+                    trace,
+                    "cssSync",
+                    () => this.syncCSS3DObjects(didUpdateSceneMatrices, runtimeRevealActive),
+                );
+            }
+
+            if (this.batchEnabled && !runtimeRevealActive) {
+                withRenderSubstage(trace, "hideOriginalMeshes", () => this.hideOriginalMeshes());
+            }
             if (this.scene) {
-                this.renderer.render(this.scene, this.camera);
+                try {
+                    withRenderSubstage(trace, "directRender", () => this.renderer.render(this.scene, this.camera));
+                } finally {
+                    if (this.batchEnabled && !runtimeRevealActive) {
+                        withRenderSubstage(trace, "showOriginalMeshes", () => this.showOriginalMeshes());
+                    }
+                }
+            }
+
+            if (this.shouldRenderCSS3D(runtimeRevealActive)) {
+                withRenderSubstage(trace, "cssSync", () => this.rendererCSS.render(this.scene, this.camera));
             }
         } catch (e) {
+            const normalized = isRecoverableNonFiniteDrawError(e)
+                ? normalizeNonFiniteInstanceCounts(this.scene)
+                : 0;
+            if (normalized > 0) {
+                try {
+                    // A malformed count is a recoverable scene-data problem.
+                    // Repair it and retry once in the same frame so a single
+                    // stale RenderObject cannot turn Play into a black frame.
+                    this.renderer.render(this.scene, this.camera);
+                    console.warn(`[EffectRenderer] Normalized ${normalized} non-finite draw value(s); recovered in the same frame.`);
+                    return;
+                } catch (retryError) {
+                    console.warn("EffectRenderer: recovered draw retry failed", retryError);
+                }
+            }
             console.warn("EffectRenderer: Standard render failed", e);
+            if (this.batchEnabled && !this.isRuntimeSceneRevealActive()) {
+                this.showOriginalMeshes();
+            }
+        } finally {
+            if (ownsSubstageTrace) finishRenderSubstageDiagnostics(trace, this.renderer, this.scene);
         }
     }
 
@@ -1617,6 +2292,18 @@ class EffectRenderer extends BaseRenderer {
         try {
             if (
                 this.nodes &&
+                this.nodes.prePass &&
+                this.nodes.prePass.renderTarget &&
+                typeof this.nodes.prePass.renderTarget.dispose === "function"
+            ) {
+                try {
+                    this.nodes.prePass.renderTarget.dispose();
+                } catch {
+                    // ignore
+                }
+            }
+            if (
+                this.nodes &&
                 this.nodes.scenePass &&
                 this.nodes.scenePass.renderTarget &&
                 typeof this.nodes.scenePass.renderTarget.dispose === "function"
@@ -1634,13 +2321,17 @@ class EffectRenderer extends BaseRenderer {
         // Nodes are GC’d with RenderPipeline; drop refs
         this.renderPipeline = null;
         this.nodes = {
+            prePass: null,
             scenePass: null,
             sceneColor: null,
             sceneDepth: null,
             sceneNormal: null,
+            sceneSSRMask: null,
+            sceneRoughness: null,
             sceneEmissive: null,
             aoPass: null,
             bloomPass: null,
+            ssrPass: null,
             dofPass: null,
             dofFocusDistance: null,
             dofFocalLength: null,
@@ -1656,11 +2347,15 @@ class EffectRenderer extends BaseRenderer {
             this.batchManager = null;
         }
 
+        this.sparkLoadGeneration++;
+        this.sparkScene?.removeEventListener?.("childadded", this.onSparkSceneChildAdded);
+        this.scene?.removeEventListener?.("childadded", this.onNonFiniteDrawObjectAdded);
+        this.sparkScene = null;
         this.scene = null;
         this.camera = null;
         this.sparkLighting?.dispose();
         this.sparkLighting = null;
-        disposeSparkComposite(this.sparkComposite);
+        this.sparkModules?.disposeSparkComposite?.(this.sparkComposite);
         this.sparkComposite = null;
         this.renderer = null;
         this.rendererCSS = null;
