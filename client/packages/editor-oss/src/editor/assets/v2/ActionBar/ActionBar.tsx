@@ -299,6 +299,7 @@ export const ActionBar = ({
   const showQuickBuild = builderMode === "quick";
   const showMeshCad = builderMode === "mesh-cad";
   const showPlanCad = builderMode === "bim-plan";
+  const showLauncherBar = !showQuickBuild && !showPlanCad;
 
   // Calculate error count from logs
   const errorCount = gameDebugLogsRef.current.filter(
@@ -727,13 +728,15 @@ export const ActionBar = ({
 
   return (
     <>
-      <Container
-        style={
-          pinnedCodeEditorWidth > 0
-            ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
-            : undefined
-        }
-      >
+      {showLauncherBar && (
+        <Container
+          data-testid="actionbar-container"
+          style={
+            pinnedCodeEditorWidth > 0
+              ? { left: `calc(50% - ${pinnedCodeEditorWidth / 2}%)` }
+              : undefined
+          }
+        >
         <CADActionBarControls
           forceVisible={showMeshCad}
           allowAutoVisible={showMeshCad}
@@ -1018,7 +1021,8 @@ export const ActionBar = ({
             </>,
             document.body,
           )}
-      </Container>
+        </Container>
+      )}
 
       {showQuickBuild && (
         <QuickBuildToolbar

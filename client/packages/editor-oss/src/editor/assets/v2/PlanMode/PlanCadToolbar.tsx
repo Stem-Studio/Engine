@@ -202,6 +202,13 @@ function isPlanPlanePlacementTool(tool: PlanCadToolId) {
   return isPlanStructureTool(tool) || tool === "part";
 }
 
+function requestStructureTopDownView(app: EngineRuntime | undefined, tool: PlanCadToolId) {
+  if (!app || !isPlanStructureTool(tool)) return;
+  const editor = asPlanCadRuntime(app).editor;
+  if (editor?.view === "top") return;
+  app.call?.("changeView", editor, "top");
+}
+
 const PLAN_CAD_PRIMARY_TOOLS = PLAN_CAD_TOOLS.filter(
   (tool) => tool.id === "select",
 );
@@ -948,6 +955,7 @@ export const PlanCadToolbar = ({
 
   const activateTool = useCallback(
     (tool: PlanCadToolId) => {
+      requestStructureTopDownView(global.app as EngineRuntime | undefined, tool);
       const previousTool = activeToolRef.current;
       activeToolRef.current = tool;
       setOpenToolGroupId(null);
@@ -1062,25 +1070,18 @@ export const PlanCadToolbar = ({
     const app = global.app as EngineRuntime | undefined;
     if (!app) return;
 
-    const shouldDisableEditorSelection = activeTool !== "select";
-    if (shouldDisableEditorSelection) {
-      if (previousDisableClickEvents.current === null) {
-        previousDisableClickEvents.current = app.disableClickEvents;
-      }
-      app.disableClickEvents = true;
-      return () => {
-        if (previousDisableClickEvents.current !== null) {
-          app.disableClickEvents = previousDisableClickEvents.current;
-          previousDisableClickEvents.current = null;
-        }
-      };
+    if (previousDisableClickEvents.current === null) {
+      previousDisableClickEvents.current = app.disableClickEvents;
     }
+    app.disableClickEvents = true;
 
-    if (previousDisableClickEvents.current !== null) {
-      app.disableClickEvents = previousDisableClickEvents.current;
-      previousDisableClickEvents.current = null;
-    }
-  }, [activeTool]);
+    return () => {
+      if (previousDisableClickEvents.current !== null) {
+        app.disableClickEvents = previousDisableClickEvents.current;
+        previousDisableClickEvents.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const app = getPlanCadRuntime();
@@ -1135,6 +1136,8 @@ export const PlanCadToolbar = ({
         });
         if (planObject) {
           app.editor.select?.(planObject);
+        } else {
+          app.editor.select?.(null);
         }
         return;
       }
@@ -1288,7 +1291,6 @@ export const PlanCadToolbar = ({
     const activeTouchPointers = new Set<number>();
     let pendingPointerMove: PointerEvent | null = null;
     let pointerMoveFrame: number | null = null;
-    let selectPointerCapturedPlanCad = false;
 
     const isPlanCadUi = (target: EventTarget | null) =>
       target instanceof Element &&
@@ -1327,7 +1329,6 @@ export const PlanCadToolbar = ({
       if (event.pointerType === "touch") {
         activeTouchPointers.add(event.pointerId);
       }
-      const activeTool = activeToolRef.current;
       if (
         event.button !== 0 ||
         shouldIgnorePointer(event) ||
@@ -1336,11 +1337,6 @@ export const PlanCadToolbar = ({
         isPlanCadUi(event.target)
       ) {
         return;
-      }
-      if (activeTool === "select") {
-        const hit = getPointerHitForTool(event, activeTool);
-        selectPointerCapturedPlanCad = !!findPlanCadNodeObject(hit?.object);
-        if (!selectPointerCapturedPlanCad) return;
       }
       downPoint = { x: event.clientX, y: event.clientY };
       activePointerId = event.pointerId;
@@ -1380,7 +1376,6 @@ export const PlanCadToolbar = ({
 
     const handlePointerLeave = () => {
       cancelScheduledPointerMove();
-      selectPointerCapturedPlanCad = false;
       updatePreview(null);
     };
 
@@ -1391,8 +1386,6 @@ export const PlanCadToolbar = ({
       cancelScheduledPointerMove();
       if (!downPoint || activePointerId !== event.pointerId) return;
       const activeTool = activeToolRef.current;
-      const capturedPlanCad = selectPointerCapturedPlanCad;
-      selectPointerCapturedPlanCad = false;
       const distance = Math.hypot(
         event.clientX - downPoint.x,
         event.clientY - downPoint.y,
@@ -1410,8 +1403,16 @@ export const PlanCadToolbar = ({
       )
         return;
 
-      if (activeTool === "select" && !capturedPlanCad) return;
       stopEditorClick(event);
+      if (activeTool === "select") {
+        const hit = getPointerHitForTool(event, activeTool);
+        if (hit) {
+          handlePlanCadHit(hit, event, { commit: true, source: "viewport" });
+        } else {
+          app.editor.select?.(null);
+        }
+        return;
+      }
       if (
         isPlanStructureTool(activeTool) &&
         polygonPointsRef.current.length >= 3 &&
@@ -1449,7 +1450,6 @@ export const PlanCadToolbar = ({
         activePointerId = null;
         downPoint = null;
       }
-      selectPointerCapturedPlanCad = false;
       updatePreview(null);
     };
 
@@ -1533,6 +1533,7 @@ export const PlanCadToolbar = ({
   const handleCancelDraftAndSelect = () => {
     cancelDraft();
     activateTool("select");
+    onClose?.();
   };
 
   const handleClose = () => {
@@ -1919,10 +1920,10 @@ export const PlanCadToolbar = ({
               </UtilityButton>
             </Tooltip>
           )}
-          <Tooltip text="Cancel structure draft" height="auto">
+          <Tooltip text="Cancel BIM build mode" height="auto">
             <UtilityButton
               type="button"
-              aria-label="Cancel BIM structure draft"
+              aria-label="Cancel BIM build mode"
               data-testid="plan-cad-cancel-draft"
               onClick={handleCancelDraftAndSelect}
             >
@@ -1936,6 +1937,7 @@ export const PlanCadToolbar = ({
 };
 
 const Toolbar = styled(BuilderToolbar).attrs({
+  $bottom: "18px",
   $maxWidth: "min(1120px, calc(100vw - 520px))",
   $mobileBreakpoint: "860px",
 })``;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 
 import { DYNAMIC_ROOT_NAME } from "@stem/editor-oss/scene/dynamicRoots";
-import { shouldIncludeProjectTreeObject } from "./projectTreeFilters";
+import { shouldIncludeProjectTreeObject, shouldRecurseProjectTreeObject } from "./projectTreeFilters";
 
 describe("shouldIncludeProjectTreeObject", () => {
     it("keeps dynamic/runtime helpers out of the project tree", () => {
@@ -21,5 +21,14 @@ describe("shouldIncludeProjectTreeObject", () => {
         planObject.userData.isPlanCadManaged = true;
 
         expect(shouldIncludeProjectTreeObject(planObject)).toBe(true);
+    });
+});
+
+describe("shouldRecurseProjectTreeObject", () => {
+    it("recurses into generated BIM Plan children", () => {
+        const planObject = new THREE.Group();
+        planObject.userData.isPlanCadManaged = true;
+
+        expect(shouldRecurseProjectTreeObject(planObject)).toBe(true);
     });
 });

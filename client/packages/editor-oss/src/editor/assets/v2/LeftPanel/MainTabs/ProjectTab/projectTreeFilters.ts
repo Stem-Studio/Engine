@@ -5,6 +5,7 @@ type ProjectTreeObjectLike = {
     userData?: {
         isRuntimeOnly?: unknown;
         isPlanCadManaged?: unknown;
+        isStemObject?: unknown;
     };
 };
 
@@ -14,4 +15,8 @@ export function shouldIncludeProjectTreeObject(object: ProjectTreeObjectLike) {
         return false;
     }
     return true;
+}
+
+export function shouldRecurseProjectTreeObject(object: ProjectTreeObjectLike, isPrefabObject = false) {
+    return Boolean(object.userData?.isStemObject || object.userData?.isPlanCadManaged || isPrefabObject);
 }

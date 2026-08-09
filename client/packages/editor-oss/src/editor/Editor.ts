@@ -51,6 +51,7 @@ import {
 } from "../script-runtime/scriptImports";
 import {isScriptsEnabled} from "@stem/editor-oss/utils/featureFlags";
 import {DEFAULT_SNAPPING_SETTINGS} from "./assets/v2/RightPanel/panels/ProjectSettings/constants";
+import {deleteManagedPlanCadObject} from "./assets/v2/PlanMode/planCadEditorBridge";
 import {getPhysics} from "./assets/v2/utils/getPhysics";
 import BehaviorAttributeConverter from "./behaviors/BehaviorAttributeConverter";
 import {BehaviorConfig, BehaviorEditorOptions} from "./behaviors/BehaviorConfig";
@@ -3452,7 +3453,10 @@ class Editor {
                 new Set(
                     object
                         .filter((obj): obj is THREE.Object3D => obj !== null)
-                        .map(obj => this.getSelectionBoundaryObject(obj)),
+                        .map(obj => {
+                            const boundary = this.getSelectionBoundaryObject(obj);
+                            return this.getManagedPlanCadSelectionObject(boundary) || boundary;
+                        }),
                 ),
             );
 
@@ -3481,28 +3485,40 @@ class Editor {
             return;
         }
 
-        // Root of clicked object
-        const clickedRoot = this.getRootObject(clickedObject);
+        const managedPlanCadObject = this.getManagedPlanCadSelectionObject(clickedObject);
+        if (
+            managedPlanCadObject?.userData?.selectedBy &&
+            managedPlanCadObject.userData.selectedBy !== this.engine?.userId
+        ) {
+            return;
+        }
 
         let target: THREE.Object3D;
 
-        if (
-            !this.selected ||
-            Array.isArray(this.selected) ||
-            this.selected.type === "Scene" ||
-            (this.selected as any).isCamera
-        ) {
-            // Nothing selected, pick root
-            target = clickedRoot;
+        if (managedPlanCadObject) {
+            target = managedPlanCadObject;
         } else {
-            const currentRoot = this.getRootObject(this.selected);
+            // Root of clicked object
+            const clickedRoot = this.getRootObject(clickedObject);
 
-            if (currentRoot !== clickedRoot) {
-                // Different root clicked, reset selection to new root
+            if (
+                !this.selected ||
+                Array.isArray(this.selected) ||
+                this.selected.type === "Scene" ||
+                (this.selected as any).isCamera
+            ) {
+                // Nothing selected, pick root
                 target = clickedRoot;
             } else {
-                // Same root clicked, drill down toward clicked target
-                target = this.drillDownSelection(this.selected, clickedObject);
+                const currentRoot = this.getRootObject(this.selected);
+
+                if (currentRoot !== clickedRoot) {
+                    // Different root clicked, reset selection to new root
+                    target = clickedRoot;
+                } else {
+                    // Same root clicked, drill down toward clicked target
+                    target = this.drillDownSelection(this.selected, clickedObject);
+                }
             }
         }
 
@@ -3528,6 +3544,25 @@ class Editor {
 
         const skinnedMeshRoot = this.getSkinnedMeshSelectionRoot(obj);
         return skinnedMeshRoot || obj;
+    }
+
+    getManagedPlanCadSelectionObject(obj: THREE.Object3D): THREE.Object3D | null {
+        let current: THREE.Object3D | null = obj;
+
+        while (current && current.type !== "Scene") {
+            if (current.userData?.isPlanCadRoot === true) {
+                return current;
+            }
+            if (
+                current.userData?.isPlanCadManaged === true &&
+                typeof current.userData?.planNodeId === "string"
+            ) {
+                return current;
+            }
+            current = current.parent;
+        }
+
+        return null;
     }
 
     getBillboardSelectionRoot(obj: THREE.Object3D): THREE.Object3D | null {
@@ -4766,7 +4801,7 @@ class Editor {
                 selectedObjects.forEach(item => {
                     const object = this.objectByUuid(item.uuid);
                     if (object) {
-                        this.execute(new (RemoveObjectCommand as any)(object));
+                        void this.deleteObjectFromUserRequest(object);
                     }
                 });
                 this.select(null);
@@ -4777,7 +4812,7 @@ class Editor {
                 const object = this.objectByUuid(this.selected.uuid);
 
                 if (object) {
-                    this.execute(new (RemoveObjectCommand as any)(object));
+                    void this.deleteObjectFromUserRequest(object);
                     this.select(null);
                 }
             }
@@ -4786,6 +4821,11 @@ class Editor {
         if (e.key === "Escape" && this.transformControls && !isInputActive()) {
             this.select(null);
         }
+    };
+
+    private deleteObjectFromUserRequest = async (object: THREE.Object3D) => {
+        if (await deleteManagedPlanCadObject(this, object)) return;
+        await this.execute(new (RemoveObjectCommand as any)(object));
     };
 
     private handleCopyEvent = (e: any) => {

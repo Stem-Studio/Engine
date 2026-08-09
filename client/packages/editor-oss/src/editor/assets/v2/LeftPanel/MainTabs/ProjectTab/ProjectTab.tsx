@@ -17,7 +17,7 @@ import {showToast} from "@stem/editor-oss/showToast";
 import {isProtectedTreeNode} from "../../../../../../ui/tree/v2/helpers";
 import {Tree} from "../../../../../../ui/tree/v2/Tree";
 import {TreeItemData} from "../../../../../../ui/tree/v2/TreeItem";
-import {shouldIncludeProjectTreeObject} from "./projectTreeFilters";
+import {shouldIncludeProjectTreeObject, shouldRecurseProjectTreeObject} from "./projectTreeFilters";
 import {TextInput} from "../../../common/TextInput";
 import searchIcon from "../../../icons/search-icon-small.svg";
 import "../../css/ProjectTab.css";
@@ -421,7 +421,7 @@ export const ProjectTab = ({isVisible, setIsAddObjectViewOpen, unlockedPanelStat
 
         if (Array.isArray(obj.children)) {
             obj.children.forEach(child => {
-                if (child.userData.isStemObject || isPrefab(child)) {
+                if (shouldRecurseProjectTreeObject(child, isPrefab(child))) {
                     _parseData(child, data.children);
                 }
             });

@@ -7,6 +7,7 @@ import {getAsset} from "@stem/network/api/asset";
 import {resolveAssetRevisionId} from "../../../asset-management/AssetResolutionContext";
 import {RemoveObjectCommand} from "../../../command/Commands";
 import {useAssetResolutionContext} from "../../../context/AssetResolutionContext";
+import {deleteManagedPlanCadObject} from "../../../editor/assets/v2/PlanMode/planCadEditorBridge";
 import {useChangeModelRevision} from "../../../editor/asset-management/hooks/useChangeModelRevision";
 import {DEFAULT_UPLOAD_SETTINGS} from "../../../editor/assets/v2/LeftPanel/MainTabs/AssetsTab/ModelUpload/constants";
 import {useCreateModelRevision} from "../../../editor/models/hooks/models";
@@ -198,11 +199,13 @@ export const useRemoveObject = () => {
         const objectToRemove = app.editor?.objectByUuid(objectUuid);
         if (!objectToRemove || !objectToRemove.parent) return;
 
+        if (await deleteManagedPlanCadObject(app.editor, objectToRemove)) return;
+
         const modelID = objectToRemove.parent?.userData?.modelId as string | undefined;
 
         // Not an asset → normal remove
         if (!modelID) {
-            return app.editor!.execute(new (RemoveObjectCommand as any)(objectToRemove));
+            return app.editor!.execute(new RemoveObjectCommand(objectToRemove));
         }
 
         const parent = objectToRemove.parent;

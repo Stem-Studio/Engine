@@ -67,7 +67,6 @@ import {
   getQuickBuildBrushPoints,
   getQuickBuildPlacementCandidates,
   QuickBuildBrushMode,
-  QuickBuildPlacementCandidate,
   rebuildQuickBuildLiveBatch,
   refreshQuickBuildAdjacency,
 } from "./quickBuildSceneTools";
@@ -2864,6 +2863,7 @@ export const QuickBuildToolbar = ({
   return (
     <Toolbar
       ref={toolbarRef}
+      $bottom="18px"
       data-testid="quick-build-toolbar"
       data-quick-build-ui="true"
       data-active-tool={activeTool}

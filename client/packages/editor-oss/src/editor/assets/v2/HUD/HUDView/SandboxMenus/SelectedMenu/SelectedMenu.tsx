@@ -5,6 +5,7 @@ import {ObjectPreview} from "./ObjectPreview";
 import {ObjectSettings} from "./ObjectSettings/ObjectSettings";
 import {RemoveObjectCommand} from "@stem/editor-oss/command/Commands";
 import global from "@stem/editor-oss/global";
+import {deleteManagedPlanCadObject} from "../../../../PlanMode/planCadEditorBridge";
 import {MENU_LABELS} from "../../../../ContextMenu/ContextMenu";
 import {EditMenu} from "../../../../ContextMenu/EditMenu/EditMenu";
 import copyIcon from "../../../../ContextMenu/icons/v2/copy.svg";
@@ -41,7 +42,11 @@ export const SelectedMenu = ({selectedObj}: SelectedMenuProps) => {
         {
             label: MENU_LABELS.DELETE,
             icon: trashIcon,
-            onClick: () => app?.editor?.execute(new (RemoveObjectCommand as any)(selectedObj)),
+            onClick: async () => {
+                if (!app?.editor) return;
+                if (await deleteManagedPlanCadObject(app.editor, selectedObj)) return;
+                await app.editor.execute(new RemoveObjectCommand(selectedObj));
+            },
         },
     ];
 

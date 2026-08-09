@@ -88,12 +88,13 @@ export const focusVisibleRing = css`
 `;
 
 export const BuilderToolbar = styled.div<{
+  $bottom?: string;
   $maxWidth?: string;
   $mobileBreakpoint?: string;
 }>`
   position: absolute;
   z-index: 101;
-  bottom: 78px;
+  bottom: ${({ $bottom }) => $bottom ?? "78px"};
   left: 50%;
   transform: translateX(-50%);
   width: auto;

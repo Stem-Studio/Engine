@@ -4,6 +4,7 @@ import * as THREE from "three";
 import {CSGCommand, CSGOperation, RemoveObjectCommand} from "@stem/editor-oss/command/Commands";
 import global from "@stem/editor-oss/global";
 import { CSGOrderDialog } from "../../../../common/CSGOrderDialog";
+import {deleteManagedPlanCadObject} from "../../../../PlanMode/planCadEditorBridge";
 import {MENU_LABELS} from "../../../../ContextMenu/ContextMenu";
 import {EditMenu} from "../../../../ContextMenu/EditMenu/EditMenu";
 import copyIcon from "../../../../ContextMenu/icons/v2/copy.svg";
@@ -59,12 +60,13 @@ export const MultipleSelectedMenu = ({selectedObjects}: MultipleSelectedMenuProp
         setCsgDialogOperation(null);
     };
 
-    const handleDelete = () => {
+    const handleDelete = async () => {
         if (!app?.editor) return;
 
-        selectedObjects.forEach(obj => {
-            app.editor?.execute(new (RemoveObjectCommand as any)(obj));
-        });
+        for (const obj of selectedObjects) {
+            if (await deleteManagedPlanCadObject(app.editor, obj)) continue;
+            await app.editor.execute(new RemoveObjectCommand(obj));
+        }
     };
 
     const MENU = [

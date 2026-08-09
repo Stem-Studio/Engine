@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 
 import History from "@stem/editor-oss/command/History";
+import { RemoveObjectCommand } from "@stem/editor-oss/command/Commands";
 import global from "@stem/editor-oss/global";
 import Converter from "@stem/editor-oss/serialization/Converter";
 import {
@@ -13,6 +14,7 @@ import {
   createPlanCadRectangleZone,
   createPlanCadRootObject,
   createPlanCadWall,
+  deleteManagedPlanCadObject,
   findPlanCadNodeObject,
   findPlanCadNodeObjectById,
   findPlanCadRoot,
@@ -56,6 +58,31 @@ function getGeometrySignature(object: THREE.Object3D | null | undefined) {
     if (mesh.isMesh) geometryIds.push(mesh.geometry.uuid);
   });
   return geometryIds.join("|");
+}
+
+function createPopulatedPlanCadData() {
+  return createPlanCadPart(
+    createPlanCadRectangleZone(
+      createPlanCadRectangleSlab(
+        createPlanCadWall(
+          createDefaultPlanCadData(),
+          { x: 0, z: 0 },
+          { x: 5, z: 0 },
+        ),
+        { x: 0, z: 0 },
+        { x: 5, z: 4 },
+      ),
+      { x: 0.5, z: 0.5 },
+      { x: 2.5, z: 2.5 },
+    ),
+    { x: 1.5, z: 1.5 },
+    { partPresetId: "sofa" },
+  );
+}
+
+async function flushPlanCadSync() {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function createEditorHarness() {
@@ -388,7 +415,7 @@ describe("planCadEditorBridge", () => {
     disposeSync();
   });
 
-  it("recreates managed BIM geometry when a generated child is removed directly", async () => {
+  it("removes BIM node data when a managed generated object is removed directly", async () => {
     const { app, editor, scene } = createEditorHarness();
     const disposeSync = installPlanCadSceneSync(app);
     const data = createPlanCadWall(
@@ -406,11 +433,41 @@ describe("planCadEditorBridge", () => {
 
     editor.removeObject(wallObject);
     await Promise.resolve();
+    await Promise.resolve();
 
-    expect(getPlanCadSceneData(scene)?.nodes[wallId]).toBeDefined();
+    expect(getPlanCadSceneData(scene)?.nodes[wallId]).toBeUndefined();
     expect(
       findPlanCadNodeObjectById(findPlanCadRoot(scene), wallId),
-    ).toBeTruthy();
+    ).toBeNull();
+    disposeSync();
+  });
+
+  it("removes BIM node data when a generated descendant mesh is removed directly", async () => {
+    const { app, editor, scene } = createEditorHarness();
+    const disposeSync = installPlanCadSceneSync(app);
+    const data = createPlanCadWall(
+      createDefaultPlanCadData(),
+      { x: 0, z: 0 },
+      { x: 5, z: 0 },
+    );
+    const wallId = data.selectedNodeId!;
+    await commitPlanCadSceneData(editor, data);
+    const wallObject = findPlanCadNodeObjectById(
+      findPlanCadRoot(scene),
+      wallId,
+    );
+    const generatedMesh = wallObject?.children.find(
+      (child): child is THREE.Mesh => (child as THREE.Mesh).isMesh,
+    );
+    expect(generatedMesh).toBeTruthy();
+
+    editor.removeObject(generatedMesh);
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(scene)?.nodes[wallId]).toBeUndefined();
+    expect(
+      findPlanCadNodeObjectById(findPlanCadRoot(scene), wallId),
+    ).toBeNull();
     disposeSync();
   });
 
@@ -432,6 +489,109 @@ describe("planCadEditorBridge", () => {
 
     expect(getPlanCadSceneData(scene)).toBeNull();
     expect(findPlanCadRoot(scene)).toBeNull();
+    disposeSync();
+  });
+
+  it("does not recreate the BIM root after semantic root deletion and later sync triggers", async () => {
+    const { app, editor, scene } = createEditorHarness();
+    const disposeSync = installPlanCadSceneSync(app);
+    await commitPlanCadSceneData(editor, createPopulatedPlanCadData());
+    const root = findPlanCadRoot(scene);
+    expect(root).toBeTruthy();
+
+    await deleteManagedPlanCadObject(editor, root);
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(scene)).toBeNull();
+    expect(findPlanCadRoot(scene)).toBeNull();
+
+    app.call("objectChanged", editor, scene);
+    app.call("historyChanged", editor);
+    app.call("sceneLoaded", editor);
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(scene)).toBeNull();
+    expect(findPlanCadRoot(scene)).toBeNull();
+    disposeSync();
+  });
+
+  it("does not recreate the BIM root after deleting it through RemoveObjectCommand", async () => {
+    const { app, editor, scene } = createEditorHarness();
+    const disposeSync = installPlanCadSceneSync(app);
+    await commitPlanCadSceneData(editor, createPopulatedPlanCadData());
+    const root = findPlanCadRoot(scene);
+    expect(root).toBeTruthy();
+
+    await editor.execute(new RemoveObjectCommand(root!, root!));
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(scene)).toBeNull();
+    expect(findPlanCadRoot(scene)).toBeNull();
+
+    app.call("historyChanged", editor);
+    app.call("objectChanged", editor, scene);
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(scene)).toBeNull();
+    expect(findPlanCadRoot(scene)).toBeNull();
+    disposeSync();
+  });
+
+  it("does not regenerate BIM child nodes after every generated child is deleted", async () => {
+    const { app, editor, scene } = createEditorHarness();
+    const disposeSync = installPlanCadSceneSync(app);
+    await commitPlanCadSceneData(editor, createPopulatedPlanCadData());
+    const root = findPlanCadRoot(scene);
+    expect(root?.children.map((child) => child.userData.planNodeType)).toEqual([
+      "wall",
+      "slab",
+      "zone",
+      "item",
+    ]);
+
+    for (const child of [...root!.children]) {
+      await deleteManagedPlanCadObject(editor, child);
+      await flushPlanCadSync();
+      expect(findPlanCadNodeObjectById(findPlanCadRoot(scene), child.userData.planNodeId)).toBeNull();
+    }
+
+    const remainingData = getPlanCadSceneData(scene);
+    expect(
+      Object.values(remainingData?.nodes ?? {}).map((node) => node.type),
+    ).toEqual(["site", "building", "level"]);
+    expect(findPlanCadRoot(scene)?.children).toHaveLength(0);
+
+    app.call("historyChanged", editor);
+    app.call("objectChanged", editor, scene);
+    app.call("sceneLoaded", editor);
+    await flushPlanCadSync();
+
+    expect(
+      Object.values(getPlanCadSceneData(scene)?.nodes ?? {}).map(
+        (node) => node.type,
+      ),
+    ).toEqual(["site", "building", "level"]);
+    expect(findPlanCadRoot(scene)?.children).toHaveLength(0);
+    disposeSync();
+  });
+
+  it("does not resurrect deleted BIM data when a new empty scene is loaded", async () => {
+    const { app, editor, scene } = createEditorHarness();
+    const disposeSync = installPlanCadSceneSync(app);
+    await commitPlanCadSceneData(editor, createPopulatedPlanCadData());
+    const root = findPlanCadRoot(scene);
+    expect(root).toBeTruthy();
+
+    await deleteManagedPlanCadObject(editor, root);
+    await flushPlanCadSync();
+
+    const nextScene = new THREE.Scene();
+    editor.scene = nextScene;
+    app.call("sceneLoaded", editor);
+    await flushPlanCadSync();
+
+    expect(getPlanCadSceneData(nextScene)).toBeNull();
+    expect(findPlanCadRoot(nextScene)).toBeNull();
     disposeSync();
   });
 

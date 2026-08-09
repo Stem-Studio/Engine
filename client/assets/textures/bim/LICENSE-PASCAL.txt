@@ -1,0 +1,8 @@
+Pascal Editor material textures
+
+Source: /apps/editor/public/material in the Pascal Editor repository.
+License: MIT
+Copyright (c) 2026 Pascal Group Inc.
+
+These textures are used by the StemStudio BIM Plan procedural wall, slab, and
+object proxy materials.

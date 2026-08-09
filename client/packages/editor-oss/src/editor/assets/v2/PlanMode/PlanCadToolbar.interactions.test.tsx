@@ -217,6 +217,17 @@ describe("PlanCadToolbar interactions", () => {
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
+    it("owns viewport picking while BIM Plan is open", () => {
+        const app = installFakeApp();
+        const {unmount} = render(<PlanCadToolbar />);
+
+        expect(app.disableClickEvents).toBe(true);
+
+        unmount();
+
+        expect(app.disableClickEvents).toBe(false);
+    });
+
     it("does not add an opening when no wall target exists", async () => {
         const app = installFakeApp();
         render(<PlanCadToolbar />);
@@ -278,6 +289,51 @@ describe("PlanCadToolbar interactions", () => {
             expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
         });
         expect(app.editor.scene.userData.planCad).toBeUndefined();
+    });
+
+    it("cancels BIM Plan mode from the toolbar when controlled by ActionBar", async () => {
+        const app = installFakeApp();
+        const onClose = vi.fn();
+        render(<PlanCadToolbar onClose={onClose} />);
+
+        activateGroupedTool("structure", "wall");
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
+        });
+
+        await act(async () => {
+            app.emit("raycast.PlanCadToolbar", {point: new THREE.Vector3(0, 0, 0), object: null}, {preventDefault: vi.fn(), planCadCommit: true});
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByTestId("plan-cad-cancel-draft"));
+
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-select")).toHaveAttribute("aria-pressed", "true");
+        });
+        expect(onClose).toHaveBeenCalledTimes(1);
+        expect(app.editor.scene.userData.planCad).toBeUndefined();
+    });
+
+    it("switches structure placement tools to top-down view", async () => {
+        const app = installFakeApp();
+        Object.assign(app.editor, {view: "perspective"});
+        render(<PlanCadToolbar />);
+
+        activateGroupedTool("structure", "wall");
+
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-wall")).toHaveAttribute("aria-pressed", "true");
+        });
+        expect(app.call).toHaveBeenCalledWith("changeView", app.editor, "top");
+
+        app.call.mockClear();
+        activateGroupedTool("openings", "door");
+
+        await waitFor(() => {
+            expect(screen.getByTestId("plan-cad-tool-door")).toHaveAttribute("aria-pressed", "true");
+        });
+        expect(app.call).not.toHaveBeenCalledWith("changeView", app.editor, "top");
     });
 
     it("finishes room polygons with Enter", async () => {
@@ -668,6 +724,34 @@ describe("PlanCadToolbar interactions", () => {
         });
 
         expect(app.editor.select).toHaveBeenCalledWith(wallObject);
+        viewport.remove();
+    });
+
+    it("clears BIM selection from empty viewport select clicks", async () => {
+        const app = installFakeApp();
+        const viewport = installViewportRaycastHarness(app);
+
+        render(<PlanCadToolbar />);
+
+        await act(async () => {
+            viewport.dispatchEvent(pointerViewportEvent("pointerdown", {
+                button: 0,
+                clientX: 500,
+                clientY: 260,
+                bubbles: true,
+                cancelable: true,
+            }));
+            document.dispatchEvent(pointerViewportEvent("pointerup", {
+                button: 0,
+                clientX: 500,
+                clientY: 260,
+                bubbles: true,
+                cancelable: true,
+            }));
+            await Promise.resolve();
+        });
+
+        expect(app.editor.select).toHaveBeenCalledWith(null);
         viewport.remove();
     });
 

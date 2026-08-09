@@ -92,7 +92,7 @@ async function openBimPlanFromCadMenu(page) {
     "CAD tools actionbar menu button visible",
     await cadToolsButton.isVisible().catch(() => false),
   );
-  await cadToolsButton.click({ timeout: 5000, force: true });
+  await clickLocatorOrDom(cadToolsButton);
   const planCadOption = page
     .locator('[data-testid="actionbar-plan-cad"]')
     .first();
@@ -100,7 +100,7 @@ async function openBimPlanFromCadMenu(page) {
     "BIM Plan menu option visible",
     await planCadOption.isVisible().catch(() => false),
   );
-  await planCadOption.click({ timeout: 5000, force: true });
+  await clickLocatorOrDom(planCadOption);
 }
 
 async function assertToolbarButtonLayout(page, ids, label) {
@@ -153,25 +153,25 @@ async function assertToolbarButtonLayout(page, ids, label) {
 }
 
 async function selectPlanCadTool(page, id) {
-  const groups = {
-    wall: "structure",
-    room: "structure",
-    zone: "structure",
-    door: "openings",
-    window: "openings",
-    part: "objects",
+  const shortcuts = {
+    select: "v",
+    wall: "1",
+    room: "2",
+    zone: "3",
+    door: "4",
+    window: "5",
+    part: "6",
   };
-  const groupId = groups[id];
-  if (groupId) {
-    await page
-      .locator(`[data-testid="plan-cad-group-${groupId}"]`)
-      .first()
-      .click({ timeout: 5000, force: true });
-  }
-  await page
-    .locator(`[data-testid="plan-cad-tool-${id}"]`)
-    .first()
-    .click({ timeout: 5000, force: true });
+  const shortcut = shortcuts[id];
+  if (!shortcut) throw new Error(`No BIM Plan shortcut for ${id}`);
+  await page.keyboard.press(shortcut);
+  await page.waitForFunction(
+    (toolId) =>
+      [...document.querySelectorAll(`[data-testid="plan-cad-tool-${toolId}"]`)]
+        .some((element) => element.getAttribute("aria-pressed") === "true"),
+    id,
+    { timeout: 5000 },
+  );
 }
 
 async function planCadSceneCounts(page) {
@@ -246,6 +246,110 @@ async function waitForPlanCadCount(page, key, minimum, label) {
   return counts;
 }
 
+async function waitForNoPlanCadData(page, label) {
+  const deadline = Date.now() + 10000;
+  let counts = await planCadSceneCounts(page);
+  while (Date.now() < deadline) {
+    counts = await planCadSceneCounts(page);
+    if (
+      !counts.rootName &&
+      counts.wall === 0 &&
+      counts.slab === 0 &&
+      counts.zone === 0 &&
+      counts.item === 0 &&
+      counts.generatedWallObjects === 0
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  const cleared =
+    !counts.rootName &&
+    counts.wall === 0 &&
+    counts.slab === 0 &&
+    counts.zone === 0 &&
+    counts.item === 0 &&
+    counts.generatedWallObjects === 0;
+  assert(label, cleared, `counts=${JSON.stringify(counts)}`);
+  return counts;
+}
+
+async function clickLocatorOrDom(locator, timeout = 5000) {
+  const visible = await locator
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) {
+    await locator.click({ timeout, force: true, noWaitAfter: true });
+    return;
+  }
+  const clicked = await locator
+    .evaluate((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      element.scrollIntoView({ block: "center", inline: "center" });
+      const rect = element.getBoundingClientRect();
+      const clientX = rect.left + rect.width / 2;
+      const clientY = rect.top + rect.height / 2;
+      for (const eventName of [
+        "pointerdown",
+        "mousedown",
+        "pointerup",
+        "mouseup",
+        "click",
+      ]) {
+        const EventCtor = eventName.startsWith("pointer")
+          ? window.PointerEvent
+          : window.MouseEvent;
+        element.dispatchEvent(
+          new EventCtor(eventName, {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons: eventName.endsWith("down") ? 1 : 0,
+            clientX,
+            clientY,
+          }),
+        );
+      }
+      return true;
+    })
+    .catch(() => false);
+  if (clicked) {
+    return;
+  }
+  await locator.click({ timeout, force: true, noWaitAfter: true });
+}
+
+async function dispatchTreeContextMenu(locator, timeout = 5000) {
+  const handle = await locator.elementHandle({ timeout });
+  if (!handle) throw new Error("Tree row handle unavailable");
+  await handle.evaluate((element) => {
+    if (!(element instanceof HTMLElement)) return;
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + Math.min(24, rect.width / 2);
+    const clientY = rect.top + rect.height / 2;
+    element.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX,
+        clientY,
+      }),
+    );
+    element.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        buttons: 2,
+        clientX,
+        clientY,
+      }),
+    );
+  });
+}
+
 const browser = await chromium.launch({ headless: !headed });
 const page = await (
   await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -300,14 +404,10 @@ try {
   const canvas = page.locator("canvas").first();
   assert("editor canvas visible", await canvas.isVisible().catch(() => false));
 
-  await page
-    .locator('[data-testid="leftpanel-tab-project"]')
-    .first()
-    .click({ timeout: 5000, force: true });
-  await page
-    .locator("text=Project Settings")
-    .first()
-    .click({ timeout: 5000, force: true });
+  await clickLocatorOrDom(
+    page.locator('[data-testid="leftpanel-tab-project"]').first(),
+  );
+  await clickLocatorOrDom(page.locator("text=Project Settings").first());
   const cadToggle = page.locator('[data-testid="cad-tools-toggle"]').first();
   const cadSwitch = page.locator('[data-testid="cad-tools-switch"]').first();
   const cadCheckbox = page
@@ -318,7 +418,7 @@ try {
     await cadToggle.isVisible().catch(() => false),
   );
   if (!(await cadCheckbox.isChecked().catch(() => false))) {
-    await cadSwitch.click({ timeout: 5000, force: true });
+    await clickLocatorOrDom(cadSwitch);
   }
   await page.waitForTimeout(500);
   assert(
@@ -327,14 +427,12 @@ try {
   );
   logStep("CAD tools enabled");
 
-  await page
-    .locator('[data-testid="leftpanel-tab-library"]')
-    .first()
-    .click({ timeout: 5000, force: true });
-  await page
-    .locator('[data-testid="icon-item-cube"]')
-    .first()
-    .click({ timeout: 5000, force: true });
+  await clickLocatorOrDom(
+    page.locator('[data-testid="leftpanel-tab-library"]').first(),
+  );
+  await clickLocatorOrDom(
+    page.locator('[data-testid="icon-item-cube"]').first(),
+  );
   await page.waitForTimeout(1000);
   logStep("cube added to reveal actionbar");
 
@@ -384,9 +482,24 @@ try {
   const box = await canvas.boundingBox();
   assert("canvas has bounds", !!box, JSON.stringify(box));
   if (box) {
-    await page.mouse.click(box.x + box.width * 0.42, box.y + box.height * 0.55);
-    await page.waitForTimeout(250);
-    await page.mouse.click(box.x + box.width * 0.58, box.y + box.height * 0.55);
+    const firstPoint = {
+      x: box.x + box.width * 0.42,
+      y: box.y + box.height * 0.55,
+    };
+    const secondPoint = {
+      x: box.x + box.width * 0.58,
+      y: box.y + box.height * 0.55,
+    };
+    await page.mouse.move(firstPoint.x, firstPoint.y);
+    await page.mouse.down();
+    await page.waitForTimeout(80);
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+    await page.mouse.move(secondPoint.x, secondPoint.y, { steps: 8 });
+    await page.waitForTimeout(120);
+    await page.mouse.down();
+    await page.waitForTimeout(80);
+    await page.mouse.up();
     await page.waitForTimeout(1200);
   }
   await page
@@ -418,6 +531,31 @@ try {
     "BIM Plan hides semantic scene containers",
     counts.internalSceneObjects === 0,
     JSON.stringify(counts),
+  );
+  const wallTextureSummary = await page.evaluate(() => {
+    const app = window.app || globalThis.app;
+    const scene = app?.editor?.scene;
+    const summary = { wallMeshes: 0, texturedWallMeshes: 0, textureNames: [] };
+    scene?.traverse((object) => {
+      if (object.userData?.planNodeType !== "wall") return;
+      object.traverse((child) => {
+        if (!child.isMesh) return;
+        summary.wallMeshes++;
+        const map = Array.isArray(child.material)
+          ? child.material.find((material) => material?.map)?.map
+          : child.material?.map;
+        if (map) {
+          summary.texturedWallMeshes++;
+          summary.textureNames.push(map.name ?? "");
+        }
+      });
+    });
+    return summary;
+  });
+  assert(
+    "BIM Plan wall uses BIM texture map",
+    wallTextureSummary.texturedWallMeshes > 0,
+    JSON.stringify(wallTextureSummary),
   );
 
   await page.keyboard.press(
@@ -452,13 +590,115 @@ try {
     JSON.stringify(redoCounts),
   );
 
-  await page
-    .locator('[data-testid="plan-cad-close"]')
-    .first()
-    .click({ timeout: 5000, force: true });
-  await page.waitForTimeout(300);
+  const rootUuid = await page.evaluate(() => {
+    const app = window.app || globalThis.app;
+    const scene = app?.editor?.scene;
+    let uuid = null;
+    scene?.traverse((object) => {
+      if (!uuid && object.userData?.isPlanCadRoot) uuid = object.uuid;
+    });
+    return uuid;
+  });
+  assert("BIM Plan root uuid available for outliner delete", !!rootUuid);
+
+  await clickLocatorOrDom(
+    page.locator('[data-testid="leftpanel-tab-project"]').first(),
+  );
+  const rootTreeItem = page.locator(`li[value="${rootUuid}"]`).first();
   assert(
-    "BIM Plan toolbar closes",
+    "BIM Plan root visible in project outliner",
+    await rootTreeItem.isVisible().catch(() => false),
+  );
+  await page.evaluate(() => {
+    const app = window.app || globalThis.app;
+    globalThis.__PLAN_CAD_DELETE_TRACE__ = [];
+    const trace = globalThis.__PLAN_CAD_DELETE_TRACE__;
+    if (!app?.editor || app.__planCadDeleteTraceInstalled) return;
+    app.__planCadDeleteTraceInstalled = true;
+    const planSummary = (object) => ({
+      isPlanCadRoot: object?.userData?.isPlanCadRoot === true,
+      isPlanCadManaged: object?.userData?.isPlanCadManaged === true,
+      planNodeId: object?.userData?.planNodeId ?? null,
+      planNodeType: object?.userData?.planNodeType ?? null,
+      planCadNodeCount: object?.userData?.planCad?.nodeCount ?? null,
+    });
+    const originalRemoveObject = app.editor.removeObject?.bind(app.editor);
+    if (originalRemoveObject) {
+      app.editor.removeObject = (object) => {
+        trace.push({
+          event: "editor.removeObject",
+          name: object?.name,
+          type: object?.type,
+          parentName: object?.parent?.name ?? null,
+          plan: planSummary(object),
+        });
+        return originalRemoveObject(object);
+      };
+    }
+    const originalExecute = app.editor.execute?.bind(app.editor);
+    if (originalExecute) {
+      app.editor.execute = (command, ...args) => {
+        trace.push({
+          event: "editor.execute",
+          commandType: command?.type,
+          commandName: command?.name,
+          objectName: command?.object?.name,
+          objectType: command?.object?.type,
+          plan: planSummary(command?.object),
+        });
+        return originalExecute(command, ...args);
+      };
+    }
+    const originalCall = app.call?.bind(app);
+    if (originalCall) {
+      app.call = (eventName, ...args) => {
+        if (
+          eventName === "objectRemoved" ||
+          eventName === "objectChanged" ||
+          eventName === "planCadChanged"
+        ) {
+          const object = args[1] ?? args[0];
+          trace.push({
+            event: `app.call:${eventName}`,
+            objectName: object?.name,
+            objectType: object?.type,
+            plan: planSummary(object),
+          });
+        }
+        return originalCall(eventName, ...args);
+      };
+    }
+  });
+  await rootTreeItem.hover({ timeout: 5000, force: true }).catch(() => {});
+  await dispatchTreeContextMenu(rootTreeItem);
+  await clickLocatorOrDom(page.locator("text=Delete").last());
+  await page.waitForTimeout(600);
+  logStep("BIM Plan outliner delete trace", "ok", {
+    trace: await page.evaluate(() => globalThis.__PLAN_CAD_DELETE_TRACE__ ?? []),
+  });
+  await waitForNoPlanCadData(
+    page,
+    "BIM Plan outliner delete clears data and generated root",
+  );
+  await page.evaluate(() => {
+    const app = window.app || globalThis.app;
+    app?.call?.("historyChanged", app.editor);
+    app?.call?.("objectChanged", app.editor, app.editor?.scene);
+    app?.call?.("sceneLoaded", app.editor);
+  });
+  await page.waitForTimeout(600);
+  await waitForNoPlanCadData(
+    page,
+    "BIM Plan outliner delete does not resurrect after sync events",
+  );
+
+  const closeButton = page.locator('[data-testid="plan-cad-close"]').first();
+  if (await closeButton.isVisible().catch(() => false)) {
+    await clickLocatorOrDom(closeButton);
+    await page.waitForTimeout(300);
+  }
+  assert(
+    "BIM Plan toolbar closes or is already closed",
     !(await page
       .locator('[data-testid="plan-cad-toolbar"]')
       .first()

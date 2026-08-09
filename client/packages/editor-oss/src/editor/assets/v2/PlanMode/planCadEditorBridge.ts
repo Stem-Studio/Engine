@@ -32,6 +32,8 @@ import { getLogger } from "@stem/editor-oss/utils/Logger";
 export const PLAN_CAD_SCENE_USER_DATA_KEY = "planCad";
 export const PLAN_CAD_ROOT_NAME = "BIM Plan";
 export const PLAN_CAD_SCHEMA = "stem.planCad.v1";
+const PLAN_CAD_OWNER_NODE_ID_KEY = "planCadOwnerNodeId";
+const PLAN_CAD_OWNER_NODE_TYPE_KEY = "planCadOwnerNodeType";
 
 export type PlanCadToolId =
   | "select"
@@ -426,6 +428,20 @@ function applyPlanObjectMetadata(object: THREE.Object3D, node: PlanNode) {
   object.visible = node.visible;
 }
 
+function applyPlanObjectDescendantMetadata(
+  object: THREE.Object3D,
+  node: PlanNode,
+) {
+  object.traverse((child) => {
+    if (child === object) return;
+    child.userData[PLAN_CAD_OWNER_NODE_ID_KEY] = node.id;
+    child.userData[PLAN_CAD_OWNER_NODE_TYPE_KEY] = node.type;
+    child.userData.isRuntimeOnly = true;
+    child.userData.isTransformLocked = true;
+    child.userData.managedBy = "BIM Plan";
+  });
+}
+
 function createPlanObjectForNode(node: PlanNode) {
   let object: THREE.Object3D;
   switch (node.type) {
@@ -576,6 +592,29 @@ export function findPlanCadNodeObject(
   return null;
 }
 
+function findPlanCadDeletionNodeId(
+  object?: THREE.Object3D | null,
+): string | null {
+  const planObject = findPlanCadNodeObject(object);
+  const nodeId = planObject?.userData?.planNodeId;
+  if (typeof nodeId === "string") return nodeId;
+
+  let result: string | null = null;
+  object?.traverse((child) => {
+    if (result) return;
+    const childNodeId = child.userData?.planNodeId;
+    if (typeof childNodeId === "string") {
+      result = childNodeId;
+      return;
+    }
+    const ownerNodeId = child.userData?.[PLAN_CAD_OWNER_NODE_ID_KEY];
+    if (typeof ownerNodeId === "string") {
+      result = ownerNodeId;
+    }
+  });
+  return result;
+}
+
 export function findPlanCadNodeObjectById(
   root: THREE.Object3D | null | undefined,
   nodeId: string | null | undefined,
@@ -586,6 +625,31 @@ export function findPlanCadNodeObjectById(
     if (!result && object.userData?.planNodeId === nodeId) result = object;
   });
   return result;
+}
+
+export async function deleteManagedPlanCadObject(
+  editorInput: PlanCadEditorLike | PlanCadAppLike | null | undefined,
+  object?: THREE.Object3D | null,
+) {
+  const editor =
+    getEditorFromTarget(editorInput) ??
+    (global.app?.editor as PlanCadEditorLike | undefined);
+  const scene = editor?.scene as THREE.Object3D | undefined;
+  if (!editor || !scene || !object) return false;
+
+  const data = getPlanCadSceneData(scene);
+  if (!data) return false;
+
+  if (object.userData?.isPlanCadRoot) {
+    return commitPlanCadSceneData(editor, null);
+  }
+
+  const nodeId = findPlanCadDeletionNodeId(object);
+  if (typeof nodeId !== "string") return false;
+
+  const nextData = deletePlanCadNodeData(data, nodeId);
+  if (getPlanCadDataHash(nextData) === getPlanCadDataHash(data)) return false;
+  return commitPlanCadSceneData(editor, nextData);
 }
 
 function getStoredPlanNodeHashes(root: THREE.Object3D): Record<string, string> {
@@ -696,6 +760,10 @@ export function rebuildPlanCadRootObject(
 
   state.dirtyNodeIds = dirtyNodeIds;
   processDirtyPlanNodes(state, registry);
+  for (const node of sceneNodes) {
+    const object = objects.get(node.id);
+    if (object) applyPlanObjectDescendantMetadata(object, node);
+  }
 
   root.userData.planCad = {
     schema: data.schema,
@@ -913,7 +981,8 @@ export async function commitPlanCadSceneData(
 function isManagedPlanCadObject(object?: THREE.Object3D | null) {
   return (
     !!object?.userData?.isPlanCadManaged ||
-    typeof object?.userData?.planNodeId === "string"
+    typeof object?.userData?.planNodeId === "string" ||
+    typeof object?.userData?.[PLAN_CAD_OWNER_NODE_ID_KEY] === "string"
   );
 }
 
@@ -973,6 +1042,10 @@ export function installPlanCadSceneSync(
     const [source, object] = args as [unknown, THREE.Object3D | undefined];
     if (object?.userData?.isPlanCadRoot && getPlanCadSceneData(editor.scene)) {
       void commitPlanCadSceneData(editor, null);
+      return;
+    }
+    if (object && isManagedPlanCadObject(object)) {
+      void deleteManagedPlanCadObject(editor, object);
       return;
     }
     resetManagedObject(source, object);
