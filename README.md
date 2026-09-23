@@ -186,7 +186,7 @@ WebGPU support is required. We do not support WebGL
 |:--------------------------------------------------------------------------------------------------------------------:| :---: | :---: | :---: |
 |                                                  CTO & Venture Lead                                                  | Head of Engineering | Head of Product | Platform & Physics |
 | [<img src="https://github.com/querielo.png" width="100"><br><sub><b>querielo</b></sub>](https://github.com/querielo) | [<img src="https://github.com/AndreiRudenko.png" width="100"><br><sub><b>AndreiRudenko</b></sub>](https://github.com/AndreiRudenko) | [<img src="https://github.com/gajendra906.png" width="100"><br><sub><b>gajendra906</b></sub>](https://github.com/gajendra906) | [<img src="https://github.com/nafeezable.png" width="100"><br><sub><b>nafeezable</b></sub>](https://github.com/nafeezable) |
-|                                                   Three.js Wizard                                                    | Games | QA | Community |
+|                                                   Three.js Wizard                                                    | Engine Systems & Games | QA | Community |
 | [<img src="https://github.com/JNicoSD.png" width="100"><br><sub><b>JNicoSD</b></sub>](https://github.com/JNicoSD) | [<img src="https://github.com/janvher.png" width="100"><br><sub><b>Jan</b></sub>](https://github.com/janvher) | [<img src="https://github.com/kumaranand48.png" width="100"><br><sub><b>Anand</b></sub>](https://github.com/kumaranand48) | |
 | Games|Games | Head of SRE | |
 
